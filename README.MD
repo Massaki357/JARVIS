@@ -7,9 +7,9 @@ Rode o comando:
 pip install google-genai PySide6 python-dotenv sounddevice numpy mss opencv-python pillow
 ```
 ou
-
+```
 pip install -r requirements.txt
-
+```
 --------------------------------------------------
 
 A palavra chave é "Coisa"
