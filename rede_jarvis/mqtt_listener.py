@@ -1,4 +1,4 @@
-from . import comandos, config, permissoes, telegram_client
+from . import comandos, config, mqtt_client, permissoes
 
 import json
 import threading
@@ -14,9 +14,14 @@ _LOCK_RESPOSTAS = threading.Lock()
 _callback_falar = None
 _callback_frame_remoto = None
 
-_offset_atual = 0
 _rodando = False
 _lock_rodando = threading.Lock()
+
+# Máquinas conhecidas como online agora, a partir das mensagens
+# retidas de presença (ver mqtt_client.publicar_presenca). Nome da
+# máquina -> momento (time.time()) em que o "online" foi visto.
+_MAQUINAS_ONLINE = {}
+_LOCK_MAQUINAS = threading.Lock()
 
 
 # Registra os callbacks usados para o Jarvis "falar" por voz e para
@@ -31,9 +36,10 @@ def configurar_callbacks(callback_falar, callback_frame_remoto):
     _callback_frame_remoto = callback_frame_remoto
 
 
-# Inicia a thread de polling do Telegram. Idempotente: chamadas
-# repetidas (uma por chamada de voz iniciada) não criam uma segunda
-# thread.
+# Conecta ao broker e inicia o loop de rede do paho-mqtt (que já roda
+# em sua própria thread interna — loop_start() retorna na hora).
+# Idempotente: chamadas repetidas (uma por chamada de voz iniciada)
+# não conectam duas vezes.
 def iniciar_em_thread():
     global _rodando
 
@@ -43,70 +49,91 @@ def iniciar_em_thread():
 
         _rodando = True
 
-    threading.Thread(
-        target=_loop_principal,
-        daemon=True,
-    ).start()
+    cliente = mqtt_client.obter_cliente()
+
+    cliente.on_connect = _ao_conectar
+    cliente.on_message = _ao_receber_mensagem
+    cliente.on_disconnect = _ao_desconectar
+
+    try:
+        cliente.connect(
+            config.MQTT_HOST,
+            config.MQTT_PORT,
+            keepalive=60,
+        )
+
+    except Exception as erro:
+        print(
+            f"[rede_jarvis] Falha ao conectar no broker MQTT: {erro}"
+        )
+
+        return
+
+    cliente.loop_start()
 
 
-# Faz polling do bot compartilhado. AVISO: como várias máquinas
-# compartilham o mesmo token de bot, chamadas concorrentes de
-# getUpdates podem conflitar entre si — o Telegram só permite um
-# consumidor de getUpdates de cada vez por bot. Por isso usamos um
-# timeout de long-polling curto (2s) e uma pequena pausa entre
-# chamadas, o que reduz bastante a janela de conflito, mas não a
-# elimina por completo. Para poucas máquinas com tráfego baixo (o
-# cenário deste projeto) isso funciona na prática; um relay/servidor
-# central resolveria de vez, mas fica fora do escopo "sem VPN, só o
-# bot" pedido.
-def _loop_principal():
-    global _offset_atual
+def _ao_conectar(client, userdata, flags, reason_code, properties):
+    if reason_code != 0:
+        print(
+            f"[rede_jarvis] Falha ao autenticar no broker MQTT: {reason_code}"
+        )
 
-    while True:
-        try:
-            atualizacoes = telegram_client.obter_atualizacoes(
-                offset=_offset_atual,
-                timeout_segundos=2,
+        return
+
+    print("[rede_jarvis] Conectado ao broker MQTT.")
+
+    client.subscribe(mqtt_client.TOPICO_COMANDOS, qos=1)
+    client.subscribe(mqtt_client.TOPICO_FRAMES, qos=0)
+    client.subscribe(mqtt_client.TOPICO_ARQUIVOS, qos=1)
+
+    # "+" é o coringa de um nível no MQTT: cobre o tópico de presença
+    # de qualquer máquina (jarvis/presenca/<nome>). As mensagens
+    # retidas de todo mundo chegam automaticamente logo após a
+    # inscrição, sem precisar perguntar nada a ninguém.
+    client.subscribe(
+        mqtt_client.TOPICO_PRESENCA_PREFIXO + "+",
+        qos=1,
+    )
+
+    mqtt_client.publicar_presenca("online")
+
+
+def _ao_desconectar(client, userdata, flags, reason_code, properties):
+    print(
+        f"[rede_jarvis] Desconectado do broker MQTT ({reason_code}). "
+        "O paho-mqtt tenta reconectar sozinho."
+    )
+
+
+def _ao_receber_mensagem(client, userdata, mensagem):
+    try:
+        if mensagem.topic == mqtt_client.TOPICO_COMANDOS:
+            _processar_texto(
+                mensagem.payload.decode(
+                    "utf-8",
+                    errors="replace",
+                )
             )
 
-            for atualizacao in atualizacoes:
-                _offset_atual = atualizacao["update_id"] + 1
+        elif mensagem.topic == mqtt_client.TOPICO_FRAMES:
+            _processar_frame(mensagem)
 
-                _processar_atualizacao(atualizacao)
+        elif mensagem.topic == mqtt_client.TOPICO_ARQUIVOS:
+            _processar_arquivo_mqtt(mensagem)
 
-        except Exception as erro:
-            print(
-                f"[rede_jarvis] Erro no listener do Telegram: {erro}"
-            )
+        elif mensagem.topic.startswith(mqtt_client.TOPICO_PRESENCA_PREFIXO):
+            _processar_presenca(mensagem)
 
-        time.sleep(1)
-
-
-def _processar_atualizacao(atualizacao):
-    mensagem = atualizacao.get("message")
-
-    if not mensagem:
-        return
-
-    if "photo" in mensagem:
-        _processar_foto(mensagem)
-        return
-
-    if "document" in mensagem:
-        _processar_documento(mensagem)
-        return
-
-    texto = mensagem.get("text")
-
-    if texto:
-        _processar_texto(texto)
+    except Exception as erro:
+        print(
+            f"[rede_jarvis] Erro processando mensagem MQTT: {erro}"
+        )
 
 
 # Valida o token compartilhado e o destino de um envelope JSON.
 # Mensagens sem o token correto, malformadas, ou destinadas a outra
 # máquina são descartadas silenciosamente — não confirmamos a um
-# atacante que o bot existe nem respondemos a mensagens que não são
-# para esta máquina.
+# atacante que o canal existe.
 def _carregar_envelope(texto):
     try:
         envelope = json.loads(texto)
@@ -202,6 +229,10 @@ def _processar_comando(envelope):
             resultado=resultado,
         )
 
+    # comandos.executar_comando pode envolver I/O bloqueante
+    # (subprocess, busca em disco, etc.) e o fluxo de permissão espera
+    # de forma síncrona — roda numa thread separada pra não travar a
+    # thread de rede do paho-mqtt.
     threading.Thread(
         target=_executar,
         daemon=True,
@@ -221,10 +252,8 @@ def _responder(destino, id_pedido, sucesso, resultado):
         }
     )
 
-    telegram_client.enviar_mensagem(
-        config.TELEGRAM_CHAT_ID,
-        envelope_resposta,
-    )
+    if not mqtt_client.publicar_comando_json(envelope_resposta):
+        print("[rede_jarvis] Falha ao enviar resposta pelo MQTT.")
 
 
 def _processar_resposta(envelope):
@@ -276,57 +305,83 @@ def _processar_arquivo_drive(envelope):
     ).start()
 
 
-def _processar_foto(mensagem):
-    legenda = mensagem.get("caption", "")
-    envelope = _carregar_envelope(legenda)
+def _processar_frame(mensagem):
+    propriedades = mqtt_client.propriedades_para_dict(mensagem)
 
-    if not envelope or envelope.get("tipo") != "frame_visualizacao":
+    if propriedades.get("token") != config.TOKEN_REDE_JARVIS:
         return
 
-    fotos = mensagem.get("photo") or []
-
-    if not fotos:
+    if propriedades.get("destino") not in (config.NOME_MAQUINA, "todos"):
         return
 
-    # A API do Telegram retorna várias resoluções da mesma foto; a
-    # maior é sempre o último item da lista.
-    file_id = fotos[-1]["file_id"]
-
-    frame_bytes = telegram_client.baixar_arquivo(file_id)
-
-    if frame_bytes and _callback_frame_remoto:
+    if _callback_frame_remoto:
         _callback_frame_remoto(
-            frame_bytes,
-            envelope.get("origem", "desconhecido"),
+            mensagem.payload,
+            propriedades.get("origem", "desconhecido"),
         )
 
 
-def _processar_documento(mensagem):
-    legenda = mensagem.get("caption", "")
-    envelope = _carregar_envelope(legenda)
+def _processar_arquivo_mqtt(mensagem):
+    propriedades = mqtt_client.propriedades_para_dict(mensagem)
 
-    if not envelope:
+    if propriedades.get("token") != config.TOKEN_REDE_JARVIS:
         return
 
-    documento = mensagem.get("document") or {}
-    file_id = documento.get("file_id")
-    nome_arquivo = documento.get("file_name", "arquivo_recebido")
-
-    if not file_id:
-        return
-
-    conteudo = telegram_client.baixar_arquivo(file_id)
-
-    if conteudo is None:
+    if propriedades.get("destino") not in (config.NOME_MAQUINA, "todos"):
         return
 
     from . import transferencia_arquivos
 
     transferencia_arquivos.receber_arquivo(
-        envelope.get("origem", "desconhecido"),
-        nome_arquivo,
-        conteudo,
+        propriedades.get("origem", "desconhecido"),
+        propriedades.get("nome_arquivo", "arquivo_recebido"),
+        mensagem.payload,
     )
+
+
+def _processar_presenca(mensagem):
+    try:
+        dados = json.loads(
+            mensagem.payload.decode(
+                "utf-8",
+                errors="replace",
+            )
+        )
+
+    except (json.JSONDecodeError, TypeError):
+        return
+
+    if not isinstance(dados, dict):
+        return
+
+    if dados.get("token") != config.TOKEN_REDE_JARVIS:
+        return
+
+    maquina = dados.get("maquina")
+
+    if not maquina:
+        return
+
+    with _LOCK_MAQUINAS:
+        if dados.get("status") == "online":
+            _MAQUINAS_ONLINE[maquina] = time.time()
+
+        else:
+            _MAQUINAS_ONLINE.pop(maquina, None)
+
+
+# Lista as máquinas conhecidas como online agora — puramente local,
+# a partir das mensagens de presença retidas já recebidas ao se
+# inscrever no tópico (ver _ao_conectar). Não faz nenhuma chamada de
+# rede na hora de responder.
+def listar_maquinas_online():
+    with _LOCK_MAQUINAS:
+        maquinas = sorted(_MAQUINAS_ONLINE.keys())
+
+    if not maquinas:
+        return "Nenhuma máquina está online no momento."
+
+    return "Máquinas online agora: " + ", ".join(maquinas)
 
 
 # Envia um envelope e aguarda a resposta correlacionada por
@@ -340,9 +395,8 @@ def _enviar_e_aguardar(envelope, timeout):
     with _LOCK_RESPOSTAS:
         _RESPOSTAS_PENDENTES[id_pedido] = (evento, container)
 
-    enviado = telegram_client.enviar_mensagem(
-        config.TELEGRAM_CHAT_ID,
-        json.dumps(envelope),
+    enviado = mqtt_client.publicar_comando_json(
+        json.dumps(envelope)
     )
 
     if not enviado:

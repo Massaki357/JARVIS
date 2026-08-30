@@ -45,7 +45,7 @@ from mailer.email_sender import enviar_email
 from mailer.email_reader import ler_emails
 
 # Pacote isolado com toda a lógica de comunicação e comando remoto
-# entre instâncias do jarvis via Telegram (ver rede_jarvis/__init__.py
+# entre instâncias do jarvis via MQTT (ver rede_jarvis/__init__.py
 # para o ponto de entrada e a lista de funções expostas).
 import rede_jarvis
 
@@ -138,7 +138,7 @@ class GeminiLiveWorker(QThread):
         self.monitor_tela_continuo = None
 
         # Sobe (ou apenas reconecta os callbacks de, se já estiver de
-        # pé) o listener de comandos remotos via Telegram. Roda aqui —
+        # pé) o listener de comandos remotos via MQTT. Roda aqui —
         # no construtor, chamado pela thread da UI antes de .start() —
         # para que fique de pé mesmo fora de uma chamada de voz ativa,
         # e para que o pacote crie seus componentes Qt na thread certa.
@@ -504,6 +504,18 @@ class GeminiLiveWorker(QThread):
                     ),
 
                     types.FunctionDeclaration(
+                        name="listar_maquinas_remotas",
+                        description=(
+                            "Use esta função somente quando o usuário "
+                            "pedir explicitamente para saber quais "
+                            "máquinas do ALFRED estão online agora (ex: "
+                            "'quais computadores estão online', 'a loja "
+                            "está online?'). A resposta inclui esta "
+                            "própria máquina. Não use espontaneamente."
+                        ),
+                    ),
+
+                    types.FunctionDeclaration(
                         name="salvar_memoria",
                         description=(
                             "Salva uma informação curta e útil na memória "
@@ -699,6 +711,9 @@ class GeminiLiveWorker(QThread):
             "usuário responder claramente permitindo ou negando, chame "
             "responder_permissao_remota. Não confunda essa resposta "
             "com um novo pedido do usuário. "
+            "Só chame listar_maquinas_remotas quando o usuário pedir "
+            "explicitamente para saber quais máquinas do ALFRED estão "
+            "online. Nunca use espontaneamente. "
 
             # ENCERRAMENTO
             "Quando o usuário pedir claramente para encerrar, finalizar, "
@@ -1064,9 +1079,10 @@ class GeminiLiveWorker(QThread):
                     f"Enviando comando remoto para {maquina_destino}..."
                 )
 
-                # A comunicação com o Telegram é bloqueante, por isso
-                # roda em uma thread separada. Nenhuma lógica de
-                # negócio mora aqui — só chama o pacote rede_jarvis.
+                # rede_jarvis.enviar_comando_remoto espera a resposta
+                # de forma bloqueante, por isso roda em uma thread
+                # separada. Nenhuma lógica de negócio mora aqui — só
+                # chama o pacote rede_jarvis.
                 resultado = await asyncio.to_thread(
                     rede_jarvis.enviar_comando_remoto,
                     maquina_destino,
@@ -1083,6 +1099,11 @@ class GeminiLiveWorker(QThread):
                 resultado = rede_jarvis.responder_permissao_por_voz(
                     bool(concedido)
                 )
+
+            elif nome == "listar_maquinas_remotas":
+                # Puramente local (lê presença já recebida via MQTT
+                # retido) — não precisa de asyncio.to_thread.
+                resultado = rede_jarvis.listar_maquinas_online()
 
             elif nome == "salvar_memoria":
                 texto = args.get(

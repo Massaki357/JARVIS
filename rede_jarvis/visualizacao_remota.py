@@ -1,12 +1,11 @@
 # Reaproveita a classe de captura contínua já existente para a
 # visualização local — a única diferença aqui é o destino de cada
-# frame (Telegram em vez de session.send_realtime_input direto).
+# frame (MQTT em vez de session.send_realtime_input direto).
 from vision.monitor_continuo import MonitorTelaContinuo
 
-from . import config, telegram_client
+from . import config, mqtt_client
 
 import asyncio
-import json
 import threading
 
 # Guarda as sessões de visualização remota ativas nesta máquina,
@@ -17,9 +16,10 @@ _SESSOES_ATIVAS = {}
 _LOCK_SESSOES = threading.Lock()
 
 
-# Inicia a captura contínua da tela local e envia cada frame como
-# foto pelo Telegram, com a legenda marcando id_sessao/origem/destino
-# para a máquina que pediu conseguir reconhecer os frames recebidos.
+# Inicia a captura contínua da tela local e publica cada frame no
+# tópico de frames do MQTT, com token/origem/destino/id_sessao nas
+# propriedades da mensagem, para a máquina que pediu conseguir
+# reconhecer os frames recebidos.
 #
 # Roda em uma thread própria, com seu próprio loop asyncio — decoupled
 # de propósito do loop (transiente, só existe durante uma chamada) do
@@ -56,21 +56,16 @@ def _executar_thread(origem, id_sessao, pronto):
     asyncio.set_event_loop(loop)
 
     async def _callback_frame(frame_bytes):
-        legenda = json.dumps(
-            {
-                "token": config.TOKEN_REDE_JARVIS,
-                "origem": config.NOME_MAQUINA,
-                "destino": origem,
-                "tipo": "frame_visualizacao",
-                "id_sessao": id_sessao,
-            }
-        )
-
+        # mqtt_client.publicar_frame é síncrona e thread-safe (o
+        # paho-mqtt cuida da própria thread de rede internamente) —
+        # roda numa thread comum pra não bloquear este loop enquanto
+        # a mensagem é entregue ao broker.
         await asyncio.to_thread(
-            telegram_client.enviar_foto,
-            config.TELEGRAM_CHAT_ID,
+            mqtt_client.publicar_frame,
             frame_bytes,
-            legenda,
+            config.NOME_MAQUINA,
+            origem,
+            id_sessao,
         )
 
     async def _callback_encerrado():

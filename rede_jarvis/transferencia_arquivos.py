@@ -1,4 +1,4 @@
-from . import config, notificacoes, telegram_client
+from . import config, mqtt_client, notificacoes
 
 import json
 import threading
@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Qt
 
-LIMITE_TELEGRAM_BYTES = config.LIMITE_TELEGRAM_MB * 1024 * 1024
+LIMITE_MQTT_BYTES = int(config.LIMITE_MQTT_MB * 1024 * 1024)
 
 
 # ============================================================
@@ -15,8 +15,8 @@ LIMITE_TELEGRAM_BYTES = config.LIMITE_TELEGRAM_MB * 1024 * 1024
 
 # Implementa o envio de um arquivo local para outra máquina.
 # argumentos precisa conter "caminho" (arquivo local) e
-# "maquina_destino". Até LIMITE_TELEGRAM_MB, envia direto como
-# documento; acima disso, usa o Google Drive como intermediário.
+# "maquina_destino". Até LIMITE_MQTT_MB, envia direto pelo MQTT;
+# acima disso, usa o Google Drive como intermediário.
 def enviar_arquivo(origem, argumentos):
     caminho = (argumentos or {}).get("caminho")
     maquina_destino = (argumentos or {}).get("maquina_destino")
@@ -31,25 +31,23 @@ def enviar_arquivo(origem, argumentos):
 
     tamanho = caminho_arquivo.stat().st_size
 
-    if tamanho <= LIMITE_TELEGRAM_BYTES:
-        legenda = json.dumps(
-            {
-                "token": config.TOKEN_REDE_JARVIS,
-                "origem": config.NOME_MAQUINA,
-                "destino": maquina_destino,
-                "tipo": "arquivo",
-            }
-        )
+    if tamanho <= LIMITE_MQTT_BYTES:
+        try:
+            conteudo = caminho_arquivo.read_bytes()
 
-        enviado = telegram_client.enviar_documento(
-            config.TELEGRAM_CHAT_ID,
-            str(caminho_arquivo),
-            legenda,
+        except OSError as erro:
+            return f"Falha ao ler '{caminho_arquivo.name}': {erro}"
+
+        enviado = mqtt_client.publicar_arquivo(
+            conteudo,
+            origem=config.NOME_MAQUINA,
+            destino=maquina_destino,
+            nome_arquivo=caminho_arquivo.name,
         )
 
         if not enviado:
             return (
-                f"Falha ao enviar '{caminho_arquivo.name}' pelo Telegram."
+                f"Falha ao enviar '{caminho_arquivo.name}' pelo MQTT."
             )
 
         return (
@@ -64,11 +62,11 @@ def enviar_arquivo(origem, argumentos):
 
 
 def _enviar_via_drive(caminho_arquivo, maquina_destino):
-    # Import tardio para evitar import circular (telegram_listener
+    # Import tardio para evitar import circular (mqtt_listener
     # também importa este módulo para tratar arquivos recebidos).
-    from . import telegram_listener
+    from . import mqtt_listener
 
-    email_destino = telegram_listener.consultar_client_email(
+    email_destino = mqtt_listener.consultar_client_email(
         maquina_destino
     )
 
@@ -121,14 +119,14 @@ def _enviar_via_drive(caminho_arquivo, maquina_destino):
         }
     )
 
-    telegram_client.enviar_mensagem(
-        config.TELEGRAM_CHAT_ID,
-        envelope,
-    )
+    if not mqtt_client.publicar_comando_json(envelope):
+        print(
+            "[rede_jarvis] Falha ao avisar sobre arquivo no Drive pelo MQTT."
+        )
 
     return (
         f"Arquivo '{caminho_arquivo.name}' enviado via Google Drive "
-        f"para {maquina_destino} (maior que {config.LIMITE_TELEGRAM_MB}MB)."
+        f"para {maquina_destino} (maior que {config.LIMITE_MQTT_MB}MB)."
     )
 
 
@@ -176,8 +174,9 @@ def obter_client_email_local():
 # Recebimento (lado de quem recebe o arquivo)
 # ============================================================
 
-# Chamado pelo listener quando um documento chega direto pelo
-# Telegram (arquivo dentro do limite).
+# Chamado pelo listener quando um arquivo chega direto pelo MQTT
+# (dentro do limite) — inclui também as capturas de tela avulsas,
+# tratadas como um arquivo recebido.
 def receber_arquivo(origem, nome_sugerido, conteudo):
     threading.Thread(
         target=_processar_recebimento,
@@ -251,7 +250,7 @@ def _processar_recebimento(origem, nome_sugerido, conteudo):
 # ============================================================
 # Ponte com a thread de UI (QFileDialog só pode rodar na thread do
 # Qt, mas o pedido de salvar chega de uma thread de background do
-# listener do Telegram). Sinais Qt são thread-safe: emitir de
+# listener do MQTT). Sinais Qt são thread-safe: emitir de
 # qualquer thread executa o slot conectado na thread onde o QObject
 # receptor "mora" — desde que esse QObject tenha sido criado na
 # thread principal, o que preparar_ponte_gui() garante.

@@ -1,15 +1,19 @@
 from vision.screen_capture import capturar_tela_bytes
 
-from . import config, telegram_client, transferencia_arquivos, visualizacao_remota
+from . import config, mqtt_client, transferencia_arquivos, visualizacao_remota
 
 import subprocess
+import time
 import uuid
 
 import psutil
 
 
-# Captura um frame único da tela local e envia como foto pelo
-# Telegram para quem pediu.
+# Captura um frame único da tela local. Não existe um "chat" para
+# alguém simplesmente olhar a imagem como acontecia no Telegram — por
+# isso a captura é entregue pelo mesmo caminho de arquivo recebido
+# (notificação + diálogo de salvar), reaproveitando
+# transferencia_arquivos do lado de quem pediu.
 def _comando_capturar_tela(origem, argumentos):
     try:
         frame_bytes = capturar_tela_bytes()
@@ -17,14 +21,17 @@ def _comando_capturar_tela(origem, argumentos):
     except Exception as erro:
         return f"Falha ao capturar a tela: {erro}"
 
-    enviado = telegram_client.enviar_foto(
-        config.TELEGRAM_CHAT_ID,
+    nome_arquivo = f"captura_tela_{int(time.time())}.jpg"
+
+    enviado = mqtt_client.publicar_arquivo(
         frame_bytes,
-        "Captura de tela solicitada.",
+        origem=config.NOME_MAQUINA,
+        destino=origem,
+        nome_arquivo=nome_arquivo,
     )
 
     if not enviado:
-        return "Tela capturada, mas houve falha ao enviar pelo Telegram."
+        return "Tela capturada, mas houve falha ao enviar pelo MQTT."
 
     return "Tela capturada e enviada."
 
@@ -150,7 +157,7 @@ def _comando_parar_visualizacao_remota(origem, argumentos):
 
 
 # Tabela de despacho — whitelist dos únicos comandos que o listener
-# aceita executar (ver rede_jarvis/telegram_listener.py).
+# aceita executar (ver rede_jarvis/mqtt_listener.py).
 TABELA_COMANDOS = {
     "capturar_tela": _comando_capturar_tela,
     "listar_processos": _comando_listar_processos,

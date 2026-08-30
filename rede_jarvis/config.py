@@ -6,14 +6,38 @@ from pathlib import Path
 
 load_dotenv()
 
-# Token do bot criado no @BotFather do Telegram. Compartilhado por
-# todas as máquinas que rodam o jarvis.
-TELEGRAM_BOT_TOKEN = os.getenv(
-    "TELEGRAM_BOT_TOKEN"
+# A camada de transporte usa MQTT (protocolo padrão de pub/sub para
+# IoT/automação), via um broker na nuvem (ex: HiveMQ Cloud). Chegamos
+# aqui depois de duas tentativas com Telegram que não funcionaram por
+# restrições da própria plataforma (ver histórico do projeto) — MQTT
+# não tem esse tipo de pegadinha: qualquer máquina publica em um
+# tópico e qualquer outra inscrita nele recebe, sem intermediário
+# proprietário no meio.
+#
+# Todas as máquinas usam o MESMO broker/usuário/senha (credenciais do
+# broker) — o que diferencia cada máquina é só o NOME_MAQUINA usado
+# para filtrar o campo "destino" de cada mensagem.
+MQTT_HOST = os.getenv(
+    "MQTT_HOST"
+)
+
+MQTT_PORT = int(
+    os.getenv(
+        "MQTT_PORT",
+        "8883",
+    )
+)
+
+MQTT_USERNAME = os.getenv(
+    "MQTT_USERNAME"
+)
+
+MQTT_PASSWORD = os.getenv(
+    "MQTT_PASSWORD"
 )
 
 # Segredo compartilhado entre todas as instâncias. Toda mensagem
-# recebida do Telegram só é processada se contiver este token.
+# recebida do MQTT só é processada se contiver este token.
 TOKEN_REDE_JARVIS = os.getenv(
     "TOKEN_REDE_JARVIS"
 )
@@ -24,17 +48,6 @@ TOKEN_REDE_JARVIS = os.getenv(
 NOME_MAQUINA = os.getenv(
     "NOME_MAQUINA",
     "maquina-sem-nome",
-)
-
-# Chat (grupo ou conversa privada com o bot) por onde circulam
-# comandos, respostas e frames de todas as máquinas. A API do
-# Telegram exige um chat_id de destino para enviar mensagens — esta
-# variável não estava na lista original do pedido, mas é necessária
-# para o bot saber para onde mandar cada mensagem. Todas as máquinas
-# devem usar o mesmo chat_id (o bot precisa já ter recebido ao menos
-# uma mensagem nesse chat para descobrir o ID).
-TELEGRAM_CHAT_ID = os.getenv(
-    "TELEGRAM_CHAT_ID"
 )
 
 # Pasta local usada para salvar arquivos recebidos quando ninguém
@@ -89,17 +102,19 @@ PASTAS_PERMITIDAS_BUSCA = [
 LIMITE_RESULTADOS_BUSCA = 15
 
 # Intervalo entre frames da visualização remota. Maior que o da
-# visualização local (1.5s) para respeitar o rate limit do Telegram
-# (~1 mensagem/segundo) e a latência extra de upload/download.
+# visualização local (1.5s) pela latência extra de rede
+# (upload/download pelo broker MQTT).
 INTERVALO_VISUALIZACAO_REMOTA = 2.5
 
 # Timeout automático de segurança da visualização remota, em segundos
 # — mesmo valor usado pela visualização contínua local.
 TIMEOUT_VISUALIZACAO_REMOTA = 90
 
-# Tamanho máximo, em MB, para enviar um arquivo diretamente pelo
-# Telegram antes de usar o Google Drive como alternativa.
-LIMITE_TELEGRAM_MB = 50
+# Tamanho máximo, em MB, para enviar um arquivo diretamente pelo MQTT
+# antes de usar o Google Drive como alternativa. O limite real do
+# broker é 5MB; fica um pouco abaixo por segurança (overhead do
+# protocolo/propriedades MQTT5 usadas para carregar os metadados).
+LIMITE_MQTT_MB = 4.5
 
 # Timeout, em segundos, para responder ao diálogo de "onde salvar" um
 # arquivo recebido antes de usar PASTA_TRANSFERENCIAS_PADRAO.
@@ -116,7 +131,7 @@ TIMEOUT_RESPOSTA_COMANDO = 15
 
 # Timeout, em segundos, para a máquina destino responder qual é o
 # client_email da sua Service Account do Google Drive (usado só
-# quando um arquivo maior que LIMITE_TELEGRAM_MB precisa ser
+# quando um arquivo maior que LIMITE_MQTT_MB precisa ser
 # compartilhado via Drive).
 TIMEOUT_CONSULTA_SERVICE_ACCOUNT = 15
 

@@ -10,3 +10,4 @@ requests
 psutil
 win11toast
 google-api-python-client
+paho-mqtt
