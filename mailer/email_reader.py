@@ -7,6 +7,9 @@ import email
 # decode_header decodifica cabeçalhos que vêm codificados
 # (comum em assuntos e remetentes com acentos).
 from email.header import decode_header
+# re é usado para extrair o nome da pasta de spam a partir
+# da resposta do comando LIST do IMAP.
+import re
 
 import os
 
@@ -66,18 +69,72 @@ def _decodificar_cabecalho(valor):
     return texto
 
 
-# Lista os emails mais recentes da caixa de entrada, mostrando
-# remetente, assunto e data de cada um.
+# Nome de pasta usado como retorno de segurança quando a busca
+# dinâmica pela pasta de spam falhar. É o nome padrão do Gmail,
+# mas pode não existir em contas com outro idioma.
+PASTA_SPAM_PADRAO = "[Gmail]/Spam"
+
+
+# Descobre o nome real da pasta de spam via o comando LIST do
+# IMAP, procurando a pasta marcada com a flag especial \Junk.
+# Isso evita depender de um nome fixo, que muda conforme o
+# idioma da conta (ex: "[Gmail]/Spam" ou "[Gmail]/Lixo Eletrônico").
+def _resolver_pasta_spam(servidor):
+    status, pastas = servidor.list()
+
+    if status == "OK":
+        for linha in pastas:
+            if not linha:
+                continue
+
+            texto = linha.decode(
+                errors="replace",
+            )
+
+            if "\\Junk" in texto:
+                encontrado = re.search(
+                    r'"([^"]*)"\s*$',
+                    texto,
+                )
+
+                if encontrado:
+                    return encontrado.group(1)
+
+    return PASTA_SPAM_PADRAO
+
+
+# Traduz o valor recebido em "pasta" (INBOX ou SPAM) para o
+# nome de pasta real usado pelo comando SELECT do IMAP.
+def _resolver_nome_pasta(
+    servidor,
+    pasta,
+):
+    if isinstance(pasta, str) and pasta.strip().upper() == "SPAM":
+        return _resolver_pasta_spam(
+            servidor
+        )
+
+    return "INBOX"
+
+
+# Lista os emails mais recentes de uma pasta da caixa postal
+# (caixa de entrada ou spam), mostrando remetente, assunto e
+# data de cada um.
 # Retorna sempre uma mensagem em português, pronta para ser
 # falada ou exibida por quem chamar.
 def ler_emails(
     quantidade=5,
     apenas_nao_lidos=False,
+    pasta="INBOX",
 ):
     """
-    Lê a caixa de entrada (INBOX) via IMAP usando as credenciais
+    Lê uma pasta da caixa postal via IMAP usando as credenciais
     configuradas no .env (EMAIL_REMETENTE, EMAIL_SENHA_APP,
     EMAIL_IMAP_HOST, EMAIL_IMAP_PORT).
+
+    O parâmetro "pasta" aceita "INBOX" (padrão, caixa de entrada)
+    ou "SPAM" (pasta de spam/lixo eletrônico, localizada
+    automaticamente pela flag \\Junk do servidor IMAP).
 
     Abre a conexão em modo somente leitura e busca os cabeçalhos
     com BODY.PEEK, para nunca marcar mensagens como lidas apenas
@@ -104,6 +161,14 @@ def ler_emails(
         LIMITE_MAXIMO_EMAILS,
     )
 
+    # Descrição da pasta em português, usada nas mensagens de
+    # retorno faladas para o usuário.
+    pasta_amigavel = (
+        "pasta de spam"
+        if isinstance(pasta, str) and pasta.strip().upper() == "SPAM"
+        else "caixa de entrada"
+    )
+
     try:
         with imaplib.IMAP4_SSL(
             EMAIL_IMAP_HOST,
@@ -114,12 +179,22 @@ def ler_emails(
                 EMAIL_SENHA_APP,
             )
 
+            nome_pasta = _resolver_nome_pasta(
+                servidor,
+                pasta,
+            )
+
             # readonly=True garante que nenhuma mensagem seja
             # alterada só por estarmos consultando a caixa.
-            servidor.select(
-                "INBOX",
+            status_select, _ = servidor.select(
+                nome_pasta,
                 readonly=True,
             )
+
+            if status_select != "OK":
+                return (
+                    f"Não foi possível acessar a {pasta_amigavel}."
+                )
 
             criterio = (
                 "UNSEEN" if apenas_nao_lidos else "ALL"
@@ -132,16 +207,16 @@ def ler_emails(
 
             if status != "OK":
                 return (
-                    "Não foi possível consultar a caixa de entrada."
+                    f"Não foi possível consultar a {pasta_amigavel}."
                 )
 
             ids = dados[0].split()
 
             if not ids:
                 return (
-                    "Nenhum email não lido encontrado."
+                    f"Nenhum email não lido encontrado na {pasta_amigavel}."
                     if apenas_nao_lidos
-                    else "A caixa de entrada está vazia."
+                    else f"A {pasta_amigavel} está vazia."
                 )
 
             # IMAP retorna os IDs em ordem crescente (mais antigos
@@ -199,7 +274,7 @@ def ler_emails(
 
     except imaplib.IMAP4.error as erro:
         return (
-            f"Falha ao acessar a caixa de entrada: {erro}"
+            f"Falha ao acessar a {pasta_amigavel}: {erro}"
         )
 
     except OSError as erro:
@@ -213,6 +288,6 @@ def ler_emails(
         )
 
     return (
-        "Últimos emails na caixa de entrada:\n"
+        f"Últimos emails na {pasta_amigavel}:\n"
         + "\n".join(linhas)
     )

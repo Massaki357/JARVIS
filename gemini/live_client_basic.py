@@ -279,11 +279,12 @@ class GeminiLiveWorker(QThread):
                         description=(
                             "Use esta função somente quando o usuário pedir "
                             "explicitamente para ler, checar, verificar ou "
-                            "mostrar os emails da caixa de entrada. Lista os "
-                            "emails mais recentes com remetente, assunto e "
-                            "data, sem abrir o conteúdo completo de nenhum "
-                            "deles. Não use espontaneamente e não repita "
-                            "para o mesmo pedido."
+                            "mostrar os emails da caixa de entrada ou do "
+                            "spam. Lista os emails mais recentes com "
+                            "remetente, assunto e data, sem abrir o "
+                            "conteúdo completo de nenhum deles. Não use "
+                            "espontaneamente e não repita para o mesmo "
+                            "pedido."
                         ),
                         parameters=types.Schema(
                             type="OBJECT",
@@ -302,6 +303,21 @@ class GeminiLiveWorker(QThread):
                                         "Verdadeiro somente se o usuário "
                                         "pedir especificamente pelos emails "
                                         "não lidos. Caso contrário, falso."
+                                    ),
+                                ),
+                                "pasta": types.Schema(
+                                    type="STRING",
+                                    enum=[
+                                        "INBOX",
+                                        "SPAM",
+                                    ],
+                                    description=(
+                                        "Use INBOX para a caixa de entrada "
+                                        "normal. Use SPAM somente quando o "
+                                        "usuário pedir explicitamente para "
+                                        "ver o spam, lixo eletrônico ou "
+                                        "emails indesejados. Use INBOX se "
+                                        "o usuário não especificar."
                                     ),
                                 ),
                             },
@@ -488,6 +504,8 @@ class GeminiLiveWorker(QThread):
             "para ler, checar, verificar ou mostrar os emails. "
             "Use 5 como quantidade padrão se o usuário não especificar "
             "um número. "
+            "Use pasta INBOX por padrão. Só use pasta SPAM quando o "
+            "usuário pedir explicitamente pelo spam ou lixo eletrônico. "
             "Nunca leia emails espontaneamente. "
 
             # ENCERRAMENTO
@@ -814,8 +832,15 @@ class GeminiLiveWorker(QThread):
                     False,
                 )
 
+                pasta = args.get(
+                    "pasta",
+                    "INBOX",
+                )
+
                 self.status_recebido.emit(
-                    "Consultando caixa de entrada..."
+                    "Consultando spam..."
+                    if pasta == "SPAM"
+                    else "Consultando caixa de entrada..."
                 )
 
                 # imaplib é bloqueante, por isso roda em uma
@@ -824,6 +849,7 @@ class GeminiLiveWorker(QThread):
                     ler_emails,
                     quantidade,
                     apenas_nao_lidos,
+                    pasta,
                 )
 
             elif nome == "salvar_memoria":
