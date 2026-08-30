@@ -39,6 +39,11 @@ from vision.camera_capture import capturar_camera_bytes
 # Classe responsável pelo loop de captura contínua da tela.
 from vision.monitor_continuo import MonitorTelaContinuo
 
+# Função responsável por enviar emails via SMTP.
+from mailer.email_sender import enviar_email
+# Função responsável por ler emails da caixa de entrada via IMAP.
+from mailer.email_reader import ler_emails
+
 # Importa as funções da memória persistente do ALFRED.
 from memory.memory_manager import (
     salvar_memoria,
@@ -221,6 +226,89 @@ class GeminiLiveWorker(QThread):
                     ),
 
                     types.FunctionDeclaration(
+                        name="enviar_email",
+                        description=(
+                            "Use esta função somente quando o usuário pedir "
+                            "explicitamente para enviar, mandar ou disparar "
+                            "um email. Só chame depois que o usuário tiver "
+                            "informado claramente o destinatário, o assunto "
+                            "e o conteúdo da mensagem. Nunca invente, "
+                            "complete ou adivinhe o endereço de email, o "
+                            "assunto ou o conteúdo. Se alguma dessas "
+                            "informações estiver faltando, peça ao usuário "
+                            "antes de chamar a função. Não use "
+                            "espontaneamente e não envie o mesmo email mais "
+                            "de uma vez para o mesmo pedido."
+                        ),
+                        parameters=types.Schema(
+                            type="OBJECT",
+                            properties={
+                                "destinatario": types.Schema(
+                                    type="STRING",
+                                    description=(
+                                        "Endereço de email do destinatário, "
+                                        "informado explicitamente pelo "
+                                        "usuário."
+                                    ),
+                                ),
+                                "assunto": types.Schema(
+                                    type="STRING",
+                                    description=(
+                                        "Assunto do email, informado ou "
+                                        "confirmado pelo usuário."
+                                    ),
+                                ),
+                                "corpo": types.Schema(
+                                    type="STRING",
+                                    description=(
+                                        "Conteúdo do email, informado ou "
+                                        "confirmado pelo usuário."
+                                    ),
+                                ),
+                            },
+                            required=[
+                                "destinatario",
+                                "assunto",
+                                "corpo",
+                            ],
+                        ),
+                    ),
+
+                    types.FunctionDeclaration(
+                        name="ler_emails",
+                        description=(
+                            "Use esta função somente quando o usuário pedir "
+                            "explicitamente para ler, checar, verificar ou "
+                            "mostrar os emails da caixa de entrada. Lista os "
+                            "emails mais recentes com remetente, assunto e "
+                            "data, sem abrir o conteúdo completo de nenhum "
+                            "deles. Não use espontaneamente e não repita "
+                            "para o mesmo pedido."
+                        ),
+                        parameters=types.Schema(
+                            type="OBJECT",
+                            properties={
+                                "quantidade": types.Schema(
+                                    type="INTEGER",
+                                    description=(
+                                        "Quantidade de emails mais recentes "
+                                        "a listar. Use 5 se o usuário não "
+                                        "especificar um número."
+                                    ),
+                                ),
+                                "apenas_nao_lidos": types.Schema(
+                                    type="BOOLEAN",
+                                    description=(
+                                        "Verdadeiro somente se o usuário "
+                                        "pedir especificamente pelos emails "
+                                        "não lidos. Caso contrário, falso."
+                                    ),
+                                ),
+                            },
+                        ),
+                    ),
+
+                    types.FunctionDeclaration(
                         name="salvar_memoria",
                         description=(
                             "Salva uma informação curta e útil na memória "
@@ -384,6 +472,23 @@ class GeminiLiveWorker(QThread):
             "claramente que terminou de mostrar, como em 'pronto, acabei de "
             "mostrar como fazer' ou 'pode parar de ver minha tela'. "
             "Nunca inicie a visualização contínua espontaneamente. "
+
+            # EMAIL
+            "Só chame enviar_email quando o usuário pedir explicitamente "
+            "para enviar, mandar ou disparar um email. "
+            "Só chame a função depois que o usuário tiver informado "
+            "claramente o destinatário, o assunto e o conteúdo. "
+            "Nunca invente, complete ou adivinhe o endereço de email, "
+            "o assunto ou o conteúdo da mensagem. "
+            "Se alguma dessas informações estiver faltando, peça ao "
+            "usuário antes de chamar a função. "
+            "Nunca envie email espontaneamente. "
+            "Não envie o mesmo email mais de uma vez para o mesmo pedido. "
+            "Só chame ler_emails quando o usuário pedir explicitamente "
+            "para ler, checar, verificar ou mostrar os emails. "
+            "Use 5 como quantidade padrão se o usuário não especificar "
+            "um número. "
+            "Nunca leia emails espontaneamente. "
 
             # ENCERRAMENTO
             "Quando o usuário pedir claramente para encerrar, finalizar, "
@@ -668,6 +773,58 @@ class GeminiLiveWorker(QThread):
 
             elif nome == "parar_visualizacao_continua":
                 resultado = await self.parar_visualizacao_continua()
+
+            elif nome == "enviar_email":
+                destinatario = args.get(
+                    "destinatario",
+                    "",
+                )
+
+                assunto = args.get(
+                    "assunto",
+                    "",
+                )
+
+                corpo = args.get(
+                    "corpo",
+                    "",
+                )
+
+                self.status_recebido.emit(
+                    "Enviando email..."
+                )
+
+                # smtplib é bloqueante, por isso roda em uma
+                # thread separada para não travar o loop assíncrono.
+                resultado = await asyncio.to_thread(
+                    enviar_email,
+                    destinatario,
+                    assunto,
+                    corpo,
+                )
+
+            elif nome == "ler_emails":
+                quantidade = args.get(
+                    "quantidade",
+                    5,
+                )
+
+                apenas_nao_lidos = args.get(
+                    "apenas_nao_lidos",
+                    False,
+                )
+
+                self.status_recebido.emit(
+                    "Consultando caixa de entrada..."
+                )
+
+                # imaplib é bloqueante, por isso roda em uma
+                # thread separada para não travar o loop assíncrono.
+                resultado = await asyncio.to_thread(
+                    ler_emails,
+                    quantidade,
+                    apenas_nao_lidos,
+                )
 
             elif nome == "salvar_memoria":
                 texto = args.get(
