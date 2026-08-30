@@ -44,6 +44,11 @@ from mailer.email_sender import enviar_email
 # Função responsável por ler emails da caixa de entrada via IMAP.
 from mailer.email_reader import ler_emails
 
+# Pacote isolado com toda a lógica de comunicação e comando remoto
+# entre instâncias do jarvis via Telegram (ver rede_jarvis/__init__.py
+# para o ponto de entrada e a lista de funções expostas).
+import rede_jarvis
+
 # Importa as funções da memória persistente do ALFRED.
 from memory.memory_manager import (
     salvar_memoria,
@@ -131,6 +136,72 @@ class GeminiLiveWorker(QThread):
         # enquanto estiver ativo. É None quando não há captura
         # contínua em andamento.
         self.monitor_tela_continuo = None
+
+        # Sobe (ou apenas reconecta os callbacks de, se já estiver de
+        # pé) o listener de comandos remotos via Telegram. Roda aqui —
+        # no construtor, chamado pela thread da UI antes de .start() —
+        # para que fique de pé mesmo fora de uma chamada de voz ativa,
+        # e para que o pacote crie seus componentes Qt na thread certa.
+        rede_jarvis.iniciar_rede_jarvis(
+            callback_falar=self._falar_rede_jarvis,
+            callback_frame_remoto=self._receber_frame_remoto,
+        )
+
+    # Callback usado pelo pacote rede_jarvis para o ALFRED anunciar
+    # algo por voz (ex: um pedido de permissão remota), mesmo que o
+    # pedido tenha chegado fora de uma sessão Live ativa nesta
+    # instância específica — nesse caso self.sessao é None e o método
+    # simplesmente não faz nada, deixando a notificação do Windows
+    # como único canal de confirmação.
+    def _falar_rede_jarvis(self, texto):
+        if not self.loop or not self.sessao:
+            return
+
+        asyncio.run_coroutine_threadsafe(
+            self._enviar_anuncio_rede_jarvis(texto),
+            self.loop,
+        )
+
+    async def _enviar_anuncio_rede_jarvis(self, texto):
+        await self.sessao.send_client_content(
+            turns=[
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part(
+                            text=(
+                                "[SISTEMA - REDE JARVIS] Diga isso em voz "
+                                "alta agora, com suas próprias palavras, "
+                                f"de forma natural e breve: {texto}"
+                            )
+                        )
+                    ],
+                )
+            ],
+            turn_complete=True,
+        )
+
+    # Callback usado pelo pacote rede_jarvis para injetar, na sessão
+    # Live local, cada frame recebido de uma visualização remota
+    # (iniciada por esta máquina em outra). Reaproveita exatamente o
+    # mesmo mecanismo de streaming usado pela visualização contínua
+    # local (send_realtime_input).
+    def _receber_frame_remoto(self, frame_bytes, origem):
+        if not self.loop or not self.sessao:
+            return
+
+        asyncio.run_coroutine_threadsafe(
+            self._injetar_frame_remoto(frame_bytes),
+            self.loop,
+        )
+
+    async def _injetar_frame_remoto(self, frame_bytes):
+        await self.sessao.send_realtime_input(
+            video=types.Blob(
+                data=frame_bytes,
+                mime_type="image/jpeg",
+            )
+        )
 
     # Método chamado automaticamente quando a thread é iniciada.
     def run(self):
@@ -325,6 +396,114 @@ class GeminiLiveWorker(QThread):
                     ),
 
                     types.FunctionDeclaration(
+                        name="enviar_comando_remoto",
+                        description=(
+                            "Use esta função somente quando o usuário "
+                            "pedir explicitamente para executar uma ação "
+                            "em outro computador do ALFRED (ex: 'peça "
+                            "para o computador da loja...', 'no "
+                            "computador de casa...'), ou para enviar um "
+                            "arquivo local desta máquina para outra. "
+                            "Nunca use espontaneamente. Se o nome da "
+                            "máquina ou a ação não estiverem claros, "
+                            "pergunte ao usuário antes de chamar."
+                        ),
+                        parameters=types.Schema(
+                            type="OBJECT",
+                            properties={
+                                "maquina_destino": types.Schema(
+                                    type="STRING",
+                                    description=(
+                                        "Nome da máquina remota, conforme "
+                                        "o usuário se referiu a ela (ex: "
+                                        "'casa', 'loja')."
+                                    ),
+                                ),
+                                "comando": types.Schema(
+                                    type="STRING",
+                                    enum=[
+                                        "capturar_tela",
+                                        "listar_processos",
+                                        "abrir_app",
+                                        "buscar_arquivo",
+                                        "enviar_arquivo",
+                                        "iniciar_visualizacao_remota",
+                                        "parar_visualizacao_remota",
+                                    ],
+                                    description=(
+                                        "capturar_tela: tira uma foto da "
+                                        "tela remota. listar_processos: "
+                                        "lista os programas abertos na "
+                                        "máquina remota. abrir_app: abre "
+                                        "um aplicativo na máquina remota "
+                                        "(argumentos.nome_app). "
+                                        "buscar_arquivo: procura um "
+                                        "arquivo na máquina remota "
+                                        "(argumentos.termo). "
+                                        "enviar_arquivo: envia um arquivo "
+                                        "local desta máquina para a "
+                                        "máquina destino "
+                                        "(argumentos.caminho). "
+                                        "iniciar_visualizacao_remota: "
+                                        "começa a receber frames "
+                                        "contínuos da tela remota, "
+                                        "comentando por voz o que "
+                                        "aparece. "
+                                        "parar_visualizacao_remota: "
+                                        "encerra a visualização remota "
+                                        "em andamento."
+                                    ),
+                                ),
+                                "argumentos": types.Schema(
+                                    type="OBJECT",
+                                    description=(
+                                        "Argumentos do comando. Use "
+                                        '{"nome_app": "..."} para '
+                                        "abrir_app, "
+                                        '{"termo": "..."} para '
+                                        "buscar_arquivo, "
+                                        '{"caminho": "..."} para '
+                                        "enviar_arquivo. Deixe vazio "
+                                        "para os demais comandos."
+                                    ),
+                                ),
+                            },
+                            required=[
+                                "maquina_destino",
+                                "comando",
+                            ],
+                        ),
+                    ),
+
+                    types.FunctionDeclaration(
+                        name="responder_permissao_remota",
+                        description=(
+                            "Use esta função somente quando o ALFRED "
+                            "tiver acabado de anunciar por voz um pedido "
+                            "de permissão remota (comando vindo de outra "
+                            "máquina aguardando confirmação) e o usuário "
+                            "responder claramente permitindo ou negando. "
+                            "Não use espontaneamente e não use para "
+                            "nenhum outro tipo de confirmação."
+                        ),
+                        parameters=types.Schema(
+                            type="OBJECT",
+                            properties={
+                                "concedido": types.Schema(
+                                    type="BOOLEAN",
+                                    description=(
+                                        "Verdadeiro se o usuário permitiu "
+                                        "o comando remoto, falso se negou."
+                                    ),
+                                ),
+                            },
+                            required=[
+                                "concedido"
+                            ],
+                        ),
+                    ),
+
+                    types.FunctionDeclaration(
                         name="salvar_memoria",
                         description=(
                             "Salva uma informação curta e útil na memória "
@@ -507,6 +686,19 @@ class GeminiLiveWorker(QThread):
             "Use pasta INBOX por padrão. Só use pasta SPAM quando o "
             "usuário pedir explicitamente pelo spam ou lixo eletrônico. "
             "Nunca leia emails espontaneamente. "
+
+            # REDE JARVIS (comandos remotos entre máquinas)
+            "Só chame enviar_comando_remoto quando o usuário pedir "
+            "explicitamente uma ação em outra máquina do ALFRED (ex: "
+            "'peça pro computador da loja...') ou para enviar um "
+            "arquivo local para outra máquina. Nunca use "
+            "espontaneamente. Se o nome da máquina não for claro, "
+            "pergunte antes de chamar. "
+            "Se, sem o usuário ter pedido nada agora, você anunciar um "
+            "pedido de permissão remota vindo de outra máquina e o "
+            "usuário responder claramente permitindo ou negando, chame "
+            "responder_permissao_remota. Não confunda essa resposta "
+            "com um novo pedido do usuário. "
 
             # ENCERRAMENTO
             "Quando o usuário pedir claramente para encerrar, finalizar, "
@@ -850,6 +1042,46 @@ class GeminiLiveWorker(QThread):
                     quantidade,
                     apenas_nao_lidos,
                     pasta,
+                )
+
+            elif nome == "enviar_comando_remoto":
+                maquina_destino = args.get(
+                    "maquina_destino",
+                    "",
+                )
+
+                comando_remoto = args.get(
+                    "comando",
+                    "",
+                )
+
+                argumentos_remotos = args.get(
+                    "argumentos",
+                    {},
+                ) or {}
+
+                self.status_recebido.emit(
+                    f"Enviando comando remoto para {maquina_destino}..."
+                )
+
+                # A comunicação com o Telegram é bloqueante, por isso
+                # roda em uma thread separada. Nenhuma lógica de
+                # negócio mora aqui — só chama o pacote rede_jarvis.
+                resultado = await asyncio.to_thread(
+                    rede_jarvis.enviar_comando_remoto,
+                    maquina_destino,
+                    comando_remoto,
+                    argumentos_remotos,
+                )
+
+            elif nome == "responder_permissao_remota":
+                concedido = args.get(
+                    "concedido",
+                    False,
+                )
+
+                resultado = rede_jarvis.responder_permissao_por_voz(
+                    bool(concedido)
                 )
 
             elif nome == "salvar_memoria":
