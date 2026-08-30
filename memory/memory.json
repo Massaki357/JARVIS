@@ -5,6 +5,11 @@
       "id": "1",
       "texto": "O nome do usuário é Massaki.",
       "criada_em": "2026-08-28T00:59:12"
+    },
+    {
+      "id": "2",
+      "texto": "O usuário gosta de assuntos relacionados a tecnologia.",
+      "criada_em": "2026-08-29T22:54:11"
     }
   ]
 }

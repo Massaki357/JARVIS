@@ -41,7 +41,7 @@ def capturar_camera_bytes():
     # Dá um pequeno tempo para a câmera estabilizar
     # [CURSO] Muitas webcams precisam de alguns instantes
     # [CURSO] para ajustar foco, brilho e exposição.
-    time.sleep(0.5)
+    time.sleep(0.8)
 
     # [CURSO] Variável que armazenará o último frame válido.
     frame = None
