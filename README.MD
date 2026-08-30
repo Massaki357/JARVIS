@@ -1,4 +1,16 @@
-Crie um arquivo .env e coloque sua API key do gemini em GEMINI_API_KEY=
+Crie um arquivo .env e coloque as seguintes API KEYs:
+
+```
+GEMINI_API_KEY=
+
+OPENAI_API_KEY=
+
+MISTRAL_API_KEY=
+
+GROQ_API_KEY=
+
+CEREBRAS_API_KEY=
+```
 
 -------------------------------------------------
 

@@ -36,6 +36,8 @@ from core.config import (
 from vision.screen_capture import capturar_tela_bytes
 # Função responsável por capturar a webcam e retornar a imagem em bytes.
 from vision.camera_capture import capturar_camera_bytes
+# Classe responsável pelo loop de captura contínua da tela.
+from vision.monitor_continuo import MonitorTelaContinuo
 
 # Importa as funções da memória persistente do ALFRED.
 from memory.memory_manager import (
@@ -67,6 +69,14 @@ LIMITE_FILA_MICROFONE = 50
 # Intervalo mínimo, em segundos, entre chamadas visuais repetidas.
 # Isso evita capturas duplicadas para o mesmo pedido.
 COOLDOWN_FUNCAO_VISUAL = 8.0
+
+# Intervalo entre capturas de frame durante a visualização
+# contínua da tela.
+INTERVALO_VISUALIZACAO_CONTINUA = 1.5
+
+# Tempo máximo, em segundos, que a visualização contínua pode
+# ficar ativa antes de se encerrar sozinha por segurança.
+TIMEOUT_VISUALIZACAO_CONTINUA = 90
 
 
 # Classe principal responsável pela sessão em tempo real com o Gemini.
@@ -111,6 +121,11 @@ class GeminiLiveWorker(QThread):
         self.executando_funcao_visual = False
         self.ultima_funcao_visual = None
         self.tempo_ultima_funcao_visual = 0.0
+
+        # Guarda o monitor de visualização contínua da tela
+        # enquanto estiver ativo. É None quando não há captura
+        # contínua em andamento.
+        self.monitor_tela_continuo = None
 
     # Método chamado automaticamente quando a thread é iniciada.
     def run(self):
@@ -173,6 +188,35 @@ class GeminiLiveWorker(QThread):
                             "explicitamente para analisar, ver, observar ou "
                             "explicar a webcam ou câmera. Não use "
                             "espontaneamente e não repita para o mesmo pedido."
+                        ),
+                    ),
+
+                    types.FunctionDeclaration(
+                        name="iniciar_visualizacao_continua",
+                        description=(
+                            "Use esta função somente quando o usuário pedir "
+                            "explicitamente para você acompanhar, ver "
+                            "continuamente ou observar o que ele está fazendo "
+                            "na tela, como em 'veja o que eu preciso que você "
+                            "faça' ou 'acompanhe minha tela'. Inicia uma "
+                            "captura contínua de frames da tela até que o "
+                            "usuário indique que terminou. Não use "
+                            "espontaneamente e não use no lugar de "
+                            "analisar_tela quando o pedido for de uma "
+                            "análise única."
+                        ),
+                    ),
+
+                    types.FunctionDeclaration(
+                        name="parar_visualizacao_continua",
+                        description=(
+                            "Use esta função somente quando o usuário pedir "
+                            "explicitamente para parar, encerrar ou finalizar "
+                            "a visualização contínua da tela, como em "
+                            "'pronto, acabei de mostrar como fazer' ou 'pode "
+                            "parar de ver minha tela'. Encerra a captura "
+                            "contínua iniciada por iniciar_visualizacao_continua. "
+                            "Não use espontaneamente."
                         ),
                     ),
 
@@ -330,6 +374,16 @@ class GeminiLiveWorker(QThread):
             "ou algo mostrado nela. "
             "Nunca use função visual espontaneamente. "
             "Para cada pedido visual, execute no máximo uma captura. "
+            "Só chame iniciar_visualizacao_continua quando o usuário pedir "
+            "explicitamente para você acompanhar, ver continuamente ou "
+            "observar o que ele está fazendo na tela, como em 'veja o que "
+            "eu preciso que você faça' ou 'acompanhe minha tela'. "
+            "Enquanto a visualização contínua estiver ativa, continue "
+            "ouvindo e conversando normalmente, sem chamar a função de novo. "
+            "Só chame parar_visualizacao_continua quando o usuário indicar "
+            "claramente que terminou de mostrar, como em 'pronto, acabei de "
+            "mostrar como fazer' ou 'pode parar de ver minha tela'. "
+            "Nunca inicie a visualização contínua espontaneamente. "
 
             # ENCERRAMENTO
             "Quando o usuário pedir claramente para encerrar, finalizar, "
@@ -436,6 +490,15 @@ class GeminiLiveWorker(QThread):
 
             if self.tarefa_encerramento:
                 self.tarefa_encerramento.cancel()
+
+            # Interrompe a visualização contínua da tela,
+            # caso ainda esteja ativa quando a chamada terminar.
+            if (
+                self.monitor_tela_continuo
+                and self.monitor_tela_continuo.esta_ativo
+            ):
+                await self.monitor_tela_continuo.parar()
+                self.monitor_tela_continuo = None
 
             await asyncio.gather(
                 *tarefas,
@@ -599,6 +662,12 @@ class GeminiLiveWorker(QThread):
                 resultado = await self.processar_funcao_visual(
                     nome
                 )
+
+            elif nome == "iniciar_visualizacao_continua":
+                resultado = await self.iniciar_visualizacao_continua()
+
+            elif nome == "parar_visualizacao_continua":
+                resultado = await self.parar_visualizacao_continua()
 
             elif nome == "salvar_memoria":
                 texto = args.get(
@@ -770,6 +839,102 @@ class GeminiLiveWorker(QThread):
         # Este bloco sempre é executado, mesmo se ocorrer erro.
         finally:
             self.executando_funcao_visual = False
+
+    # Envia um frame capturado da tela para o Gemini durante a
+    # visualização contínua, pelo mesmo canal de streaming em
+    # tempo real usado pelo áudio (send_realtime_input).
+    async def _enviar_frame_visualizacao_continua(
+        self,
+        frame_bytes,
+    ):
+        if not self.sessao:
+            return
+
+        await self.sessao.send_realtime_input(
+            video=types.Blob(
+                data=frame_bytes,
+                mime_type="image/jpeg",
+            )
+        )
+
+    # Chamado pelo próprio MonitorTelaContinuo quando ele se
+    # encerra sozinho por ter atingido o tempo máximo permitido,
+    # sem que o usuário tenha pedido para parar.
+    async def _visualizacao_continua_encerrada_por_timeout(
+        self,
+    ):
+        self.monitor_tela_continuo = None
+
+        self.status_recebido.emit(
+            "Visualização contínua encerrada automaticamente "
+            "por tempo limite."
+        )
+
+    # Inicia a captura contínua de frames da tela, enviando cada
+    # frame ao Gemini em tempo real até ser interrompida.
+    async def iniciar_visualizacao_continua(
+        self,
+    ):
+        # Evita iniciar uma segunda captura contínua
+        # enquanto outra já estiver em andamento.
+        if (
+            self.monitor_tela_continuo
+            and self.monitor_tela_continuo.esta_ativo
+        ):
+            return (
+                "A visualização contínua já está em andamento. "
+                "Continue acompanhando o que o usuário está "
+                "mostrando, sem chamar a função novamente."
+            )
+
+        self.status_recebido.emit(
+            "Visualização contínua da tela iniciada."
+        )
+
+        self.monitor_tela_continuo = MonitorTelaContinuo(
+            callback_frame=(
+                self._enviar_frame_visualizacao_continua
+            ),
+            intervalo_segundos=(
+                INTERVALO_VISUALIZACAO_CONTINUA
+            ),
+            timeout_segundos=(
+                TIMEOUT_VISUALIZACAO_CONTINUA
+            ),
+            callback_encerrado=(
+                self._visualizacao_continua_encerrada_por_timeout
+            ),
+        )
+
+        await self.monitor_tela_continuo.iniciar()
+
+        return (
+            "Visualização contínua da tela iniciada. Continue "
+            "ouvindo o usuário normalmente enquanto ele mostra "
+            "o que precisa, sem chamar esta função novamente."
+        )
+
+    # Interrompe a captura contínua de frames da tela,
+    # caso esteja em andamento.
+    async def parar_visualizacao_continua(
+        self,
+    ):
+        if (
+            not self.monitor_tela_continuo
+            or not self.monitor_tela_continuo.esta_ativo
+        ):
+            return (
+                "Nenhuma visualização contínua estava em andamento."
+            )
+
+        self.status_recebido.emit(
+            "Visualização contínua da tela encerrada."
+        )
+
+        await self.monitor_tela_continuo.parar()
+        self.monitor_tela_continuo = None
+
+        return "Visualização contínua da tela encerrada."
 
     # Reproduz os blocos de áudio enviados pelo Gemini
     # e atualiza o nível visual da interface.
