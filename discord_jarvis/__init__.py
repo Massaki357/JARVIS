@@ -212,7 +212,17 @@ def enviar_dm_discord(nome_amigo, texto, caminho_anexo=None):
 # canal como padrão automaticamente se existir EXATAMENTE um canal
 # já conhecido no cache — com zero ou mais de um, pede pro usuário
 # especificar em vez de adivinhar.
-def enviar_mensagem_discord(canal_falado, texto):
+#
+# caminho_anexo é opcional e não vem da tool de voz padrão
+# (enviar_mensagem_discord não expõe esse parâmetro pro Gemini) —
+# existe só pra outra tool nativa do cliente (enviar_captura_discord_canal
+# em gemini/live_client_basic.py) chamar esta MESMA função direto,
+# reaproveitando toda a resolução de canal já implementada aqui, em
+# vez de duplicar essa lógica pra mandar um arquivo — mesmo padrão já
+# usado por enviar_dm_discord/caminho_anexo acima. A camada mais baixa
+# (cliente.enviar_mensagem_canal) já suportava anexo desde o início;
+# só faltava esse parâmetro passar por aqui.
+def enviar_mensagem_discord(canal_falado, texto, caminho_anexo=None):
     canal_falado = (canal_falado or "").strip()
     texto = (texto or "").strip()
 
@@ -228,6 +238,7 @@ def enviar_mensagem_discord(canal_falado, texto):
             sucesso, mensagem = cliente.enviar_mensagem_canal(
                 canal_unico["id"],
                 texto,
+                caminho_anexo,
             )
 
             return mensagem
@@ -256,6 +267,7 @@ def enviar_mensagem_discord(canal_falado, texto):
         sucesso, mensagem = cliente.enviar_mensagem_canal(
             canal_do_cache["id"],
             texto,
+            caminho_anexo,
         )
 
         if sucesso:
@@ -285,6 +297,7 @@ def enviar_mensagem_discord(canal_falado, texto):
     sucesso, mensagem = cliente.enviar_mensagem_canal(
         candidato["id"],
         texto,
+        caminho_anexo,
     )
 
     if sucesso:

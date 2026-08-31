@@ -40,27 +40,70 @@ def main():
         _escrever_resultado({"sucesso": False, "erro": "Pedido sem comando."})
         return
 
+    processo = None
+
     try:
         # /d desativa comandos AutoRun do registro do cmd.exe — evita
         # que algo configurado ali rode de surpresa junto do comando
         # pedido, mesmo estando num processo já elevado.
-        processo = subprocess.run(
+        #
+        # stdin=DEVNULL: BUG REAL corrigido aqui, confirmado ao vivo —
+        # sem isso, um comando que tenta ler de stdin (ex: 'winget
+        # upgrade' pedindo pra aceitar um termo de licença/fonte na
+        # primeira execução) fica esperando uma entrada que nunca
+        # chega. Essa espera é síncrona e bloqueante dentro do
+        # processo elevado, que por sua vez trava executor.py (que
+        # está esperando o resultado numa thread do worker do
+        # jarvis) — travando o app inteiro, sem timeout nenhum
+        # conseguir resolver isso sozinho (ver o tratamento de
+        # TimeoutExpired abaixo, que também precisou de correção pelo
+        # mesmo motivo). Com DEVNULL, esse tipo de comando recebe EOF
+        # na hora e falha rápido em vez de travar pra sempre. Foi
+        # exatamente isso que aconteceu com 'winget upgrade --all':
+        # travou o app inteiro, sem responder, sem conseguir encerrar
+        # a chamada nem fechar o app — só resolvia pelo Gerenciador de
+        # Tarefas.
+        #
+        # creationflags=CREATE_NO_WINDOW: evita a janela de console
+        # preta e visível na área de trabalho — o processo elevado em
+        # si (python.exe rodando este script, via Tarefa Agendada) já
+        # aloca console próprio; sem essa flag, o cmd.exe filho abria
+        # mais uma janela por cima.
+        processo = subprocess.Popen(
             ["cmd.exe", "/d", "/c", comando],
-            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout_segundos,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+
+        stdout, stderr = processo.communicate(
+            timeout=timeout_segundos
         )
 
         _escrever_resultado(
             {
                 "sucesso": processo.returncode == 0,
                 "codigo_saida": processo.returncode,
-                "stdout": processo.stdout,
-                "stderr": processo.stderr,
+                "stdout": stdout,
+                "stderr": stderr,
             }
         )
 
     except subprocess.TimeoutExpired:
+        # cmd.exe pode ter processos filhos próprios (ex: winget.exe)
+        # que não morrem só matando o cmd.exe — mata a árvore inteira
+        # (/T) pra garantir que nada fique órfão rodando (ou segurando
+        # os pipes de stdout/stderr abertos, o que travaria a leitura
+        # do resultado mesmo depois do timeout). BUG REAL confirmado
+        # ao vivo, junto com o stdin=DEVNULL acima.
+        if processo is not None:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(processo.pid)],
+                capture_output=True,
+            )
+
         _escrever_resultado(
             {"sucesso": False, "erro": "Tempo limite excedido durante a execução."}
         )

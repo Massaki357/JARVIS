@@ -23,6 +23,24 @@ from . import config
 
 _CAMINHO_RUNNER = Path(__file__).resolve().parent / "runner_elevado.py"
 
+# pythonw.exe, não python.exe — mesma pasta do interpretador que já
+# está rodando (venv/Scripts), variante SEM console (windowless).
+# BUG REAL corrigido aqui, confirmado ao vivo: com python.exe, a
+# Tarefa Agendada abria uma janela de terminal preta e visível na área
+# de trabalho toda vez que rodava (o processo elevado em si já aloca
+# console, mesmo sem nada sendo impresso nele) — reportado pelo
+# usuário como "abre o terminal com python... fica a tela preta".
+# runner_elevado.py nunca imprime nada relevante no próprio console
+# (todo resultado, incluindo erros, vai pro resultado_pendente.json —
+# ver runner_elevado.py), então trocar pra pythonw.exe não perde
+# nenhuma informação visível; só elimina a janela. Se sys.executable
+# não tiver um pythonw.exe irmão no mesmo diretório (não deveria
+# acontecer numa venv padrão), cai de volta pro python.exe original.
+_EXECUTAVEL_TAREFA = Path(sys.executable).with_name("pythonw.exe")
+
+if not _EXECUTAVEL_TAREFA.is_file():
+    _EXECUTAVEL_TAREFA = Path(sys.executable)
+
 
 def criar_tarefa():
     print(
@@ -33,7 +51,7 @@ def criar_tarefa():
         "ou confirmado por você) roda através dela, sem popup de UAC "
         "a cada vez.\n"
     )
-    print(f"Executável Python usado pela tarefa: {sys.executable}")
+    print(f"Executável Python usado pela tarefa: {_EXECUTAVEL_TAREFA}")
     print(f"Script executado pela tarefa: {_CAMINHO_RUNNER}\n")
 
     resposta = input("Digite SIM para criar a tarefa agora: ").strip()
@@ -42,7 +60,7 @@ def criar_tarefa():
         print("Cancelado — nenhuma tarefa foi criada.")
         return
 
-    comando_acao = f'"{sys.executable}" "{_CAMINHO_RUNNER}"'
+    comando_acao = f'"{_EXECUTAVEL_TAREFA}" "{_CAMINHO_RUNNER}"'
 
     resultado = subprocess.run(
         [

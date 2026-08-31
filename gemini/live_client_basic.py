@@ -218,8 +218,13 @@ LIMITE_FILA_MICROFONE = 50
 # travamento perceptível entre falas, relacionado à execução de
 # tools) — desligado por padrão. Só ativar pontualmente pra
 # investigar um travamento reportado; nunca deixar True em uso
-# normal. Ver receber_audio/processar_chamada_de_funcao pra onde os
-# tempos são medidos.
+# normal. Ver processar_chamada_de_funcao pra onde os tempos são
+# medidos (despacho por pacote + tempo total de cada chamada). Não
+# mede mais nada em receber_audio — desde que
+# processar_chamada_de_funcao passou a rodar em asyncio.Task própria
+# (ver _executar_chamada_de_funcao_com_timeout), receber_audio nunca
+# mais fica bloqueado esperando uma função terminar, então não havia
+# mais nada útil pra medir ali.
 DEBUG_TIMING_DISPATCH = False
 
 # Liga logs temporários de tempo no console (diagnóstico de "o
@@ -272,6 +277,75 @@ TIMEOUT_ULTIMA_CAPTURA_SEGUNDOS = 300
 FREQUENCIA_BEEP_CHAMADA_INICIADA = 880
 DURACAO_BEEP_CHAMADA_INICIADA_MS = 150
 
+# Quantas chamadas de função (cada uma vinda de um resposta.tool_call)
+# podem rodar ao mesmo tempo. BUG REAL corrigido: antes,
+# processar_chamada_de_funcao era aguardado direto dentro do "async
+# for" de receber_audio — uma função lenta ou travada (email, Discord,
+# comando de terminal) bloqueava TUDO (áudio, outra função) até
+# terminar. Agora cada tool_call vira sua própria asyncio.Task,
+# rastreada em self.tarefas_funcao_ativas, permitindo várias rodando
+# em paralelo. Esse limite existe só pra não deixar a lista crescer
+# sem controle se o modelo pedir muitas funções rápido demais — ver
+# receber_audio/_ao_finalizar_tarefa_funcao. Valor pequeno de
+# propósito: a maioria das chamadas do dia a dia é sequencial (uma
+# pergunta por vez), então isso raramente é atingido na prática.
+LIMITE_TAREFAS_FUNCAO_SIMULTANEAS = 4
+
+# Tempo máximo, em segundos, que uma única chamada de função pode
+# rodar antes de ser cancelada automaticamente (sem tentar de novo —
+# só informa a falha por voz). Valor único simples pra toda função,
+# de propósito — nada de timeout diferente por tipo de função por
+# enquanto. Ver _executar_chamada_de_funcao_com_timeout.
+TIMEOUT_TAREFA_FUNCAO_SEGUNDOS = 20
+
+# Exceção necessária ao "valor único" acima — não por preferência, mas
+# porque executar_comando_admin/confirmar_comando_admin JÁ têm seu
+# próprio timeout interno, bem maior e testado (ver
+# admin_terminal/config.py: até TIMEOUT_COMANDO_LONGO_SEGUNDOS, padrão
+# 300s, + MARGEM_ESPERA_TAREFA_SEGUNDOS de margem, quando
+# execucao_longa=true). Se essas duas funções usassem o timeout
+# genérico de 20s, este mecanismo cortaria a execução ANTES do
+# comando administrativo terminar sozinho — regredindo, na prática, a
+# funcionalidade de execução longa já corrigida e testada
+# separadamente nesta mesma conversa. Por isso o timeout usado pra
+# elas (ver _obter_timeout_funcao) é sempre o maior valor entre os
+# dois, com folga — nunca o padrão genérico. Usado dentro de
+# _executar_chamada_de_funcao_com_timeout.
+TIMEOUTS_TAREFA_FUNCAO_POR_NOME = {
+    "executar_comando_admin": (
+        admin_terminal.config.TIMEOUT_COMANDO_LONGO_SEGUNDOS
+        + admin_terminal.config.MARGEM_ESPERA_TAREFA_SEGUNDOS
+        + 15
+    ),
+    "confirmar_comando_admin": (
+        admin_terminal.config.TIMEOUT_COMANDO_LONGO_SEGUNDOS
+        + admin_terminal.config.MARGEM_ESPERA_TAREFA_SEGUNDOS
+        + 15
+    ),
+}
+
+# Quanto tempo, em segundos, uma chamada de função pode rodar antes do
+# jarvis mandar uma resposta provisória ("comecei, aviso quando
+# terminar") e liberar a conversa pra qualquer outro assunto, em vez
+# de ficar preso esperando o resultado real da função em silêncio —
+# limitação do protocolo de function-calling da Live API: o modelo só
+# volta a falar livremente depois de receber o tool_response daquela
+# chamada. Funções mais rápidas que isso continuam respondendo do
+# jeito de sempre, na hora, com o resultado real — esse aviso
+# intermediário só entra quando realmente necessário. Ver
+# _executar_chamada_de_funcao_com_timeout (FASE 1/FASE 2).
+LIMITE_RESPOSTA_IMEDIATA_SEGUNDOS = 5
+
+# Tempo máximo, em segundos, que qualquer envio pra sessão do Gemini
+# (send_client_content ou send_realtime_input) pode esperar antes de
+# ser considerado travado. BUG REAL relatado pelo usuário: a conexão
+# Live pode travar silenciosamente (sem erro, sem fechar a conexão) —
+# sem esse timeout, qualquer envio nela ficaria esperando pra sempre,
+# travando o app inteiro (nenhuma resposta, impossível encerrar a
+# chamada ou fechar o app, só pelo Gerenciador de Tarefas). Ver
+# _enviar_para_sessao/monitorar_conexao/self.conexao_travada.
+TIMEOUT_ENVIO_SESSAO_SEGUNDOS = 10
+
 
 # Classe principal responsável pela sessão em tempo real com o Gemini.
 # Como herda de QThread, roda separadamente da interface gráfica.
@@ -321,6 +395,14 @@ class GeminiLiveWorker(QThread):
         # o usuário falando (eco) — não é um bug a corrigir aqui, é
         # uma limitação deste modo simples.
         self.interrupcao_habilitada = interrupcao_ativa()
+
+        # True quando um envio pra sessão do Gemini trava ou falha
+        # (ver _enviar_para_sessao) — monitorar_conexao detecta isso e
+        # encerra a chamada automaticamente, sem tentar avisar por voz
+        # (um aviso por voz também é um envio pra sessão, que também
+        # poderia travar do mesmo jeito).
+        self.conexao_travada = False
+
         # [DIAGNÓSTICO DE MICROFONE] Marca o instante (time.perf_counter())
         # em que o microfone ficou mudo pela última vez — só usado sob
         # DEBUG_TIMING_MICROFONE, ver constante no topo do arquivo.
@@ -329,6 +411,13 @@ class GeminiLiveWorker(QThread):
         self.tarefa_liberar_microfone = None
         # Referência para a tarefa que encerra a chamada após a despedida.
         self.tarefa_encerramento = None
+
+        # Lista de asyncio.Task, uma por resposta.tool_call em
+        # andamento — permite várias chamadas de função rodando ao
+        # mesmo tempo, em vez de uma de cada vez bloqueando tudo. Ver
+        # LIMITE_TAREFAS_FUNCAO_SIMULTANEAS/TIMEOUT_TAREFA_FUNCAO_SEGUNDOS
+        # acima e receber_audio/_ao_finalizar_tarefa_funcao.
+        self.tarefas_funcao_ativas = []
 
         # Instante (time.monotonic()) da última atividade REAL da
         # chamada — atualizado só quando o ALFRED fala (resposta.data
@@ -421,23 +510,62 @@ class GeminiLiveWorker(QThread):
             self.loop,
         )
 
+    # Envolve QUALQUER envio pra sessão do Gemini (send_client_content
+    # ou send_realtime_input, passado aqui como corrotina já
+    # construída e ainda não aguardada — ex:
+    # self._enviar_para_sessao(self.sessao.send_client_content(...)))
+    # com um timeout. Se travar (ou falhar por qualquer outro motivo),
+    # marca self.conexao_travada — monitorar_conexao detecta isso e
+    # encerra a chamada sozinha, SEM tentar avisar por voz (isso
+    # também seria um envio pra sessão, que também poderia travar).
+    # Sempre repropaga a exceção original (TimeoutError ou a que a
+    # corrotina lançou), pra quem chamou continuar tratando do jeito
+    # que já tratava antes — este método só adiciona o timeout e o
+    # registro do travamento, nunca engole o erro.
+    async def _enviar_para_sessao(self, corrotina):
+        try:
+            return await asyncio.wait_for(
+                corrotina,
+                timeout=TIMEOUT_ENVIO_SESSAO_SEGUNDOS,
+            )
+
+        except asyncio.TimeoutError:
+            print(
+                "[CONEXÃO] Envio pra sessão do Gemini travou "
+                f"(timeout de {TIMEOUT_ENVIO_SESSAO_SEGUNDOS}s) — "
+                "marcando a conexão como travada."
+            )
+            self.conexao_travada = True
+            raise
+
+        except Exception as erro:
+            print(
+                f"[CONEXÃO] Envio pra sessão do Gemini falhou: "
+                f"{erro!r} — marcando a conexão como travada."
+            )
+            self.conexao_travada = True
+            raise
+
     async def _enviar_anuncio_espontaneo(self, texto):
-        await self.sessao.send_client_content(
-            turns=[
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part(
-                            text=(
-                                "[SISTEMA] Diga isso em voz alta agora, "
-                                "com suas próprias palavras, de forma "
-                                f"natural e breve: {texto}"
+        await self._enviar_para_sessao(
+            self.sessao.send_client_content(
+                turns=[
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                text=(
+                                    "[SISTEMA] Diga isso em voz alta "
+                                    "agora, com suas próprias "
+                                    "palavras, de forma natural e "
+                                    f"breve: {texto}"
+                                )
                             )
-                        )
-                    ],
-                )
-            ],
-            turn_complete=True,
+                        ],
+                    )
+                ],
+                turn_complete=True,
+            )
         )
 
     # Usado por identificar_planta e consultar_segunda_opiniao_visual
@@ -457,37 +585,42 @@ class GeminiLiveWorker(QThread):
         if not self.sessao or not imagem_bytes:
             return
 
-        await self.sessao.send_client_content(
-            turns=[
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part(
-                            inline_data=types.Blob(
-                                data=imagem_bytes,
-                                mime_type="image/jpeg",
-                            )
-                        ),
-                        types.Part(
-                            text=(
-                                "[SISTEMA] Esta é exatamente a mesma "
-                                f"imagem usada na consulta de {contexto}. "
-                                "Resultado obtido dessa fonte externa: "
-                                f"{resultado_externo} Observe a imagem "
-                                "você mesmo agora, com sua própria "
-                                "visão, e compare com esse resultado — "
-                                "diga explicitamente se concorda ou "
-                                "diverge ao responder. Não repasse o "
-                                "resultado externo como se fosse a "
-                                "única opinião, e não afirme nada que "
-                                "você não consiga confirmar olhando a "
-                                "imagem você mesmo."
-                            )
-                        ),
-                    ],
-                )
-            ],
-            turn_complete=True,
+        await self._enviar_para_sessao(
+            self.sessao.send_client_content(
+                turns=[
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                inline_data=types.Blob(
+                                    data=imagem_bytes,
+                                    mime_type="image/jpeg",
+                                )
+                            ),
+                            types.Part(
+                                text=(
+                                    "[SISTEMA] Esta é exatamente a "
+                                    "mesma imagem usada na consulta "
+                                    f"de {contexto}. Resultado obtido "
+                                    "dessa fonte externa: "
+                                    f"{resultado_externo} Observe a "
+                                    "imagem você mesmo agora, com sua "
+                                    "própria visão, e compare com "
+                                    "esse resultado — diga "
+                                    "explicitamente se concorda ou "
+                                    "diverge ao responder. Não "
+                                    "repasse o resultado externo como "
+                                    "se fosse a única opinião, e não "
+                                    "afirme nada que você não consiga "
+                                    "confirmar olhando a imagem você "
+                                    "mesmo."
+                                )
+                            ),
+                        ],
+                    )
+                ],
+                turn_complete=True,
+            )
         )
 
     # Chamado pela janela de chat (thread principal — ver
@@ -525,8 +658,10 @@ class GeminiLiveWorker(QThread):
         return True
 
     async def _enviar_texto_da_ui_para_sessao(self, texto):
-        await self.sessao.send_realtime_input(
-            text=texto,
+        await self._enviar_para_sessao(
+            self.sessao.send_realtime_input(
+                text=texto,
+            )
         )
 
     # Mesma ponte que enviar_texto_da_ui, pra uma imagem vinda da
@@ -558,16 +693,20 @@ class GeminiLiveWorker(QThread):
         mime_type,
         texto_contexto,
     ):
-        await self.sessao.send_realtime_input(
-            video=types.Blob(
-                data=imagem_bytes,
-                mime_type=mime_type,
+        await self._enviar_para_sessao(
+            self.sessao.send_realtime_input(
+                video=types.Blob(
+                    data=imagem_bytes,
+                    mime_type=mime_type,
+                )
             )
         )
 
         if texto_contexto:
-            await self.sessao.send_realtime_input(
-                text=texto_contexto,
+            await self._enviar_para_sessao(
+                self.sessao.send_realtime_input(
+                    text=texto_contexto,
+                )
             )
 
     # Callback usado pelo pacote rede_jarvis para injetar, na sessão
@@ -585,10 +724,12 @@ class GeminiLiveWorker(QThread):
         )
 
     async def _injetar_frame_remoto(self, frame_bytes):
-        await self.sessao.send_realtime_input(
-            video=types.Blob(
-                data=frame_bytes,
-                mime_type="image/jpeg",
+        await self._enviar_para_sessao(
+            self.sessao.send_realtime_input(
+                video=types.Blob(
+                    data=frame_bytes,
+                    mime_type="image/jpeg",
+                )
             )
         )
 
@@ -1098,6 +1239,79 @@ class GeminiLiveWorker(QThread):
                     ),
 
                     types.FunctionDeclaration(
+                        name="enviar_captura_discord_canal",
+                        description=(
+                            "Captura um print da tela OU uma foto da "
+                            "câmera (ou reaproveita a última captura já "
+                            "feita, se recente) e manda num CANAL de "
+                            "texto do Discord, com a captura anexada — "
+                            "mesma resolução de canal de "
+                            "enviar_mensagem_discord. Diferente de "
+                            "enviar_captura_discord_dm, que manda pra "
+                            "uma pessoa específica por DM. Use quando o "
+                            "usuário pedir pra tirar/enviar um print ou "
+                            "uma foto num canal do Discord, sem "
+                            "mencionar uma pessoa específica (ex: 'tire "
+                            "um print e manda no canal geral do "
+                            "discord', 'manda uma foto no canal de "
+                            "jogos'). Se o usuário mencionar uma pessoa "
+                            "específica em vez de um canal, use "
+                            "enviar_captura_discord_dm. Se o usuário não "
+                            "especificar o canal, deixe o campo canal "
+                            "vazio — a função decide sozinha se dá pra "
+                            "usar um canal já conhecido como padrão, ou "
+                            "se precisa perguntar qual usar."
+                        ),
+                        parameters=types.Schema(
+                            type="OBJECT",
+                            properties={
+                                "canal": types.Schema(
+                                    type="STRING",
+                                    description=(
+                                        "Nome do canal, se o usuário "
+                                        "especificou (ex: 'geral', "
+                                        "'jogos'). Deixe vazio se ele "
+                                        "não mencionou nenhum canal."
+                                    ),
+                                ),
+                                "texto": types.Schema(
+                                    type="STRING",
+                                    description=(
+                                        "Mensagem a acompanhar a "
+                                        "captura. Opcional."
+                                    ),
+                                ),
+                                "capturar_novo": types.Schema(
+                                    type="BOOLEAN",
+                                    description=(
+                                        "Verdadeiro se o usuário pediu "
+                                        "explicitamente pra tirar um "
+                                        "print ou uma foto NOVA agora. "
+                                        "Falso (ou omitido) se ele está "
+                                        "se referindo a uma captura já "
+                                        "feita antes."
+                                    ),
+                                ),
+                                "tipo_captura": types.Schema(
+                                    type="STRING",
+                                    enum=["print", "foto"],
+                                    description=(
+                                        "'print' ou 'foto', conforme o "
+                                        "usuário pediu. Só é usado quando "
+                                        "capturar_novo é verdadeiro, ou "
+                                        "quando não há nenhuma captura "
+                                        "recente pra reaproveitar. Se "
+                                        "capturar_novo for falso e já "
+                                        "existir uma captura recente, "
+                                        "pode deixar vazio."
+                                    ),
+                                ),
+                            },
+                            required=[],
+                        ),
+                    ),
+
+                    types.FunctionDeclaration(
                         name="enviar_captura_remoto",
                         description=(
                             "Captura um print da tela OU uma foto da "
@@ -1370,15 +1584,18 @@ class GeminiLiveWorker(QThread):
             "retornar. "
 
             # ENVIO DE CAPTURA (PRINT OU FOTO)
-            "Três tools enviam uma captura visual diretamente — "
+            "Quatro tools enviam uma captura visual diretamente — "
             "enviar_captura_email (por email), enviar_captura_discord_dm "
-            "(por DM no Discord pra um amigo) e enviar_captura_remoto "
-            "(pra outra máquina da rede jarvis). Cada uma serve tanto "
-            "pra um print de tela quanto pra uma foto da câmera — use "
-            "uma delas quando o usuário pedir claramente pra ENVIAR um "
-            "print ou uma foto, não só salvar ou analisar (ex: 'tire um "
-            "print e manda...', 'tira uma foto e envia...', 'manda esse "
-            "print', 'envie essa foto', 'envie isso'). "
+            "(por DM no Discord pra um amigo), "
+            "enviar_captura_discord_canal (num canal de texto do "
+            "Discord, sem ser pra uma pessoa específica) e "
+            "enviar_captura_remoto (pra outra máquina da rede jarvis). "
+            "Cada uma serve tanto pra um print de tela quanto pra uma "
+            "foto da câmera — use uma delas quando o usuário pedir "
+            "claramente pra ENVIAR um print ou uma foto, não só salvar "
+            "ou analisar (ex: 'tire um print e manda...', 'tira uma "
+            "foto e envia...', 'manda esse print', 'envie essa foto', "
+            "'envie isso'). "
             "Todas têm dois parâmetros relacionados: "
             "capturar_novo (booleano) — true quando o pedido já veio "
             "como 'tire um print/uma foto e envie' (o usuário quer uma "
@@ -1418,9 +1635,16 @@ class GeminiLiveWorker(QThread):
             "regra de resolução de contato de enviar_dm_discord: se "
             "retornar mais de um candidato parecido, pergunte qual "
             "antes de chamar de novo, nunca escolha sozinho. "
+            "enviar_captura_discord_canal usa canal do mesmo jeito que "
+            "enviar_mensagem_discord: se o usuário mencionar o canal, "
+            "preencha; se não mencionar, deixe vazio e a função decide "
+            "sozinha (usa um canal já conhecido se só existir um, ou "
+            "pergunta qual usar). Se o usuário mencionar uma pessoa "
+            "específica em vez de um canal, use "
+            "enviar_captura_discord_dm, não esta. "
             "enviar_captura_remoto exige maquina_destino — o nome da "
             "máquina como o usuário falou. "
-            "Nenhuma das três deve ser usada espontaneamente. "
+            "Nenhuma das quatro deve ser usada espontaneamente. "
 
             "Só chame analisar_camera quando o usuário pedir explicitamente "
             "para ver, analisar, observar ou explicar a câmera, webcam "
@@ -1811,8 +2035,10 @@ class GeminiLiveWorker(QThread):
                 DURACAO_BEEP_CHAMADA_INICIADA_MS,
             )
 
-            # Inicia três tarefas simultâneas:
-            # enviar microfone, receber respostas e reproduzir áudio.
+            # Inicia as tarefas simultâneas da chamada: enviar
+            # microfone, receber respostas, reproduzir áudio,
+            # verificar inatividade e monitorar a conexão com o
+            # Gemini.
             tarefas = [
                 asyncio.create_task(
                     self.enviar_microfone(
@@ -1839,6 +2065,10 @@ class GeminiLiveWorker(QThread):
                 asyncio.create_task(
                     self.verificar_inatividade()
                 ),
+
+                asyncio.create_task(
+                    self.monitorar_conexao()
+                ),
             ]
 
             # Mantém a sessão viva até que parar() altere self.ativo.
@@ -1856,6 +2086,14 @@ class GeminiLiveWorker(QThread):
 
             if self.tarefa_encerramento:
                 self.tarefa_encerramento.cancel()
+
+            # Cancela qualquer chamada de função ainda em andamento
+            # quando a chamada é encerrada — mesma lógica das tarefas
+            # acima, agora também pra self.tarefas_funcao_ativas
+            # (várias chamadas de função podem estar rodando em
+            # paralelo, ver receber_audio).
+            for tarefa_funcao in self.tarefas_funcao_ativas:
+                tarefa_funcao.cancel()
 
             # Interrompe a visualização contínua da tela,
             # caso ainda esteja ativa quando a chamada terminar.
@@ -1970,12 +2208,14 @@ class GeminiLiveWorker(QThread):
                     continue
 
                 # Envia o bloco de áudio atual para o Gemini Live.
-                await sessao.send_realtime_input(
-                    audio=types.Blob(
-                        data=audio_bytes,
-                        mime_type=(
-                            f"audio/pcm;rate={TAXA_ENTRADA}"
-                        ),
+                await self._enviar_para_sessao(
+                    sessao.send_realtime_input(
+                        audio=types.Blob(
+                            data=audio_bytes,
+                            mime_type=(
+                                f"audio/pcm;rate={TAXA_ENTRADA}"
+                            ),
+                        )
                     )
                 )
 
@@ -2056,36 +2296,59 @@ class GeminiLiveWorker(QThread):
                         resposta.data
                     )
 
-                # Quando o Gemini solicita uma ferramenta,
-                # encaminha para o processador de funções.
+                # Quando o Gemini solicita uma ferramenta, cria uma
+                # asyncio.Task própria pra ela e continua o loop na
+                # hora — NUNCA aguarda (await) o processamento direto
+                # aqui. BUG REAL corrigido: antes, uma função lenta ou
+                # travada (email, Discord, comando de terminal)
+                # bloqueava esse "async for" inteiro (áudio incluído)
+                # até terminar. Cada tool_call agora roda de forma
+                # independente, o que também permite várias chamadas
+                # de função em paralelo (ex: um comando de terminal
+                # demorado e, ao mesmo tempo, um envio de email). O
+                # check de limite é feito aqui (antes de criar a
+                # tarefa) de propósito — é uma comparação de tamanho
+                # de lista, instantânea, não um "esperar uma vaga" que
+                # bloquearia o loop de novo.
                 if resposta.tool_call:
                     # Atividade real: uma chamada de função está
                     # sendo processada. Ver verificar_inatividade().
                     self.timestamp_ultima_atividade = time.monotonic()
 
-                    # [DIAGNÓSTICO DE TRAVAMENTO] Mede quanto tempo
-                    # este "async for" fica sem iterar de novo — ou
-                    # seja, quanto tempo a sessão inteira (áudio
-                    # incluído) fica bloqueada — enquanto a tool
-                    # roda. Ver DEBUG_TIMING_DISPATCH.
-                    if DEBUG_TIMING_DISPATCH:
-                        inicio_bloqueio = time.perf_counter()
-
-                    await self.processar_chamada_de_funcao(
-                        sessao,
-                        resposta.tool_call,
-                    )
-
-                    if DEBUG_TIMING_DISPATCH:
-                        duracao_bloqueio_ms = (
-                            time.perf_counter() - inicio_bloqueio
-                        ) * 1000
-
-                        print(
-                            "[TIMING] receber_audio ficou "
-                            f"{duracao_bloqueio_ms:.1f}ms sem iterar "
-                            "(bloqueado por processar_chamada_de_funcao)"
+                    if (
+                        len(self.tarefas_funcao_ativas)
+                        >= LIMITE_TAREFAS_FUNCAO_SIMULTANEAS
+                    ):
+                        corrotina = self._responder_falha_para_lote(
+                            sessao,
+                            resposta.tool_call,
+                            lambda nome: (
+                                f"Não foi possível iniciar '{nome}' "
+                                "agora — já existem "
+                                f"{LIMITE_TAREFAS_FUNCAO_SIMULTANEAS} "
+                                "outras ações em andamento ao mesmo "
+                                "tempo (limite atingido). Informe "
+                                "isso ao usuário de forma breve e "
+                                "diga que ele pode pedir de novo em "
+                                "instantes. NÃO tente de novo "
+                                "sozinho."
+                            ),
                         )
+                    else:
+                        corrotina = (
+                            self._executar_chamada_de_funcao_com_timeout(
+                                sessao,
+                                resposta.tool_call,
+                            )
+                        )
+
+                    tarefa = asyncio.create_task(corrotina)
+
+                    self.tarefas_funcao_ativas.append(tarefa)
+
+                    tarefa.add_done_callback(
+                        self._ao_finalizar_tarefa_funcao
+                    )
 
                 # Acumula a transcrição da fala do ALFRED (chega em
                 # pedaços, ao longo do turno) e entrega o texto
@@ -2168,10 +2431,13 @@ class GeminiLiveWorker(QThread):
 
         if tipo_captura == "foto":
             # Mesma captura já usada por analisar_camera/
-            # tirar_foto_camera (reaproveitada, não duplicada) —
-            # chamada direta, sem asyncio.to_thread, mesmo padrão já
-            # usado pra essa função em enviar_camera_para_gemini.
-            imagem_bytes = capturar_camera_bytes()
+            # tirar_foto_camera (reaproveitada, não duplicada). Em
+            # asyncio.to_thread — ver o comentário de correção em
+            # enviar_camera_para_gemini, mais abaixo neste arquivo,
+            # pra o porquê.
+            imagem_bytes = await asyncio.to_thread(
+                capturar_camera_bytes
+            )
 
             caminho_salvo = await asyncio.to_thread(
                 salvar_foto_bytes,
@@ -2179,10 +2445,11 @@ class GeminiLiveWorker(QThread):
             )
         else:
             # Mesma captura já usada por analisar_tela/salvar_print_tela
-            # (reaproveitada, não duplicada) — chamada direta, sem
-            # asyncio.to_thread, mesmo padrão já usado pra essa função em
-            # enviar_tela_para_gemini.
-            imagem_bytes = capturar_monitor_do_cursor_bytes()
+            # (reaproveitada, não duplicada). Em asyncio.to_thread —
+            # mesmo motivo do capturar_camera_bytes acima.
+            imagem_bytes = await asyncio.to_thread(
+                capturar_monitor_do_cursor_bytes
+            )
 
             caminho_salvo = await asyncio.to_thread(
                 salvar_print_bytes,
@@ -2249,11 +2516,256 @@ class GeminiLiveWorker(QThread):
             "pra cancelar)."
         )
 
-    # Executa as ferramentas solicitadas pelo Gemini
-    # e devolve os resultados para a sessão.
-    async def processar_chamada_de_funcao(
+    # Chamado quando uma tarefa de self.tarefas_funcao_ativas termina
+    # (sucesso, erro ou cancelamento) — via Task.add_done_callback,
+    # então roda de forma síncrona, sempre na mesma thread do loop
+    # assíncrono (nunca de outra thread — add_done_callback sempre
+    # agenda via call_soon no próprio loop, mesmo que a tarefa tenha
+    # sido cancelada/resolvida por algo externo). Remove a tarefa da
+    # lista pra ela não crescer pra sempre.
+    def _ao_finalizar_tarefa_funcao(self, tarefa):
+        if tarefa in self.tarefas_funcao_ativas:
+            self.tarefas_funcao_ativas.remove(tarefa)
+
+        if tarefa.cancelled():
+            return
+
+        erro = tarefa.exception()
+
+        if erro is not None:
+            # Não deveria acontecer de verdade —
+            # _executar_chamada_de_funcao_com_timeout já captura tudo
+            # internamente e sempre manda uma function_response de
+            # erro pro Gemini antes de terminar. Se uma exceção ainda
+            # assim escapar até aqui, pelo menos aparece no console em
+            # vez de ficar completamente silenciosa (comportamento
+            # padrão do asyncio quando uma Task termina com exceção e
+            # ninguém nunca dá await/checa o resultado dela).
+            print(
+                "[FUNÇÃO] Exceção não tratada numa tarefa de função: "
+                f"{erro!r}"
+            )
+
+    # Roda processar_chamada_de_funcao em duas fases, pra permitir que
+    # o jarvis continue conversando (sobre qualquer assunto) enquanto
+    # uma função demorada ainda está rodando, em vez de ficar em
+    # silêncio até ela terminar — limitação do protocolo de
+    # function-calling da Live API, que só deixa o modelo continuar
+    # depois de receber o tool_response daquela chamada específica.
+    #
+    # FASE 1 — corrida curta contra LIMITE_RESPOSTA_IMEDIATA_SEGUNDOS:
+    # se a função termina dentro desse prazo curto, responde do jeito
+    # de sempre (function_response direto, sem nenhum aviso
+    # intermediário) — a grande maioria das funções do dia a dia
+    # (memória, visão, etc.) cai aqui, sem mudança de comportamento
+    # nenhuma. asyncio.shield garante que, se essa espera curta
+    # estourar, só a ESPERA é cancelada — a execução real continua
+    # rodando por trás pra FASE 2 pegar o resultado depois.
+    #
+    # FASE 2 — só entra aqui se a FASE 1 estourou: já respondeu um
+    # function_response provisório ("comecei, aviso quando terminar"),
+    # fechando o ciclo daquela chamada específica — dali em diante, o
+    # resultado real (sucesso, erro, ou o timeout mais longo abaixo)
+    # só pode ser entregue por fala espontânea
+    # (_enviar_anuncio_espontaneo), nunca mais por tool_response: a
+    # Live API não tem um jeito testado/confiável de aceitar uma
+    # segunda resposta pra uma chamada de função que já foi
+    # respondida. NUNCA tenta de novo sozinho em nenhuma das duas
+    # fases — só informa o erro/demora; se o usuário quiser, pede de
+    # novo por voz.
+    #
+    # Limitação aceita, não resolvida aqui: cancelar a execução
+    # interrompe o AWAIT dela, mas não força a parada de uma chamada
+    # bloqueante síncrona rodando numa thread separada (ex: um
+    # asyncio.to_thread ainda em andamento) — isso é uma limitação
+    # fundamental de threads em Python (não dá pra matar uma thread à
+    # força), a mesma razão pela qual o bug de admin_terminal precisou
+    # ser corrigido na origem (stdin=DEVNULL), não só com um timeout
+    # por fora.
+    async def _executar_chamada_de_funcao_com_timeout(
         self,
         sessao,
+        tool_call,
+    ):
+        # Usa o maior timeout entre todas as chamadas do lote (raro
+        # ter mais de uma no mesmo tool_call, mas cobre o caso) — ver
+        # TIMEOUTS_TAREFA_FUNCAO_POR_NOME acima pro porquê de algumas
+        # funções (admin) precisarem de um valor bem maior que o
+        # genérico.
+        timeout = max(
+            (
+                TIMEOUTS_TAREFA_FUNCAO_POR_NOME.get(
+                    chamada.name,
+                    TIMEOUT_TAREFA_FUNCAO_SEGUNDOS,
+                )
+                for chamada in tool_call.function_calls
+            ),
+            default=TIMEOUT_TAREFA_FUNCAO_SEGUNDOS,
+        )
+
+        tarefa_execucao = asyncio.create_task(
+            self.processar_chamada_de_funcao(
+                tool_call,
+            )
+        )
+
+        # --- FASE 1 ---
+        try:
+            function_responses, encerrar_depois = await asyncio.wait_for(
+                asyncio.shield(tarefa_execucao),
+                timeout=min(
+                    LIMITE_RESPOSTA_IMEDIATA_SEGUNDOS,
+                    timeout,
+                ),
+            )
+
+            await self._enviar_resposta_funcao(
+                sessao,
+                function_responses,
+                encerrar_depois,
+            )
+            return
+
+        except asyncio.TimeoutError:
+            # Ainda rodando — avisa e segue pra FASE 2.
+            await self._responder_falha_para_lote(
+                sessao,
+                tool_call,
+                lambda nome: (
+                    f"A ação '{nome}' ainda está em andamento — é "
+                    "mais demorada que o normal. Diga ao usuário, de "
+                    "forma breve e natural, que você já começou e "
+                    "vai avisar assim que terminar. NÃO espere em "
+                    "silêncio — continue a conversa normalmente com "
+                    "o usuário enquanto isso roda em segundo plano."
+                ),
+            )
+
+        except Exception as erro:
+            # Falhou rápido, ainda dentro da FASE 1 — mesmo
+            # tratamento de sempre, sem entrar na FASE 2.
+            await self._responder_falha_para_lote(
+                sessao,
+                tool_call,
+                lambda nome, erro=erro: (
+                    f"Ocorreu um erro inesperado ao executar "
+                    f"'{nome}': {erro}. Informe ao usuário, de forma "
+                    "breve, que essa ação falhou. NÃO tente "
+                    "executá-la de novo sozinho — só se o usuário "
+                    "pedir de novo por voz."
+                ),
+            )
+            return
+
+        # --- FASE 2 ---
+        tempo_restante = max(
+            timeout - LIMITE_RESPOSTA_IMEDIATA_SEGUNDOS,
+            1,
+        )
+
+        try:
+            function_responses, encerrar_depois = await asyncio.wait_for(
+                tarefa_execucao,
+                timeout=tempo_restante,
+            )
+
+            texto_resultado = " ".join(
+                str(resposta.response.get("result", ""))
+                for resposta in function_responses
+            )
+
+            await self._enviar_anuncio_espontaneo(
+                "que a ação que estava rodando em segundo plano "
+                f"terminou. Resultado: {texto_resultado}"
+            )
+
+            if encerrar_depois:
+                if self.tarefa_encerramento:
+                    self.tarefa_encerramento.cancel()
+
+                self.tarefa_encerramento = asyncio.create_task(
+                    self.encerrar_apos_resposta()
+                )
+
+        except asyncio.TimeoutError:
+            tarefa_execucao.cancel()
+
+            await self._enviar_anuncio_espontaneo(
+                "que uma ação que estava rodando em segundo plano "
+                "demorou demais e foi cancelada. Não tente executá-la "
+                "de novo sozinho."
+            )
+
+        except Exception as erro:
+            await self._enviar_anuncio_espontaneo(
+                "que uma ação que estava rodando em segundo plano "
+                f"falhou com um erro inesperado: {erro}. Não tente "
+                "executá-la de novo sozinho."
+            )
+
+    # Envia o resultado de uma chamada de função pelo caminho normal
+    # (tool_response + agenda o encerramento, se for o caso) — mesmo
+    # comportamento que processar_chamada_de_funcao tinha antes de
+    # passar a só retornar o resultado. Usado só na FASE 1 (resposta
+    # rápida, dentro de LIMITE_RESPOSTA_IMEDIATA_SEGUNDOS); a FASE 2
+    # entrega o resultado por fala espontânea, não por aqui.
+    async def _enviar_resposta_funcao(
+        self,
+        sessao,
+        function_responses,
+        encerrar_depois,
+    ):
+        if function_responses:
+            await sessao.send_tool_response(
+                function_responses=function_responses
+            )
+
+        if encerrar_depois:
+            if self.tarefa_encerramento:
+                self.tarefa_encerramento.cancel()
+
+            self.tarefa_encerramento = asyncio.create_task(
+                self.encerrar_apos_resposta()
+            )
+
+    # Envia uma function_response de erro/recusa pra CADA chamada
+    # dentro de tool_call.function_calls (um resposta.tool_call pode
+    # trazer mais de uma chamada de função de uma vez) — usado tanto
+    # pela recusa por limite de concorrência quanto pelo timeout/erro
+    # acima. gerar_mensagem(nome) monta o texto específico de cada
+    # caso a partir do nome da função. Nunca lança exceção própria —
+    # se o próprio envio falhar (ex: sessão já fechada), deixa a
+    # exceção subir pra quem chamou tratar (mesmo padrão de qualquer
+    # outro uso de sessao.send_tool_response neste arquivo).
+    async def _responder_falha_para_lote(
+        self,
+        sessao,
+        tool_call,
+        gerar_mensagem,
+    ):
+        respostas = [
+            types.FunctionResponse(
+                id=chamada.id,
+                name=chamada.name,
+                response={
+                    "result": gerar_mensagem(chamada.name)
+                },
+            )
+            for chamada in tool_call.function_calls
+        ]
+
+        if respostas:
+            await sessao.send_tool_response(
+                function_responses=respostas
+            )
+
+    # Executa as ferramentas solicitadas pelo Gemini e RETORNA
+    # (function_responses, encerrar_depois) — não envia mais o
+    # tool_response nem agenda o encerramento sozinha; quem chamou
+    # (_executar_chamada_de_funcao_com_timeout) decide o canal certo
+    # de entrega. Ver o comentário no final do método.
+    async def processar_chamada_de_funcao(
+        self,
         tool_call,
     ):
         # Armazena as respostas de todas as funções solicitadas.
@@ -2296,7 +2808,40 @@ class GeminiLiveWorker(QThread):
                     "opinião visual..."
                 )
 
-                args["imagem_bytes"] = capturar_camera_bytes()
+                args["imagem_bytes"] = await asyncio.to_thread(
+                    capturar_camera_bytes
+                )
+
+            # Mesma ideia acima, mas só pra dar visibilidade — não
+            # captura nada. BUG/FALTA DE UX real reportada pelo
+            # usuário: comandos administrativos (admin_terminal) podem
+            # levar até TIMEOUT_COMANDO_LONGO_SEGUNDOS (5 min por
+            # padrão) sem NENHUM feedback, porque o despacho de
+            # pacotes (logo abaixo) não tem acesso a self — só o
+            # cliente aqui consegue emitir status. self.status_recebido
+            # só atualiza a UI local (rótulo de status + log de
+            # atividade, ver ui/main_window_basic.py:atualizar_status)
+            # — nunca toca a sessão Gemini, então não tem o risco
+            # documentado de injetar fala espontânea com uma tool_call
+            # pendente (ver a seção "Confirmation flow never blocks
+            # inside a pending tool call" do admin_terminal no
+            # CLAUDE.md). Isso NÃO faz o jarvis falar durante a
+            # execução — o protocolo de function-calling da Live API
+            # não permite isso enquanto uma chamada de função está
+            # pendente — só dá visibilidade de que ele está trabalhando
+            # e não travado.
+            elif nome in (
+                "executar_comando_admin",
+                "confirmar_comando_admin",
+            ):
+                self.status_recebido.emit(
+                    "Executando comando administrativo: "
+                    f"{args.get('comando', '')}. Pode levar até "
+                    "alguns minutos, dependendo do comando — aguarde."
+                    if nome == "executar_comando_admin"
+                    else "Processando confirmação do comando "
+                    "administrativo..."
+                )
 
             # Tenta despachar para cada pacote registrado antes das
             # tools nativas (ver PACOTES_REGISTRADOS). despachar()
@@ -2373,6 +2918,19 @@ class GeminiLiveWorker(QThread):
                         ),
                     )
 
+                # Fecha o status de "executando..." emitido antes do
+                # despacho, logo acima — sem isso, o log de atividade
+                # fica parado na última mensagem de "aguarde" mesmo
+                # depois de já ter terminado.
+                if nome in (
+                    "executar_comando_admin",
+                    "confirmar_comando_admin",
+                ):
+                    self.status_recebido.emit(
+                        "Execução do comando administrativo "
+                        "finalizada."
+                    )
+
             elif nome in (
                 "analisar_tela",
                 "analisar_camera",
@@ -2386,11 +2944,13 @@ class GeminiLiveWorker(QThread):
                     "Salvando print da tela..."
                 )
 
-                # Mesma captura já usada por analisar_tela (reaproveitada,
-                # não duplicada) — chamada direta, sem asyncio.to_thread,
-                # mesmo padrão já usado pra essa função em
-                # enviar_tela_para_gemini.
-                imagem_bytes = capturar_monitor_do_cursor_bytes()
+                # Mesma captura já usada por analisar_tela
+                # (reaproveitada, não duplicada). Em asyncio.to_thread —
+                # ver o comentário de correção em enviar_camera_para_gemini,
+                # mais abaixo neste arquivo.
+                imagem_bytes = await asyncio.to_thread(
+                    capturar_monitor_do_cursor_bytes
+                )
 
                 # Gravar em disco é I/O bloqueante, por isso roda em
                 # uma thread separada para não travar o loop assíncrono.
@@ -2415,10 +2975,12 @@ class GeminiLiveWorker(QThread):
                 )
 
                 # Mesma captura já usada por analisar_camera
-                # (reaproveitada, não duplicada) — chamada direta, sem
-                # asyncio.to_thread, mesmo padrão já usado pra essa
-                # função em enviar_camera_para_gemini.
-                imagem_bytes = capturar_camera_bytes()
+                # (reaproveitada, não duplicada). Em asyncio.to_thread —
+                # ver o comentário de correção em enviar_camera_para_gemini,
+                # mais abaixo neste arquivo.
+                imagem_bytes = await asyncio.to_thread(
+                    capturar_camera_bytes
+                )
 
                 # Gravar em disco é I/O bloqueante, por isso roda em
                 # uma thread separada para não travar o loop assíncrono.
@@ -2754,6 +3316,60 @@ class GeminiLiveWorker(QThread):
                                 + resultado
                             )
 
+            elif nome == "enviar_captura_discord_canal":
+                canal = args.get(
+                    "canal",
+                    "",
+                )
+
+                texto = args.get(
+                    "texto"
+                ) or "Olha só."
+
+                tipo_captura = args.get("tipo_captura")
+
+                capturar_novo = bool(
+                    args.get(
+                        "capturar_novo",
+                        False,
+                    )
+                )
+
+                self.status_recebido.emit(
+                    "Capturando para enviar no canal do Discord..."
+                )
+
+                caminho_captura, capturou_novo, pergunta = (
+                    await self._obter_ou_capturar_ultima_captura(
+                        capturar_novo,
+                        tipo_captura,
+                    )
+                )
+
+                if pergunta:
+                    resultado = pergunta
+
+                else:
+                    # Reaproveita a MESMA resolução de canal (busca +
+                    # cache) e envio já implementados em discord_jarvis
+                    # — só passa o caminho da captura como anexo.
+                    # Chamado direto (fora do despachar() genérico)
+                    # porque caminho_anexo não é um parâmetro que o
+                    # Gemini controla — mesmo padrão de
+                    # enviar_captura_discord_dm acima.
+                    resultado = await asyncio.to_thread(
+                        discord_jarvis.enviar_mensagem_discord,
+                        canal,
+                        texto,
+                        caminho_captura,
+                    )
+
+                    if capturou_novo:
+                        resultado = (
+                            "Capturei uma nova imagem agora. "
+                            + resultado
+                        )
+
             elif nome == "enviar_captura_remoto":
                 maquina_destino = args.get(
                     "maquina_destino",
@@ -2887,22 +3503,19 @@ class GeminiLiveWorker(QThread):
                 )
             )
 
-        # Envia todos os resultados das ferramentas para o modelo.
-        if function_responses:
-            await sessao.send_tool_response(
-                function_responses=(
-                    function_responses
-                )
-            )
-
-        # Agenda o encerramento somente depois da resposta de despedida.
-        if encerrar_depois:
-            if self.tarefa_encerramento:
-                self.tarefa_encerramento.cancel()
-
-            self.tarefa_encerramento = asyncio.create_task(
-                self.encerrar_apos_resposta()
-            )
+        # Não envia mais o tool_response nem agenda o encerramento
+        # aqui dentro — devolve pra quem chamou decidir (ver
+        # _executar_chamada_de_funcao_com_timeout). Motivo: uma
+        # chamada de função pode demorar mais que
+        # LIMITE_RESPOSTA_IMEDIATA_SEGUNDOS, caso em que quem chamou
+        # já fechou o ciclo desta chamada mais cedo com uma resposta
+        # provisória ("comecei, aviso quando terminar") — mandar o
+        # tool_response de novo aqui, pra uma chamada de função já
+        # respondida, não é um caminho testado/confiável contra a Live
+        # API. Devolver o resultado, em vez de enviar direto, deixa
+        # quem chamou escolher o canal certo (tool_response normal, se
+        # ainda estiver dentro do prazo, ou fala espontânea, se não).
+        return function_responses, encerrar_depois
 
     # Aguarda alguns segundos para o ALFRED concluir a despedida
     # antes de pedir que a interface finalize a chamada.
@@ -2978,6 +3591,43 @@ class GeminiLiveWorker(QThread):
 
         except asyncio.CancelledError:
             pass
+
+    # Verifica periodicamente se algum envio pra sessão do Gemini
+    # travou ou falhou (ver _enviar_para_sessao/self.conexao_travada)
+    # e, se sim, encerra a chamada sozinha — checa a cada 1s (rápido,
+    # perto de instantâneo do ponto de vista do usuário) e, ao
+    # contrário de verificar_inatividade/encerrar_chamada, NÃO tenta
+    # avisar por voz antes de encerrar: um aviso por voz também é um
+    # envio pra sessão (_enviar_anuncio_espontaneo, que também passa
+    # por _enviar_para_sessao), que também poderia travar do mesmo
+    # jeito — tentar avisar aqui recriaria exatamente o problema que
+    # este método existe pra evitar. Só desliga a chamada e deixa o
+    # usuário iniciar uma nova.
+    #
+    # BUG REAL relatado pelo usuário: pediu pra enviar um print num
+    # canal do Discord, o jarvis executou errado (mandou só texto —
+    # ver a correção de enviar_captura_discord_canal), disse que ia
+    # tentar de novo, e a partir daí parou de responder por completo —
+    # sem erro, sem fechar a chamada, precisou fechar pelo Gerenciador
+    # de Tarefas. A hipótese mais provável é a própria conexão Live
+    # travando silenciosamente, não uma função específica travando
+    # (isso já tinha proteção própria, ver
+    # _executar_chamada_de_funcao_com_timeout) — antes desta correção,
+    # não existia NENHUM timeout em nada que manda dado pra sessão do
+    # Gemini, então um travamento da conexão em si nunca seria
+    # detectado nem recuperado.
+    async def monitorar_conexao(self):
+        while self.ativo:
+            await asyncio.sleep(1)
+
+            if self.conexao_travada:
+                self.status_recebido.emit(
+                    "A conexão com o Gemini parou de responder — "
+                    "encerrando a chamada automaticamente."
+                )
+
+                self.ativo = False
+                break
 
     # Controla as capturas de tela e câmera,
     # impedindo repetição e chamadas simultâneas.
@@ -3061,10 +3711,12 @@ class GeminiLiveWorker(QThread):
         if not self.sessao:
             return
 
-        await self.sessao.send_realtime_input(
-            video=types.Blob(
-                data=frame_bytes,
-                mime_type="image/jpeg",
+        await self._enviar_para_sessao(
+            self.sessao.send_realtime_input(
+                video=types.Blob(
+                    data=frame_bytes,
+                    mime_type="image/jpeg",
+                )
             )
         )
 
@@ -3359,37 +4011,43 @@ class GeminiLiveWorker(QThread):
 
             # Captura o monitor onde o cursor do mouse está agora,
             # no formato JPEG em bytes — não o monitor principal
-            # fixo, já que o usuário tem vários monitores.
-            imagem_bytes = capturar_monitor_do_cursor_bytes()
+            # fixo, já que o usuário tem vários monitores. Em
+            # asyncio.to_thread — mesmo motivo do capturar_camera_bytes
+            # em enviar_camera_para_gemini, logo abaixo.
+            imagem_bytes = await asyncio.to_thread(
+                capturar_monitor_do_cursor_bytes
+            )
 
             # Envia uma nova mensagem contendo imagem e instrução textual.
-            await self.sessao.send_client_content(
-                turns=[
-                    types.Content(
-                        role="user",
-                        parts=[
-                            types.Part(
-                                inline_data=types.Blob(
-                                    data=imagem_bytes,
-                                    mime_type="image/jpeg",
-                                )
-                            ),
+            await self._enviar_para_sessao(
+                self.sessao.send_client_content(
+                    turns=[
+                        types.Content(
+                            role="user",
+                            parts=[
+                                types.Part(
+                                    inline_data=types.Blob(
+                                        data=imagem_bytes,
+                                        mime_type="image/jpeg",
+                                    )
+                                ),
 
-                            types.Part(
-                                text=(
-                                    "Analise exatamente esta imagem da tela "
-                                    "enviada neste turno. Ignore imagens "
-                                    "anteriores. Use somente esta imagem como "
-                                    "base. Não chame nenhuma função visual. "
-                                    "Não chute. Se a imagem não estiver clara, "
-                                    "diga que não conseguiu ver bem. Explique "
-                                    "de forma objetiva o que está vendo."
-                                )
-                            ),
-                        ],
-                    )
-                ],
-                turn_complete=True,
+                                types.Part(
+                                    text=(
+                                        "Analise exatamente esta imagem da tela "
+                                        "enviada neste turno. Ignore imagens "
+                                        "anteriores. Use somente esta imagem como "
+                                        "base. Não chame nenhuma função visual. "
+                                        "Não chute. Se a imagem não estiver clara, "
+                                        "diga que não conseguiu ver bem. Explique "
+                                        "de forma objetiva o que está vendo."
+                                    )
+                                ),
+                            ],
+                        )
+                    ],
+                    turn_complete=True,
+                )
             )
 
             self.status_recebido.emit(
@@ -3433,36 +4091,61 @@ class GeminiLiveWorker(QThread):
             )
 
             # Captura o quadro atual da webcam como JPEG em bytes.
-            imagem_bytes = capturar_camera_bytes()
+            #
+            # BUG REAL corrigido aqui (e em todo outro ponto deste
+            # arquivo que chamava capturar_camera_bytes()/
+            # capturar_monitor_do_cursor_bytes() direto): estava sendo
+            # chamada de forma síncrona, direto dentro de uma corrotina
+            # async, sem asyncio.to_thread — ao contrário do que um
+            # comentário antigo (removido) afirmava ("mesmo padrão já
+            # usado... por design"). capturar_camera_bytes() tem um
+            # time.sleep(0.8) explícito (mais abertura/leitura/liberação
+            # do dispositivo), então cada chamada direta travava o loop
+            # assíncrono inteiro — inclusive enviar_microfone e
+            # reproduzir_audio — pelo tempo da captura inteira. Isso é
+            # muito provavelmente a causa raiz do travamento "ele
+            # responde, executa uma ação, mas demora muito pra voltar a
+            # me ouvir" reportado pelo usuário logo depois de rodar uma
+            # tool visual (aqui e em identificar_planta/
+            # consultar_segunda_opiniao_visual/salvar_print_tela/
+            # tirar_foto_camera/_obter_ou_capturar_ultima_captura —
+            # todos corrigidos junto). Regra do projeto (ver CLAUDE.md):
+            # toda chamada síncrona bloqueante dentro do worker async
+            # precisa estar em asyncio.to_thread.
+            imagem_bytes = await asyncio.to_thread(
+                capturar_camera_bytes
+            )
 
             # Envia uma nova mensagem contendo imagem e instrução textual.
-            await self.sessao.send_client_content(
-                turns=[
-                    types.Content(
-                        role="user",
-                        parts=[
-                            types.Part(
-                                inline_data=types.Blob(
-                                    data=imagem_bytes,
-                                    mime_type="image/jpeg",
-                                )
-                            ),
+            await self._enviar_para_sessao(
+                self.sessao.send_client_content(
+                    turns=[
+                        types.Content(
+                            role="user",
+                            parts=[
+                                types.Part(
+                                    inline_data=types.Blob(
+                                        data=imagem_bytes,
+                                        mime_type="image/jpeg",
+                                    )
+                                ),
 
-                            types.Part(
-                                text=(
-                                    "Analise exatamente esta imagem da câmera "
-                                    "enviada neste turno. Ignore imagens "
-                                    "anteriores. Use somente esta imagem como "
-                                    "base. Não chame nenhuma função visual. "
-                                    "Não chute. Se a imagem não estiver clara, "
-                                    "diga que não conseguiu ver bem. Explique "
-                                    "de forma objetiva o que está vendo."
-                                )
-                            ),
-                        ],
-                    )
-                ],
-                turn_complete=True,
+                                types.Part(
+                                    text=(
+                                        "Analise exatamente esta imagem da câmera "
+                                        "enviada neste turno. Ignore imagens "
+                                        "anteriores. Use somente esta imagem como "
+                                        "base. Não chame nenhuma função visual. "
+                                        "Não chute. Se a imagem não estiver clara, "
+                                        "diga que não conseguiu ver bem. Explique "
+                                        "de forma objetiva o que está vendo."
+                                    )
+                                ),
+                            ],
+                        )
+                    ],
+                    turn_complete=True,
+                )
             )
 
             self.status_recebido.emit(
