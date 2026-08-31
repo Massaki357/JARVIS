@@ -630,6 +630,131 @@ do ciclo de vida do recurso, ponto de leitura compartilhado sob lock, e o
 consumidor pontual (`capturar_camera_bytes`) só lê se já estiver aberto, nunca
 abre por conta própria.
 
+### `ativacao_voz`
+
+**Não é um pacote de tools** (mesmo caso de `explorador_windows`) —
+`obter_function_declarations()` retorna `[]` e `despachar()` sempre retorna `None`,
+só por consistência de forma com o resto do projeto; não entra em
+`PACOTES_REGISTRADOS`. O motivo: não faz sentido uma tool "ative a ativação por voz"
+chamável DENTRO de uma sessão Gemini já em andamento — o próprio propósito deste
+pacote é decidir quando uma sessão COMEÇA, então ele é usado de duas formas
+completamente fora do fluxo normal de `despachar()`:
+
+1. **`main_basic.py` chama `ativacao_voz.iniciar(callback_ativacao=...)` uma única
+   vez**, dentro de `main()`, depois que a janela principal (`window`) já existe —
+   o callback roda numa thread de fundo PRÓPRIA do detector (nunca a thread da GUI),
+   então só faz uma coisa thread-safe dentro dele: emitir
+   `solicitou_iniciar_chamada_por_voz` (novo Signal em
+   `interfaces_extras/sinalizador.py`, mesmo sinalizador genérico usado por
+   `configuracoes`/`camera_preview`). O slot conectado a esse Signal
+   (`_iniciar_chamada_por_voz`, em `main_basic.py`) roda na thread principal e chama
+   `window.alternar_chamada()` — o MESMO método que o clique do botão já chama,
+   reaproveitado, não duplicado.
+
+2. **`GeminiLiveWorker` (`gemini/live_client_basic.py`) chama
+   `ativacao_voz.pausar()`/`ativacao_voz.retomar()` diretamente**, ao redor do
+   próprio ciclo de vida de `executar()` — `pausar()` como a primeira linha de
+   `executar()` (antes até de conectar no Gemini), `retomar()` logo depois de
+   `self.sessao = None` no final. Isso não é uma exceção nova ao padrão — é o mesmo
+   tipo de chamada direta (fora de `despachar()`) que
+   `rede_jarvis.iniciar_rede_jarvis()`/`admin_terminal.iniciar_admin_terminal()` já
+   fazem a partir de `__init__`, só que aqui em dois pontos do ciclo de vida em vez
+   de um.
+
+```python
+# ativacao_voz/detector.py — API pública, chamada direta (nunca via despachar()):
+iniciar(callback_ativacao)  # -> bool; chamado uma vez, em main_basic.py
+pausar()                    # chamado por GeminiLiveWorker, início de executar()
+retomar()                   # chamado por GeminiLiveWorker, fim de executar()
+esta_ativo()                # -> bool
+```
+
+**Risco de concorrência no dispositivo — mesmo cuidado já confirmado ao vivo pra
+`camera_preview` (ver seção acima), aplicado aqui ao microfone**: o detector de
+ativação por voz e `GeminiLiveWorker.enviar_microfone()` nunca podem ter o
+microfone aberto ao mesmo tempo. `pausar()` é síncrona e bloqueia (`thread.join()`)
+até o stream do detector estar de fato fechado antes de retornar — por isso é
+chamada como a primeiríssima coisa em `executar()`, garantindo que o microfone já
+esteja livre antes de `enviar_microfone` tentar abri-lo.
+
+**Vosk, não Picovoice Porcupine — pivô deliberado no meio da tarefa, não o design
+original.** A primeira versão usava Porcupine (motor de wake-word dedicado),
+confirmado ao vivo que ainda exige uma AccessKey gratuita da Picovoice
+(`console.picovoice.ai`, cadastro manual). O usuário então pediu explicitamente uma
+alternativa sem conta nenhuma ("só com python mesmo, reconhecendo o que foi falado
+e comparando com o nome") — o detector inteiro foi reescrito em cima do pacote
+`vosk` (reconhecimento de voz genérico, offline, sem chave/conta nenhuma):
+`Model(lang="pt")` baixa sozinho (confirmado ao vivo: ~31MB) um modelo pequeno em
+português de `alphacephei.com` na primeira vez que roda, e guarda em cache local
+(`~/AppData/Local/vosk` no Windows) depois disso — nenhum cadastro em lugar nenhum
+do fluxo. Trade-off avisado explicitamente ao usuário: reconhecimento de voz
+genérico é menos preciso pra detectar UMA palavra específica do que um motor de
+wake-word dedicado seria — falsos negativos (principalmente com a palavra colada
+sem pausa em outras) são mais prováveis do que seriam com Porcupine.
+
+**Carregamento do modelo acontece DENTRO da própria thread de detecção
+(`_loop_deteccao`), nunca em `iniciar()`/`_abrir()`** — de propósito, pra
+`main_basic.py.main()` nunca travar a inicialização do app esperando um possível
+download demorado na primeira vez. `_modelo` (o `vosk.Model` carregado, pesado) é
+um singleton em nível de módulo, carregado uma vez e reaproveitado em todo ciclo de
+`pausar()`/`retomar()` — só o `KaldiRecognizer` (leve) e o stream do `sounddevice`
+são recriados a cada ciclo. `pausar()` usa um timeout generoso (30s) no
+`thread.join()` especificamente pra cobrir o caso raro de uma chamada manual
+começar enquanto o download do modelo (só na primeiríssima vez) ainda está
+rodando; em qualquer execução seguinte (modelo já em cache), isso resolve quase
+instantaneamente (confirmado ao vivo, ~0,1s).
+
+**Detecção**: `reconhecedor.AcceptWaveform()`/`PartialResult()`/`Result()` devolvem
+strings JSON (confirmado ao vivo contra o código-fonte real do `vosk-api`, não só a
+doc em prosa) — o texto de `PartialResult()` (campo `"partial"`) é checado a cada
+bloco (não só o `Result()` finalizado, campo `"text"`), pra latência menor, já que
+o Vosk só finaliza um trecho numa pausa. A comparação (`_contem_palavra_ativacao`)
+normaliza acento/caixa (mesma técnica `_normalizar` já copiada de forma
+independente em `abrir_app_local`/`discord_jarvis`), tenta a frase inteira como
+substring contígua primeiro e, se a ativação tiver mais de uma palavra e isso não
+bater, exige que TODAS as palavras-alvo apareçam em algum lugar do texto (não
+necessariamente adjacentes, via `_palavra_esta_presente`, que por sua vez cai pra
+`difflib.get_close_matches`, mesmo corte 0.72 já usado em outros pacotes) — cobre
+frases naturais como "iniciar A chamada" (artigo no meio), que não bateriam como
+substring exato de "iniciar chamada".
+
+**"jarvis" era o padrão original e é definitivamente impossível de reconhecer —
+bug real encontrado ao vivo durante teste, não questão de ajuste fino.** O modelo
+"small" em português do Vosk tem vocabulário FECHADO (um grafo de decodificação
+fixo, `HCLr.fst`/`Gr.fst`) — uma palavra ausente dele nunca é reconhecida, não
+importa quão claramente seja dita. Confirmado de duas formas:
+`Model.vosk_model_find_word("jarvis")` retorna "não encontrado", e até o modo de
+gramática restrita do Vosk (`KaldiRecognizer(model, rate, grammar_json)`, pensado
+exatamente pra esse tipo de correspondência com vocabulário pequeno e fixo) loga
+`Ignoring word missing in vocabulary: 'jarvis'` e descarta a palavra silenciosamente
+da gramática. Um teste real com microfone confirmou o sintoma exato: o modelo ficava
+substituindo por palavras não relacionadas que ESTAVAM no vocabulário ("games",
+"jogos", "adicione") em vez de chegar perto de "jarvis" em algum momento. O padrão
+foi trocado pra **`"iniciar chamada"`** — as duas palavras confirmadas no
+vocabulário antes de virar o padrão (ver `ativacao_voz/config.py`). Qualquer
+palavra/frase de ativação nova (padrão do projeto ou escolha do usuário) precisa
+ser conferida contra o vocabulário real do modelo da mesma forma — nunca assumir
+que "parece uma palavra normal" é suficiente.
+
+**sounddevice, não `pvrecorder`/PyAudio**: reaproveitado via leitura BLOQUEANTE
+(`stream.read(TAMANHO_BLOCO_VOSK)`, confirmada com um teste real antes de
+implementar), em vez do modo com callback já usado por `enviar_microfone`, já que o
+detector roda numa thread própria simples, sem precisar interoperar com nenhum loop
+`asyncio`.
+
+**Encerramento por inatividade** (`TIMEOUT_INATIVIDADE_SEGUNDOS`, `core/config.py`)
+é uma feature separada, sem relação de código com o detector de ativação além de
+terem sido pedidas juntas — vive inteiramente em `gemini/live_client_basic.py`:
+`GeminiLiveWorker.verificar_inatividade()` roda como mais uma das tarefas
+concorrentes de `executar()` (junto de `enviar_microfone`/`receber_audio`/
+`reproduzir_audio`), checando periodicamente `self.timestamp_ultima_atividade`
+(atualizado só quando `resposta.data` chega ou um `tool_call` é processado — nunca
+por áudio bruto do microfone). Ao expirar, reaproveita
+`_enviar_anuncio_espontaneo()` (mesmo mecanismo de fala espontânea de
+`rede_jarvis`/`admin_terminal`) pra avisar por voz, e depois reaproveita
+`encerrar_apos_resposta()` (a mesma tarefa que a tool `encerrar_chamada` já
+agenda) pra encerrar — nenhum caminho de encerramento paralelo foi criado.
+
 ## Checklist para religar tudo em um cliente novo
 
 1. Copie o trecho da seção "Trecho pronto para copiar" (imports,

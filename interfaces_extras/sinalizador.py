@@ -32,6 +32,15 @@ class SinalizadorInterfacesExtras(QObject):
     solicitou_abrir_camera = Signal()
     solicitou_fechar_camera = Signal()
 
+    # Emitido por ativacao_voz/detector.py — numa thread de fundo
+    # própria dele, nunca a thread da GUI — assim que a palavra-chave
+    # de ativação é reconhecida no microfone, enquanto nenhuma chamada
+    # está ativa. Diferente dos sinais "abrir janela" acima: este
+    # dispara a MESMA ação do clique no botão de iniciar chamada
+    # (MainWindow.alternar_chamada), não abre uma janela nova — ver
+    # main_basic.py.
+    solicitou_iniciar_chamada_por_voz = Signal()
+
     # Diferente dos três sinais acima (que só pedem pra abrir uma
     # janela, sem carregar dado nenhum): este carrega o texto
     # transcrito da resposta falada do Gemini, emitido por

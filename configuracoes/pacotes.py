@@ -9,6 +9,7 @@
 # dele e acrescentar uma linha aqui, nada mais muda em
 # configuracoes/window.py.
 import admin_terminal.config as admin_terminal_config
+import ativacao_voz.config as ativacao_voz_config
 import casa_inteligente.config as casa_inteligente_config
 import delegacao_ia.config as delegacao_ia_config
 import identificacao_planta.config as identificacao_planta_config
@@ -24,4 +25,5 @@ PACOTES_COM_CONFIG = [
     ("Comandos Administrativos", admin_terminal_config),
     ("Identificação de Plantas (Pl@ntNet)", identificacao_planta_config),
     ("Segunda Opinião Visual (Mistral)", identificacao_visual_config),
+    ("Ativação por Voz (Vosk, 100% local)", ativacao_voz_config),
 ]

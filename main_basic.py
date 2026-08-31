@@ -22,6 +22,13 @@ from ui.main_window_basic import MainWindow
 # "Tela de configurações".
 from interfaces_extras.sinalizador import obter_sinalizador
 
+# Pacote isolado com a ativação por voz (palavra-chave) — ver
+# ativacao_voz/detector.py. iniciar() é chamado uma única vez aqui,
+# depois que a janela principal existe; pausar()/retomar() (chamados
+# por GeminiLiveWorker a cada chamada, pra nunca haver dois handles
+# de microfone concorrentes) não são responsabilidade deste arquivo.
+import ativacao_voz
+
 # Referência mantida viva no módulo — sem isso, o Qt destruiria a
 # janela assim que _abrir_configuracoes() retornasse (nenhuma outra
 # variável ficaria segurando o objeto).
@@ -141,6 +148,23 @@ def _ao_fechar_camera():
     _janela_camera = None
 
 
+# Chamado numa thread de fundo própria de ativacao_voz/detector.py,
+# assim que a palavra-chave de ativação é reconhecida — nunca a
+# thread da GUI, por isso só faz uma coisa thread-safe (emitir um
+# Signal do sinalizador), nunca chama um método de widget diretamente
+# a partir daqui.
+def _callback_ativacao_detectada():
+    obter_sinalizador().solicitou_iniciar_chamada_por_voz.emit()
+
+
+# Roda na thread principal (slot conectado ao Signal acima) — dispara
+# a MESMA ação do clique no botão de iniciar chamada, reaproveitada,
+# não duplicada.
+def _iniciar_chamada_por_voz():
+    if _janela_principal is not None:
+        _janela_principal.alternar_chamada()
+
+
 # [CURSO] Função principal da aplicação.
 # [CURSO] Ela inicializa o Qt, cria a janela e inicia o loop de eventos.
 def main():
@@ -181,6 +205,25 @@ def main():
     )
     obter_sinalizador().solicitou_fechar_camera.connect(
         _fechar_camera
+    )
+
+    # Mesmo padrão, pro pedido de iniciar uma chamada por ativação de
+    # voz (emitido de uma thread de fundo própria, dentro de
+    # ativacao_voz/detector.py).
+    obter_sinalizador().solicitou_iniciar_chamada_por_voz.connect(
+        _iniciar_chamada_por_voz
+    )
+
+    # Começa a escutar a palavra-chave de ativação agora — só depois
+    # da janela principal existir, já que o callback (disparado numa
+    # thread de fundo) precisa de _janela_principal pronta pra
+    # funcionar. Se o modelo de reconhecimento de voz (Vosk) não
+    # puder ser carregado, ou o microfone não puder ser aberto (ver
+    # ativacao_voz/detector.py), fica indisponível silenciosamente
+    # (só um aviso no console) — o botão manual continua funcionando
+    # normalmente de qualquer forma.
+    ativacao_voz.iniciar(
+        callback_ativacao=_callback_ativacao_detectada
     )
 
     # Entrega a transcrição de cada resposta falada do Gemini pra

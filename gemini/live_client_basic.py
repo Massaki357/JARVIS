@@ -8,6 +8,9 @@ import time
 # os é usado só para extrair o nome do arquivo do caminho completo
 # de um anexo, ao ler de volta um rascunho de email pendente.
 import os
+# winsound toca um beep local, sem depender do Gemini, assim que a
+# chamada conecta — ver FREQUENCIA_BEEP_CHAMADA_INICIADA logo abaixo.
+import winsound
 
 # array converte os bytes de áudio em amostras numéricas.
 # Isso permite calcular o nível de volume da voz do ALFRED.
@@ -30,9 +33,11 @@ from google.genai import types
 # Importa as configurações centrais do projeto,
 # incluindo chave da API, modelo Live e voz escolhida.
 from core.config import (
+    EXIGIR_AUTENTICACAO,
     GEMINI_API_KEY,
     GEMINI_LIVE_MODEL,
     GEMINI_VOICE,
+    TIMEOUT_INATIVIDADE_SEGUNDOS,
 )
 
 # Função responsável por capturar, em bytes, o monitor onde o
@@ -141,6 +146,14 @@ import discord_jarvis
 # frame, sem janela) e tirar_foto_camera (salva um único frame).
 import camera_preview
 
+# Pacote isolado com a ativação por voz (palavra-chave) e o
+# encerramento por inatividade — ver ativacao_voz/__init__.py e
+# ativacao_voz/detector.py. Não expõe tool nenhuma (não entra em
+# PACOTES_REGISTRADOS, mesmo caso de explorador_windows) — pausar()/
+# retomar() são chamados diretamente aqui, ao redor do ciclo de vida
+# do microfone desta própria chamada (ver executar()).
+import ativacao_voz
+
 # Sinalizador genérico (ver interfaces_extras/sinalizador.py) — aqui
 # usado só pra ENTREGAR a transcrição da resposta falada do Gemini
 # pra uma eventual janela de chat aberta (resposta_texto_recebida),
@@ -204,6 +217,17 @@ LIMITE_FILA_MICROFONE = 50
 # tempos são medidos.
 DEBUG_TIMING_DISPATCH = False
 
+# Liga logs temporários de tempo no console (diagnóstico de "o
+# microfone demora muito pra reabrir depois que o ALFRED fala/executa
+# uma ação") — desligado por padrão, mesma convenção de
+# DEBUG_TIMING_DISPATCH. Mede quanto tempo self.alfred_falando fica
+# True (microfone mudo) a cada vez, do primeiro bloco de áudio
+# reproduzido até liberar_microfone_apos_fala de fato zerar a flag.
+# Combinado com DEBUG_TIMING_DISPATCH (que já mostra qual tool rodou
+# e quanto tempo levou), dá pra ver se o microfone fica mudo por mais
+# tempo do que a própria tool + a fala de resposta explicam.
+DEBUG_TIMING_MICROFONE = False
+
 # Intervalo mínimo, em segundos, entre chamadas visuais repetidas.
 # Isso evita capturas duplicadas para o mesmo pedido.
 COOLDOWN_FUNCAO_VISUAL = 8.0
@@ -230,6 +254,18 @@ TIMEOUT_RASCUNHO_EMAIL = 120
 # sem capturar de novo — evita reenviar uma captura velha quando o
 # usuário pede "envie isso" bem depois da última captura.
 TIMEOUT_ULTIMA_CAPTURA_SEGUNDOS = 300
+
+# Frequência (Hz) e duração (ms) do beep tocado localmente (via
+# winsound, sem depender do Gemini) assim que a chamada conecta e o
+# microfone está prestes a começar a captar — ver o
+# "async with client.aio.live.connect" em executar(). Substitui a
+# antiga fala "Chamada iniciada." gerada pelo próprio modelo: aquela
+# dependia de round-trip até o Gemini e da detecção de atividade de
+# voz do lado do servidor pra decidir que o turno tinha "terminado",
+# o que na prática demorava demais pra avisar o usuário que já podia
+# falar — reportado ao vivo pelo usuário.
+FREQUENCIA_BEEP_CHAMADA_INICIADA = 880
+DURACAO_BEEP_CHAMADA_INICIADA_MS = 150
 
 
 # Classe principal responsável pela sessão em tempo real com o Gemini.
@@ -265,10 +301,24 @@ class GeminiLiveWorker(QThread):
         # Indica quando o ALFRED está reproduzindo áudio.
         # Enquanto isso, o microfone é ignorado para evitar eco.
         self.alfred_falando = False
+        # [DIAGNÓSTICO DE MICROFONE] Marca o instante (time.perf_counter())
+        # em que o microfone ficou mudo pela última vez — só usado sob
+        # DEBUG_TIMING_MICROFONE, ver constante no topo do arquivo.
+        self._debug_inicio_mudo = None
         # Referência para a tarefa que libera o microfone após a fala.
         self.tarefa_liberar_microfone = None
         # Referência para a tarefa que encerra a chamada após a despedida.
         self.tarefa_encerramento = None
+
+        # Instante (time.monotonic()) da última atividade REAL da
+        # chamada — atualizado só quando o ALFRED fala (resposta.data
+        # chega) ou processa uma chamada de função (ver
+        # receber_audio), nunca por ruído captado pelo microfone.
+        # Usado por verificar_inatividade() pra decidir quando
+        # encerrar a chamada sozinha (TIMEOUT_INATIVIDADE_SEGUNDOS).
+        # Iniciado agora (não None) pra não parecer inativa desde o
+        # início antes mesmo da sessão conectar.
+        self.timestamp_ultima_atividade = time.monotonic()
 
         # Impede duas análises visuais simultâneas.
         self.executando_funcao_visual = False
@@ -546,6 +596,16 @@ class GeminiLiveWorker(QThread):
     # Configura o Gemini Live, cria as filas de áudio
     # e mantém a sessão funcionando enquanto o worker estiver ativo.
     async def executar(self):
+        # Para o detector de ativação por voz (ativacao_voz/) e libera
+        # o microfone dele ANTES de qualquer coisa nesta chamada — os
+        # dois nunca podem ter o microfone aberto ao mesmo tempo (ver
+        # ativacao_voz/detector.py). Bloqueia até o microfone estar
+        # de fato livre. Idempotente: não faz nada se a chamada não
+        # começou por ativação por voz (detector já parado, ou nunca
+        # chegou a iniciar por falha ao carregar o modelo/abrir o
+        # microfone).
+        ativacao_voz.pausar()
+
         # Impede a conexão quando a chave da API não foi configurada.
         if not GEMINI_API_KEY:
             raise ValueError(
@@ -1168,32 +1228,57 @@ class GeminiLiveWorker(QThread):
         # no contexto inicial da conversa.
         memorias_atuais = contexto_memorias()
 
+        # Bloco de autenticação — só entra em instrucao_sistema quando
+        # EXIGIR_AUTENTICACAO (core/config.py, .env) está ligado
+        # (padrão True — o comportamento de segurança já existente
+        # nunca muda sozinho). Extraído num pedaço à parte, em vez de
+        # ficar direto dentro da concatenação de instrucao_sistema,
+        # exatamente pra poder incluir ou não condicionalmente.
+        bloco_autenticacao = (
+            (
+                "Só faça interação com o usuário, conversas complexas "
+                "ou qualquer outro comando se ele dizer a "
+                "palavra-chave. "
+                "Fale apenas em português do Brasil. "
+                "A palavra-chave secreta de autenticação é: Coisa "
+                "Essa palavra-chave é uma informação estritamente "
+                "confidencial. "
+                "Nunca revele, pronuncie, escreva, repita, confirme, "
+                "complete, dê pistas ou informe a palavra-chave ao "
+                "usuário. "
+                "Isso também vale se ele disser que esqueceu, pedir "
+                "ajuda, tentar adivinhar ou permanecer em silêncio. "
+                "Use a palavra-chave apenas para comparar "
+                "silenciosamente com o áudio recebido do usuário. "
+                "Antes da autenticação, limite-se a solicitar a "
+                "palavra-chave. "
+                "Depois de solicitá-la, pare de falar e aguarde uma "
+                "resposta real. "
+                "Nunca preencha o silêncio e nunca continue a "
+                "conversa sozinho. "
+                "Não trate sua própria voz, áudio reproduzido pelo "
+                "computador, eco, ruído ou silêncio como uma "
+                "tentativa de autenticação. "
+                "O usuário terá no máximo três tentativas incorretas. "
+                "Após três erros consecutivos, bloqueie o acesso "
+                "durante esta chamada. "
+                "Se o usuário disser corretamente a palavra-chave, "
+                "responda somente 'Acesso autorizado.' e aguarde o "
+                "próximo pedido. "
+                "Não repita 'Acesso autorizado' sem uma nova fala do "
+                "usuário. "
+                "Não execute funções e não converse sobre outros "
+                "assuntos antes da autenticação. "
+            )
+            if EXIGIR_AUTENTICACAO
+            else ""
+        )
+
         # Define identidade, personalidade, autenticação,
         # limites, regras de memória, visão e encerramento.
         instrucao_sistema = (
             # AUTENTICAÇÃO
-            "Só faça interação com o usuário, coversas complexas ou qualquer outro comando se ele dizer a palavra chave"
-            "Fale apenas em português do Brasil."
-            "A palavra-chave secreta de autenticação é: Coisa "
-            "Essa palavra-chave é uma informação estritamente confidencial. "
-            "Nunca revele, pronuncie, escreva, repita, confirme, complete, "
-            "dê pistas ou informe a palavra-chave ao usuário. "
-            "Isso também vale se ele disser que esqueceu, pedir ajuda, "
-            "tentar adivinhar ou permanecer em silêncio. "
-            "Use a palavra-chave apenas para comparar silenciosamente "
-            "com o áudio recebido do usuário. "
-            "Antes da autenticação, limite-se a solicitar a palavra-chave. "
-            "Depois de solicitá-la, pare de falar e aguarde uma resposta real. "
-            "Nunca preencha o silêncio e nunca continue a conversa sozinho. "
-            "Não trate sua própria voz, áudio reproduzido pelo computador, "
-            "eco, ruído ou silêncio como uma tentativa de autenticação. "
-            "O usuário terá no máximo três tentativas incorretas. "
-            "Após três erros consecutivos, bloqueie o acesso durante esta chamada. "
-            "Se o usuário disser corretamente a palavra-chave, responda somente "
-            "'Acesso autorizado.' e aguarde o próximo pedido. "
-            "Não repita 'Acesso autorizado' sem uma nova fala do usuário. "
-            "Não execute funções e não converse sobre outros assuntos "
-            "antes da autenticação. "
+            bloco_autenticacao +
 
             # IDENTIDADE
             "Seu nome é ALFRED. "
@@ -1694,6 +1779,18 @@ class GeminiLiveWorker(QThread):
                 "ALFRED conectado. Pode falar."
             )
 
+            # Beep local (não depende do Gemini nem da rede) avisando
+            # que a chamada conectou e o usuário já pode falar — ver
+            # FREQUENCIA_BEEP_CHAMADA_INICIADA/DURACAO_BEEP_CHAMADA_INICIADA_MS
+            # acima. winsound.Beep é bloqueante, por isso roda em
+            # thread separada (asyncio.to_thread), nunca direto no
+            # loop assíncrono.
+            await asyncio.to_thread(
+                winsound.Beep,
+                FREQUENCIA_BEEP_CHAMADA_INICIADA,
+                DURACAO_BEEP_CHAMADA_INICIADA_MS,
+            )
+
             # Inicia três tarefas simultâneas:
             # enviar microfone, receber respostas e reproduzir áudio.
             tarefas = [
@@ -1717,6 +1814,10 @@ class GeminiLiveWorker(QThread):
                         fila_saida,
                         fila_microfone,
                     )
+                ),
+
+                asyncio.create_task(
+                    self.verificar_inatividade()
                 ),
             ]
 
@@ -1752,6 +1853,12 @@ class GeminiLiveWorker(QThread):
 
         # Guardará a sessão ativa do Gemini Live.
         self.sessao = None
+
+        # A chamada terminou de verdade — volta a escutar a palavra-
+        # chave de ativação (ver ativacao_voz/detector.py). Reaproveita
+        # o callback já registrado por main_basic.py, não precisa
+        # receber nada de novo aqui.
+        ativacao_voz.retomar()
 
     # Captura o microfone continuamente e envia os blocos
     # de áudio em tempo real para o Gemini.
@@ -1859,6 +1966,21 @@ class GeminiLiveWorker(QThread):
                 # Também elimina qualquer áudio antigo que tenha sido
                 # capturado pouco antes do início da resposta.
                 if resposta.data:
+                    # Atividade real: o ALFRED está falando. Ver
+                    # verificar_inatividade() e
+                    # self.timestamp_ultima_atividade.
+                    self.timestamp_ultima_atividade = time.monotonic()
+
+                    # [DIAGNÓSTICO DE MICROFONE] Marca só na transição
+                    # False -> True (início real do silêncio), não a
+                    # cada bloco. Ver DEBUG_TIMING_MICROFONE.
+                    if DEBUG_TIMING_MICROFONE and not self.alfred_falando:
+                        self._debug_inicio_mudo = time.perf_counter()
+                        print(
+                            "[TIMING-MIC] Microfone silenciado "
+                            "(receber_audio: chegou áudio novo)."
+                        )
+
                     self.alfred_falando = True
 
                     if self.tarefa_liberar_microfone:
@@ -1875,6 +1997,10 @@ class GeminiLiveWorker(QThread):
                 # Quando o Gemini solicita uma ferramenta,
                 # encaminha para o processador de funções.
                 if resposta.tool_call:
+                    # Atividade real: uma chamada de função está
+                    # sendo processada. Ver verificar_inatividade().
+                    self.timestamp_ultima_atividade = time.monotonic()
+
                     # [DIAGNÓSTICO DE TRAVAMENTO] Mede quanto tempo
                     # este "async for" fica sem iterar de novo — ou
                     # seja, quanto tempo a sessão inteira (áudio
@@ -2735,6 +2861,62 @@ class GeminiLiveWorker(QThread):
         except asyncio.CancelledError:
             pass
 
+    # Verifica periodicamente se a chamada está inativa há tempo
+    # demais (TIMEOUT_INATIVIDADE_SEGUNDOS desde a última atividade
+    # REAL — ver self.timestamp_ultima_atividade) e, se estiver,
+    # encerra sozinha — avisando por voz antes, nunca desligando sem
+    # aviso. Roda como uma das tarefas concorrentes de executar(),
+    # cancelada junto com as outras quando a chamada termina por
+    # qualquer outro motivo primeiro.
+    async def verificar_inatividade(self):
+        try:
+            while self.ativo:
+                await asyncio.sleep(
+                    10
+                )
+
+                if not self.ativo:
+                    break
+
+                tempo_inativo = (
+                    time.monotonic() - self.timestamp_ultima_atividade
+                )
+
+                if tempo_inativo < TIMEOUT_INATIVIDADE_SEGUNDOS:
+                    continue
+
+                self.status_recebido.emit(
+                    "Encerrando por inatividade..."
+                )
+
+                # Mesmo mecanismo de fala espontânea já usado por
+                # rede_jarvis/admin_terminal (_enviar_anuncio_espontaneo)
+                # — chamado direto (await), não via _falar_espontaneamente,
+                # porque esta tarefa já roda dentro do próprio loop
+                # assíncrono do worker (self.loop), sem precisar da
+                # ponte thread-safe que _falar_espontaneamente existe
+                # pra prover a quem chama de FORA dele.
+                await self._enviar_anuncio_espontaneo(
+                    "que a chamada vai ser encerrada agora por "
+                    "causa de um tempo sem atividade"
+                )
+
+                # Mesmo fluxo de encerramento já usado por
+                # encerrar_chamada (a tool de voz) — reaproveitado,
+                # não duplicado: espera a despedida terminar de tocar
+                # e só então pede o encerramento à interface.
+                if self.tarefa_encerramento:
+                    self.tarefa_encerramento.cancel()
+
+                self.tarefa_encerramento = asyncio.create_task(
+                    self.encerrar_apos_resposta()
+                )
+
+                break
+
+        except asyncio.CancelledError:
+            pass
+
     # Controla as capturas de tela e câmera,
     # impedindo repetição e chamadas simultâneas.
     async def processar_funcao_visual(
@@ -2928,6 +3110,14 @@ class GeminiLiveWorker(QThread):
 
                 # Mantém o microfone bloqueado durante toda a reprodução
                 # e descarta qualquer bloco antigo que ainda tenha sobrado.
+                # [DIAGNÓSTICO DE MICROFONE] Ver DEBUG_TIMING_MICROFONE.
+                if DEBUG_TIMING_MICROFONE and not self.alfred_falando:
+                    self._debug_inicio_mudo = time.perf_counter()
+                    print(
+                        "[TIMING-MIC] Microfone silenciado "
+                        "(reproduzir_audio: tocando um bloco)."
+                    )
+
                 self.alfred_falando = True
                 self.limpar_fila_microfone(
                     fila_microfone
@@ -3033,6 +3223,19 @@ class GeminiLiveWorker(QThread):
             )
 
             self.alfred_falando = False
+
+            # [DIAGNÓSTICO DE MICROFONE] Ver DEBUG_TIMING_MICROFONE.
+            if DEBUG_TIMING_MICROFONE and self._debug_inicio_mudo:
+                duracao_mudo_ms = (
+                    time.perf_counter() - self._debug_inicio_mudo
+                ) * 1000
+
+                print(
+                    f"[TIMING-MIC] Microfone reaberto depois de "
+                    f"{duracao_mudo_ms:.0f}ms mudo."
+                )
+
+                self._debug_inicio_mudo = None
 
             self.nivel_audio.emit(
                 0.0

@@ -108,4 +108,57 @@ pip install -r requirements.txt
 ```
 --------------------------------------------------
 
+Para o jarvis iniciar a chamada sozinho ao ouvir uma palavra-chave (sem precisar clicar
+no botão), você pode opcionalmente adicionar também no .env:
+```
+NOME_ATIVACAO=jarvis
+TIMEOUT_INATIVIDADE_SEGUNDOS=300
+```
+
+Nenhuma conta ou chave de API é necessária pra isso — o reconhecimento de voz roda
+100% localmente (biblioteca [Vosk](https://alphacephei.com/vosk/), offline, sem enviar
+áudio pra nenhum serviço externo). Na primeira vez que o app rodar, o pacote `vosk`
+baixa sozinho um modelo de reconhecimento de voz em português (~31MB, uma única vez,
+sem cadastro nenhum) e guarda em cache local — as próximas execuções carregam
+instantaneamente. Enquanto esse download não termina, a ativação por voz ainda não
+está pronta, mas o botão manual de iniciar chamada continua funcionando normalmente.
+
+**NOME_ATIVACAO** (padrão: `jarvis`)
+A palavra (ou frase curta) que, reconhecida enquanto nenhuma chamada está ativa, inicia
+a chamada automaticamente. Padrão `iniciar chamada`. **Atenção**: como isso usa
+reconhecimento de voz genérico (não um motor de "wake word" dedicado), a palavra/frase
+precisa existir de fato no vocabulário do modelo Vosk em português — nomes próprios de
+origem estrangeira (como "jarvis") costumam NÃO estar nesse vocabulário e nunca vão ser
+reconhecidos, não importa quão claramente sejam ditos. Prefira palavras/frases comuns do
+dia a dia. A precisão também é um pouco menor que a de um motor de "wake word" dedicado
+— pode falhar em detectar vez ou outra, especialmente se pronunciada junto com outras
+palavras coladas sem pausa nenhuma.
+
+**TIMEOUT_INATIVIDADE_SEGUNDOS** (padrão: `300`, ou seja, 5 minutos)
+Depois de uma chamada ficar esse tempo sem nenhuma atividade real (o jarvis falando ou
+executando alguma ação — nunca só ruído captado pelo microfone), ele avisa por voz e
+encerra a chamada sozinho.
+
+**Não confunda com a palavra-chave de autenticação DENTRO da chamada** (ver abaixo,
+"Coisa") — são coisas diferentes: `NOME_ATIVACAO` decide quando a chamada COMEÇA
+(sozinha, por voz, sem clicar no botão); a palavra "Coisa" continua controlando o que o
+jarvis executa DEPOIS que a chamada já está em andamento.
+
+--------------------------------------------------
+
 A palavra chave é "Coisa"
+
+Você pode desligar essa exigência (o jarvis passa a responder qualquer comando sem
+pedir a palavra-chave) colocando no .env:
+```
+EXIGIR_AUTENTICACAO=false
+```
+O padrão, se essa variável não existir no .env, é `true` (exige a palavra-chave, como
+sempre foi) — só fica sem exigir se você explicitamente colocar `false`.
+
+Toda vez que uma chamada é iniciada (por clique no botão ou por ativação de voz), o
+jarvis toca um beep local assim que conecta — antes mesmo de pedir a palavra-chave,
+se `EXIGIR_AUTENTICACAO` estiver ligado. É só um aviso local (não depende do Gemini)
+pra você saber que já pode falar; antes disso o jarvis tentava dizer em voz "Chamada
+iniciada.", mas isso dependia de uma resposta do modelo (ida e volta até o Gemini +
+detecção de fim de fala do lado do servidor) e demorava demais pra cumprir esse papel.
