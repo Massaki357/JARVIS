@@ -17,3 +17,9 @@ abrir_app_local/apps_conhecidos.json
 # versionado (e contém IDs reais de pessoas).
 discord_jarvis/contatos_conhecidos.json
 discord_jarvis/canais_conhecidos.json
+
+# config.json: preferência local de cada máquina (hoje só
+# interrupcao) — não existir é o padrão válido (ver
+# config/carregador.py), então nunca versionar um valor específico
+# de alguém.
+config.json

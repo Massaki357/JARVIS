@@ -12,6 +12,11 @@ import os
 # chamada conecta — ver FREQUENCIA_BEEP_CHAMADA_INICIADA logo abaixo.
 import winsound
 
+# Lê config.json (raiz do projeto) e diz se o usuário pode interromper
+# a fala do jarvis falando por cima — ver config/carregador.py e
+# INTEGRATION.md, seção "Interrupção de fala (config.json)".
+from config.carregador import interrupcao_ativa
+
 # array converte os bytes de áudio em amostras numéricas.
 # Isso permite calcular o nível de volume da voz do ALFRED.
 from array import array
@@ -301,6 +306,21 @@ class GeminiLiveWorker(QThread):
         # Indica quando o ALFRED está reproduzindo áudio.
         # Enquanto isso, o microfone é ignorado para evitar eco.
         self.alfred_falando = False
+
+        # Lido UMA VEZ aqui, na criação do worker — não recarrega em
+        # tempo real no meio de uma chamada; trocar config.json exige
+        # reiniciar a chamada/app pra valer. Com False (padrão), o
+        # comportamento é idêntico ao de sempre: o microfone é
+        # ignorado enquanto self.alfred_falando (as três checagens em
+        # enviar_microfone). Com True, essas checagens são
+        # contornadas — o usuário pode falar por cima do jarvis — e
+        # receber_audio passa a tratar resposta.server_content.interrupted
+        # pra cortar o áudio antigo na hora. RISCO CONHECIDO E ACEITO
+        # do modo True: sem fone de ouvido, o próprio áudio dos
+        # alto-falantes pode ser captado pelo microfone como se fosse
+        # o usuário falando (eco) — não é um bug a corrigir aqui, é
+        # uma limitação deste modo simples.
+        self.interrupcao_habilitada = interrupcao_ativa()
         # [DIAGNÓSTICO DE MICROFONE] Marca o instante (time.perf_counter())
         # em que o microfone ficou mudo pela última vez — só usado sob
         # DEBUG_TIMING_MICROFONE, ver constante no topo do arquivo.
@@ -1882,9 +1902,14 @@ class GeminiLiveWorker(QThread):
             if not self.ativo:
                 return
 
-            # Ignora o microfone enquanto o ALFRED fala,
-            # evitando que ele escute a própria voz.
-            if self.alfred_falando:
+            # Ignora o microfone enquanto o ALFRED fala, evitando que
+            # ele escute a própria voz — só quando interrupcao_habilitada
+            # é False (padrão/config.json). Com True, o microfone
+            # continua sendo capturado mesmo com o ALFRED falando, de
+            # propósito, pra permitir interrupção (ver
+            # self.interrupcao_habilitada em __init__ e
+            # INTEGRATION.md, seção "Interrupção de fala").
+            if self.alfred_falando and not self.interrupcao_habilitada:
                 return
 
             if status:
@@ -1903,7 +1928,12 @@ class GeminiLiveWorker(QThread):
             # Se a fila estiver cheia, o bloco mais novo é descartado
             # para impedir atraso e acúmulo de áudio antigo.
             def adicionar_audio():
-                if self.alfred_falando or not self.ativo:
+                if not self.ativo:
+                    return
+
+                # Mesma exceção do check acima: com interrupcao_habilitada,
+                # não bloqueia por causa de alfred_falando.
+                if self.alfred_falando and not self.interrupcao_habilitada:
                     return
 
                 try:
@@ -1933,8 +1963,10 @@ class GeminiLiveWorker(QThread):
                 # O bloco pode ter entrado na fila poucos milissegundos
                 # antes de o assistente começar a falar.
                 # Fazemos uma segunda verificação para garantir que o
-                # usuário nunca interrompa o assistente durante a resposta.
-                if self.alfred_falando:
+                # usuário nunca interrompa o assistente durante a resposta
+                # — a menos que interrupcao_habilitada esteja ligado
+                # (mesma exceção dos dois checks acima).
+                if self.alfred_falando and not self.interrupcao_habilitada:
                     continue
 
                 # Envia o bloco de áudio atual para o Gemini Live.
@@ -1960,6 +1992,36 @@ class GeminiLiveWorker(QThread):
             async for resposta in sessao.receive():
                 if not self.ativo:
                     break
+
+                # Sinal do servidor de que o usuário interrompeu a
+                # fala do ALFRED (campo confirmado no SDK instalado —
+                # google.genai.types.LiveServerContent.interrupted —
+                # e na doc oficial do Gemini Live). Só é tratado no
+                # modo interrupcao_habilitada: no modo padrão o
+                # microfone nem chega a ser enviado enquanto
+                # alfred_falando (ver os três checks em
+                # enviar_microfone), então esse sinal não deveria
+                # disparar de verdade nesse modo. Ao detectar,
+                # esvazia a fila_saida na hora (pra parar de tocar o
+                # áudio antigo, em vez de deixar terminar sozinho) e
+                # libera o microfone sem esperar ATRASO_REABRIR_MICROFONE
+                # — a própria interrupção já é o sinal de que o
+                # usuário está falando agora. Ver INTEGRATION.md,
+                # seção "Interrupção de fala (config.json)".
+                if (
+                    self.interrupcao_habilitada
+                    and resposta.server_content
+                    and resposta.server_content.interrupted
+                ):
+                    if self.tarefa_liberar_microfone:
+                        self.tarefa_liberar_microfone.cancel()
+                        self.tarefa_liberar_microfone = None
+
+                    self.limpar_fila_saida(
+                        fila_saida
+                    )
+
+                    self.alfred_falando = False
 
                 # Quando chega o primeiro bloco de resposta, bloqueia
                 # imediatamente o microfone antes mesmo da reprodução.
@@ -3163,6 +3225,26 @@ class GeminiLiveWorker(QThread):
         while True:
             try:
                 fila_microfone.get_nowait()
+
+            except asyncio.QueueEmpty:
+                break
+
+    @staticmethod
+    def limpar_fila_saida(
+        fila_saida,
+    ):
+        """
+        Descarta todos os blocos de áudio de resposta que ainda
+        aguardavam reprodução. Usado só quando o servidor sinaliza
+        resposta.server_content.interrupted (modo interrupcao
+        habilitado, ver receber_audio) — pra parar de tocar a
+        resposta antiga na hora, em vez de deixar ela terminar
+        sozinha.
+        """
+
+        while True:
+            try:
+                fila_saida.get_nowait()
 
             except asyncio.QueueEmpty:
                 break

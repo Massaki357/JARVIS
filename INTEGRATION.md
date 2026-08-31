@@ -755,6 +755,124 @@ por áudio bruto do microfone). Ao expirar, reaproveita
 `encerrar_apos_resposta()` (a mesma tarefa que a tool `encerrar_chamada` já
 agenda) pra encerrar — nenhum caminho de encerramento paralelo foi criado.
 
+## Interrupção de fala (config.json)
+
+Diferente de tudo mais neste documento, isto **não é uma tool isolável** — é uma
+mudança no próprio núcleo do loop de áudio (`enviar_microfone`/`receber_audio` do
+cliente). Não segue o contrato `obter_function_declarations()`/`despachar()`. Esta
+seção existe pra reimplementar o CONCEITO manualmente num cliente novo (a estrutura
+do loop pode ser bem diferente lá) — leia sozinha, sem depender do resto do
+documento.
+
+### O que essa feature faz
+
+Por padrão, o cliente ignora o microfone inteiro enquanto o jarvis está falando
+(`self.alfred_falando == True`) — evita que ele escute a própria voz (eco). Isso
+significa que o usuário nunca consegue interromper uma resposta falando por cima;
+precisa esperar o jarvis terminar. `config.json` liga um modo opcional onde isso
+deixa de valer: o microfone continua sendo capturado e enviado mesmo com o jarvis
+falando, e o cliente reage quando o servidor avisa que a fala foi interrompida.
+
+### Formato do config.json (raiz do projeto)
+
+```json
+{
+  "config": [
+    { "interrupcao": false }
+  ]
+}
+```
+
+- `interrupcao: false`, arquivo ausente, campo ausente, ou JSON inválido → todos
+  caem no mesmo padrão: `False` (comportamento de sempre, sem interrupção).
+- `interrupcao: true` → habilita o modo de interrupção.
+- O valor é lido **uma única vez**, na inicialização do worker/sessão (não recarrega
+  no meio de uma chamada em andamento) — trocar o arquivo exige reiniciar a
+  chamada/app pra valer.
+- Implementação de referência: `config/carregador.py`, função
+  `interrupcao_ativa() -> bool`. Lê o arquivo relativo à raiz do projeto (nunca um
+  caminho fixo pra uma máquina específica), navega `config[0]["interrupcao"]`
+  exatamente nesse formato, e devolve `False` com um aviso no console pra qualquer
+  caso fora do feliz (arquivo ausente, campo ausente, JSON inválido) — nunca trava a
+  inicialização do app por causa de um `config.json` ruim ou ausente.
+
+### As três checagens de `self.alfred_falando` em `enviar_microfone`
+
+`self.alfred_falando` é a flag central: `True` enquanto o jarvis está
+falando/tocando áudio, `False` quando o microfone pode ser usado. Existem TRÊS
+pontos separados, todos dentro do método que captura e envia o áudio do microfone
+pro Gemini, que checam essa flag pra decidir se descartam o áudio capturado —
+existem três porque o áudio passa por três estágios diferentes antes de sair pro
+Gemini, e cada estágio precisa da sua própria guarda:
+
+1. **No callback síncrono do `sounddevice`** (a função chamada automaticamente toda
+   vez que um novo bloco de áudio é capturado do hardware do microfone) — primeira
+   linha de defesa, descarta o bloco antes de qualquer processamento.
+2. **Na função que efetivamente põe o bloco na fila assíncrona** (chamada via
+   `loop.call_soon_threadsafe` a partir do callback acima, já que o callback do
+   sounddevice roda fora do loop `asyncio`) — segunda checagem, porque entre o
+   callback disparar e essa função rodar no loop `asyncio`, `alfred_falando` pode
+   ter mudado de `False` pra `True`.
+3. **No loop consumidor que tira blocos da fila e chama
+   `sessao.send_realtime_input(audio=...)`** — terceira e última checagem, logo
+   antes de mandar de fato pro Gemini, porque um bloco pode ter entrado na fila
+   poucos milissegundos antes de o jarvis começar a falar.
+
+No comportamento padrão (`interrupcao: false`), as três são exatamente `if
+self.alfred_falando: <descarta o bloco>`. Pra habilitar o modo de interrupção, cada
+uma das três vira `if self.alfred_falando and not <flag de interrupção habilitada>:
+<descarta o bloco>` — ou seja, só descarta quando a interrupção está desligada. Com
+a flag ligada, o áudio do microfone passa a ser sempre capturado e enviado,
+independente de `alfred_falando`. Mantenha as duas versões como um `if` simples no
+início de cada checagem — não duplique o método inteiro pra isso.
+
+### Tratamento do sinal de interrupção do servidor
+
+Quando o usuário fala por cima e o servidor decide que isso conta como uma
+interrupção real, a resposta que chega no loop que recebe as respostas da sessão
+(equivalente a `receber_audio` neste projeto) traz um campo booleano avisando disso
+— confirmado no SDK oficial (`google.genai`) instalado durante esta implementação:
+a classe da resposta (`LiveServerContent`, acessível como
+`resposta.server_content` no fluxo deste projeto) tem um campo `interrupted:
+Optional[bool]`, com a descrição oficial "If true, indicates that a client message
+has interrupted current model generation. If the client is playing out the content
+in realtime, this is a good signal to stop and empty the current queue." — ou seja,
+`resposta.server_content.interrupted`. Não assuma esse nome de campo sem confirmar
+contra o SDK/doc oficial instalados no momento — nomes de campo da Live API já
+mudaram de comportamento entre versões de modelo neste mesmo projeto (ver a nota
+sobre `send_client_content` vs `send_realtime_input` na seção `chat_jarvis` do
+CLAUDE.md).
+
+Ao detectar `interrupted == True` (só quando o modo de interrupção está habilitado
+— no modo padrão isso não deveria disparar de verdade, já que o microfone nem
+chega a ser enviado enquanto o jarvis fala), o cliente precisa, na hora:
+
+1. **Esvaziar a fila de áudio de saída** (a fila entre "recebeu da sessão" e "está
+   tocando nos alto-falantes", equivalente a `fila_saida` neste projeto) — sem isso,
+   o áudio antigo da resposta interrompida continua tocando até o fim mesmo depois
+   da interrupção, em vez de parar na hora. Mesma técnica já usada pra limpar a fila
+   de microfone (`limpar_fila_microfone`): um loop de `get_nowait()` até
+   `QueueEmpty`.
+2. **Zerar a flag equivalente a `alfred_falando` imediatamente, sem esperar o
+   atraso normal de reabertura do microfone** (`ATRASO_REABRIR_MICROFONE`/
+   `liberar_microfone_apos_fala` neste projeto — um `asyncio.sleep` proposital antes
+   de reabrir o microfone, pra evitar reabrir cedo demais e captar o fim da própria
+   fala do assistente). No caso de interrupção, esse atraso não faz sentido: a
+   própria interrupção já É o sinal de que o usuário está falando agora, então zerar
+   a flag na hora (e cancelar a tarefa de reabertura atrasada, se houver uma
+   pendente) é o comportamento certo.
+
+### Risco de eco sem fone de ouvido (limitação aceita, não um bug)
+
+Com `interrupcao: true`, o microfone capta o ambiente continuamente, inclusive
+enquanto os alto-falantes do computador estão tocando a resposta do jarvis. Sem
+fone de ouvido, é fisicamente possível o microfone captar o próprio áudio de saída
+como se fosse o usuário falando (eco/feedback acústico), potencialmente causando uma
+interrupção falsa ou uma resposta confusa. Isso é uma limitação conhecida e aceita
+deste modo simples (o projeto não implementa cancelamento de eco/AEC) — não é algo a
+"corrigir" numa reimplementação futura, a menos que isso mude de decisão
+explicitamente.
+
 ## Checklist para religar tudo em um cliente novo
 
 1. Copie o trecho da seção "Trecho pronto para copiar" (imports,
