@@ -2186,38 +2186,63 @@ class GeminiLiveWorker(QThread):
                 adicionar_audio
             )
 
-        # Abre o fluxo de entrada bruto do microfone.
-        with sd.RawInputStream(
-            samplerate=TAXA_ENTRADA,
-            blocksize=BLOCO,
-            dtype="int16",
-            channels=CANAIS,
-            callback=callback,
-        ):
-            # Mantém a sessão viva até que parar() altere self.ativo.
-            while self.ativo:
-                audio_bytes = await fila_microfone.get()
+        # Abre o fluxo de entrada bruto do microfone. BUG REAL
+        # corrigido aqui, relatado pelo usuário: sem o try/except,
+        # uma falha ao abrir o microfone (ex: "Error querying device
+        # -1", quando nenhum dispositivo de entrada padrão está
+        # disponível no momento) matava esta tarefa em silêncio — a
+        # chamada continuava "conectada" (o beep já tinha tocado, o
+        # status mostrava normal), mas o áudio do usuário nunca mais
+        # era capturado. A chamada ficava com aparência de
+        # funcionando, mas o jarvis nunca mais ouvia nada — o mesmo
+        # sintoma relatado como "não responde mais". Qualquer exceção
+        # daqui em diante (abrir o stream, ou qualquer erro dentro do
+        # loop) agora é reportada e encerra a chamada de forma limpa,
+        # em vez de morrer silenciosamente.
+        try:
+            with sd.RawInputStream(
+                samplerate=TAXA_ENTRADA,
+                blocksize=BLOCO,
+                dtype="int16",
+                channels=CANAIS,
+                callback=callback,
+            ):
+                # Mantém a sessão viva até que parar() altere self.ativo.
+                while self.ativo:
+                    audio_bytes = await fila_microfone.get()
 
-                # O bloco pode ter entrado na fila poucos milissegundos
-                # antes de o assistente começar a falar.
-                # Fazemos uma segunda verificação para garantir que o
-                # usuário nunca interrompa o assistente durante a resposta
-                # — a menos que interrupcao_habilitada esteja ligado
-                # (mesma exceção dos dois checks acima).
-                if self.alfred_falando and not self.interrupcao_habilitada:
-                    continue
+                    # O bloco pode ter entrado na fila poucos milissegundos
+                    # antes de o assistente começar a falar.
+                    # Fazemos uma segunda verificação para garantir que o
+                    # usuário nunca interrompa o assistente durante a resposta
+                    # — a menos que interrupcao_habilitada esteja ligado
+                    # (mesma exceção dos dois checks acima).
+                    if self.alfred_falando and not self.interrupcao_habilitada:
+                        continue
 
-                # Envia o bloco de áudio atual para o Gemini Live.
-                await self._enviar_para_sessao(
-                    sessao.send_realtime_input(
-                        audio=types.Blob(
-                            data=audio_bytes,
-                            mime_type=(
-                                f"audio/pcm;rate={TAXA_ENTRADA}"
-                            ),
+                    # Envia o bloco de áudio atual para o Gemini Live.
+                    await self._enviar_para_sessao(
+                        sessao.send_realtime_input(
+                            audio=types.Blob(
+                                data=audio_bytes,
+                                mime_type=(
+                                    f"audio/pcm;rate={TAXA_ENTRADA}"
+                                ),
+                            )
                         )
                     )
-                )
+
+        except Exception as erro:
+            print(
+                f"[MICROFONE] Não foi possível abrir ou usar o "
+                f"microfone: {erro}"
+            )
+
+            self.erro_recebido.emit(
+                f"Não foi possível abrir o microfone: {erro}"
+            )
+
+            self.ativo = False
 
     # Recebe as respostas da sessão Gemini.
     # Pode receber áudio e também pedidos de chamadas de ferramentas.
