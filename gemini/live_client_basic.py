@@ -151,6 +151,20 @@ import discord_jarvis
 # frame, sem janela) e tirar_foto_camera (salva um único frame).
 import camera_preview
 
+# Pacote isolado com controle real de navegador via Playwright (abrir
+# site, buscar e tocar música no YouTube, pausar/retomar) — ver
+# navegador_jarvis/__init__.py. Diferente de abrir_app_local (que só
+# abre o programa e para por aí): aqui o jarvis controla de verdade a
+# página (clica, navega, aperta tecla). A sessão do navegador (um
+# browser/contexto/página do Playwright) é aberta sob demanda na
+# PRIMEIRA ação pedida, não no __init__ do worker (ao contrário de
+# rede_jarvis/discord_jarvis) — não faz sentido abrir um Chromium
+# antes de qualquer pedido — e fica de pé entre chamadas depois disso,
+# rodando numa thread de fundo com loop próprio dedicado (mesmo padrão
+# de discord_jarvis/cliente.py), pra "pausar a música" agir na mesma
+# aba onde ela foi colocada.
+import navegador_jarvis
+
 # Pacote isolado com a ativação por voz (palavra-chave) e o
 # encerramento por inatividade — ver ativacao_voz/__init__.py e
 # ativacao_voz/detector.py. Não expõe tool nenhuma (não entra em
@@ -185,6 +199,7 @@ PACOTES_REGISTRADOS = [
     abrir_app_local,
     discord_jarvis,
     camera_preview,
+    navegador_jarvis,
 ]
 
 # Importa as funções da memória persistente do ALFRED.
@@ -1916,6 +1931,28 @@ class GeminiLiveWorker(QThread):
             "mais de um aplicativo parecido, pergunte qual antes de "
             "chamar de novo — nunca escolha sozinho. Se não "
             "encontrar nenhum, avise e não tente de novo sozinho. "
+
+            # NAVEGADOR
+            "abrir_site, tocar_musica_youtube, pausar_musica e "
+            "retomar_musica controlam de verdade uma página num "
+            "navegador próprio do jarvis — diferente de "
+            "abrir_app_local, que só abre um programa e para por aí. "
+            "Use abrir_site pra abrir um site específico ou pesquisar "
+            "algo (ex: 'abre o youtube', 'pesquisa receita de bolo no "
+            "navegador'). Use tocar_musica_youtube quando o usuário "
+            "pedir pra tocar uma música ou vídeo específico no "
+            "YouTube (ex: 'toca música X no youtube') — depois de "
+            "chamada com sucesso, a música já está tocando, não "
+            "chame pausar_musica nem retomar_musica em seguida sem o "
+            "usuário pedir. Use pausar_musica/retomar_musica só "
+            "quando o usuário pedir claramente pra pausar/continuar "
+            "a música — elas agem na mesma aba aberta por "
+            "tocar_musica_youtube, nunca abrem uma aba nova. Se "
+            "qualquer uma dessas funções disser que não há nada "
+            "tocando, ou que já estava pausada/tocando, repasse essa "
+            "informação ao usuário — não invente que uma ação "
+            "diferente aconteceu. Nunca use nenhuma dessas quatro "
+            "espontaneamente. "
 
             # DISCORD
             "Duas tools de Discord, não confunda uma com a outra: "

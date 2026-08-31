@@ -873,6 +873,36 @@ deste modo simples (o projeto não implementa cancelamento de eco/AEC) — não 
 "corrigir" numa reimplementação futura, a menos que isso mude de decisão
 explicitamente.
 
+## navegador_jarvis — sem wiring extra, de propósito (contraste com discord_jarvis/rede_jarvis)
+
+Controle real de navegador por voz (`abrir_site`, `tocar_musica_youtube`,
+`pausar_musica`, `retomar_musica`) via Playwright, API **assíncrona**
+(`playwright.async_api`) — nunca a síncrona, ver CLAUDE.md pro porquê (os objetos da
+API síncrona ficam presos à thread do SO que os criou, o que quebraria uma sessão
+persistente reaproveitada por chamadas `despachar()` sucessivas, já que o pool padrão
+de `asyncio.to_thread` pode escalar cada chamada pra uma thread diferente).
+
+Segue o contrato padrão (`obter_function_declarations()`/`despachar()`) e **não**
+precisa de nenhum wiring extra em `gemini/live_client_basic.py` além de import +
+`PACOTES_REGISTRADOS` — nenhuma chamada tipo `iniciar_navegador_jarvis()` no
+`__init__` do worker. Isso é diferente de propósito de `discord_jarvis`/`rede_jarvis`
+(que sobem a própria thread/loop de fundo eagerly, no `__init__`, pra já estarem
+prontos antes de qualquer chamada de voz) — `navegador_jarvis/sessao.py` usa o MESMO
+padrão de thread dedicada + loop próprio + `run_coroutine_threadsafe` como ponte
+(idêntico ao `discord_jarvis/cliente.py`), mas sobe essa thread de forma **preguiçosa**
+(`_garantir_thread()`, chamada de dentro de cada ação), na primeira vez que alguma
+ação de navegador é pedida de verdade — não faz sentido abrir um processo Chromium
+antes de qualquer pedido, ao contrário de uma conexão de rede/bot que já faz sentido
+manter viva o tempo todo. Se um pacote futuro precisar da mesma técnica de "thread +
+loop dedicados sob demanda", este é o exemplo a seguir — `discord_jarvis` continua
+sendo o exemplo certo pra "sempre ligado desde o `__init__`".
+
+A sessão (`browser`/`context`/`page`) é module-level state dentro da thread dedicada,
+reaproveitada entre chamadas — nunca reaberta a cada ação — e se autorrecupera
+sozinha se a página/navegador cair (usuário fechou a janela na mão, processo
+travou): antes de cada ação, `_obter_pagina_async()` confere `pagina.is_closed()` e
+reabre do zero se precisar, sem erro nenhum surgindo por causa disso sozinho.
+
 ## Checklist para religar tudo em um cliente novo
 
 1. Copie o trecho da seção "Trecho pronto para copiar" (imports,

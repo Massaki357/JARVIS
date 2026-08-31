@@ -14,6 +14,7 @@ import casa_inteligente.config as casa_inteligente_config
 import delegacao_ia.config as delegacao_ia_config
 import identificacao_planta.config as identificacao_planta_config
 import identificacao_visual.config as identificacao_visual_config
+import navegador_jarvis.config as navegador_jarvis_config
 import rede_jarvis.config as rede_jarvis_config
 
 # Cada item é (rótulo da seção exibido na tela, módulo de config do
@@ -26,4 +27,5 @@ PACOTES_COM_CONFIG = [
     ("Identificação de Plantas (Pl@ntNet)", identificacao_planta_config),
     ("Segunda Opinião Visual (Mistral)", identificacao_visual_config),
     ("Ativação por Voz (Vosk, 100% local)", ativacao_voz_config),
+    ("Navegador (Playwright)", navegador_jarvis_config),
 ]

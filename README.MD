@@ -106,6 +106,15 @@ Rode o comando:
 ```
 pip install -r requirements.txt
 ```
+
+Para o jarvis conseguir controlar o navegador por voz (abrir sites, buscar e tocar
+música no YouTube, pausar/retomar — ver `navegador_jarvis/`), rode também, uma única
+vez, depois do `pip install`:
+```
+playwright install chromium
+```
+Isso baixa o navegador Chromium que o Playwright usa (não é o Chrome já instalado no
+seu Windows — é uma cópia própria, baixada e gerenciada pelo próprio Playwright).
 --------------------------------------------------
 
 Para o jarvis iniciar a chamada sozinho ao ouvir uma palavra-chave (sem precisar clicar

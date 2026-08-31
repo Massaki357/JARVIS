@@ -16,3 +16,4 @@ pywin32
 pypdf
 discord.py
 vosk
+playwright
