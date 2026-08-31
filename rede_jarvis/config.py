@@ -140,3 +140,66 @@ TIMEOUT_CONSULTA_SERVICE_ACCOUNT = 15
 ARQUIVO_LOG = (
     Path(__file__).resolve().parent / "comandos_remotos.log"
 )
+
+
+# Descreve as variáveis de .env deste pacote pra tela de
+# configurações (configuracoes/window.py) montar os campos
+# automaticamente — não é usado por mais nada além disso. Ver
+# INTEGRATION.md, seção "Tela de configurações".
+def config_schema():
+    return [
+        {
+            "nome": "MQTT_HOST",
+            "rotulo": "Host do broker MQTT",
+            "sensivel": False,
+            "obrigatoria": True,
+        },
+        {
+            "nome": "MQTT_PORT",
+            "rotulo": "Porta do broker MQTT",
+            "sensivel": False,
+            "obrigatoria": False,
+        },
+        {
+            "nome": "MQTT_USERNAME",
+            "rotulo": "Usuário do broker MQTT",
+            "sensivel": False,
+            "obrigatoria": True,
+        },
+        {
+            "nome": "MQTT_PASSWORD",
+            "rotulo": "Senha do broker MQTT",
+            "sensivel": True,
+            "obrigatoria": True,
+        },
+        {
+            "nome": "TOKEN_REDE_JARVIS",
+            "rotulo": "Token compartilhado entre as máquinas",
+            "sensivel": True,
+            "obrigatoria": True,
+        },
+        {
+            "nome": "NOME_MAQUINA",
+            "rotulo": "Nome desta máquina",
+            "sensivel": False,
+            "obrigatoria": False,
+        },
+        {
+            "nome": "PASTA_TRANSFERENCIAS_PADRAO",
+            "rotulo": "Pasta padrão para arquivos recebidos",
+            "sensivel": False,
+            "obrigatoria": False,
+        },
+        {
+            "nome": "GOOGLE_SERVICE_ACCOUNT_JSON",
+            "rotulo": "Caminho da credencial do Google Drive (arquivos grandes)",
+            "sensivel": False,
+            "obrigatoria": False,
+        },
+        {
+            "nome": "PEDIR_PERMISSAO",
+            "rotulo": "Pedir permissão antes de executar comando remoto (true/false)",
+            "sensivel": False,
+            "obrigatoria": False,
+        },
+    ]

@@ -30,6 +30,7 @@ class MonitorTelaContinuo:
         intervalo_segundos=INTERVALO_PADRAO_VISUALIZACAO,
         timeout_segundos=TIMEOUT_PADRAO_VISUALIZACAO,
         callback_encerrado=None,
+        funcao_captura=capturar_tela_bytes,
     ):
         # Função assíncrona chamada a cada frame capturado,
         # recebendo os bytes JPEG do frame.
@@ -41,6 +42,16 @@ class MonitorTelaContinuo:
         # Função assíncrona opcional chamada quando o monitor se
         # encerra sozinho por timeout, sem parar() ter sido chamado.
         self.callback_encerrado = callback_encerrado
+        # Função síncrona chamada a cada frame pra capturar a tela —
+        # injetável, default preserva o comportamento original
+        # (monitor principal fixo). Quem instancia decide: a
+        # visualização contínua LOCAL passa
+        # capturar_monitor_do_cursor_bytes (segue o monitor onde o
+        # cursor está); a visualização REMOTA (rede_jarvis) não passa
+        # nada e continua usando o padrão — "onde está o cursor" não
+        # faz sentido do ponto de vista de quem está vendo de outra
+        # máquina.
+        self.funcao_captura = funcao_captura
 
         # Indica se o loop de captura está em execução.
         self.ativo = False
@@ -103,10 +114,16 @@ class MonitorTelaContinuo:
 
                 break
 
-            # A captura é síncrona e bloqueante, por isso roda
-            # em uma thread separada para não travar o loop.
+            # A captura é síncrona e bloqueante, por isso roda em uma
+            # thread separada para não travar o loop. self.funcao_captura
+            # é chamada de novo a CADA iteração de propósito — se for
+            # capturar_monitor_do_cursor_bytes, isso reavalia a posição
+            # do cursor a cada frame, então mover o mouse pra outro
+            # monitor no meio da visualização já muda o monitor
+            # capturado a partir do próximo frame (não trava no monitor
+            # de quando a visualização começou).
             frame_bytes = await asyncio.to_thread(
-                capturar_tela_bytes
+                self.funcao_captura
             )
 
             await self.callback_frame(

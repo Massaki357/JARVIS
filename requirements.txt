@@ -11,3 +11,6 @@ psutil
 win11toast
 google-api-python-client
 paho-mqtt
+tuya-connector-python
+pywin32
+pypdf

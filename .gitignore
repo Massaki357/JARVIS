@@ -1,1 +1,13 @@
 .env
+__pycache__
+venv
+
+# admin_terminal: log local de comandos administrativos e a pasta de
+# troca de arquivos (pedido/resultado) com o processo elevado — dados
+# locais da máquina, nunca versionados.
+admin_terminal/comandos_admin.log
+admin_terminal/_fila/
+
+# abrir_app_local: cache técnico nome->AppID, específico de cada
+# máquina (AppIDs mudam conforme o que está instalado).
+abrir_app_local/apps_conhecidos.json
