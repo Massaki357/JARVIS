@@ -108,6 +108,39 @@ def _ao_fechar_envio_arquivo():
     _janela_envio_arquivo = None
 
 
+# Referência à janela de vídeo ao vivo da câmera aberta agora, se
+# houver — usada tanto pra manter o objeto vivo quanto pra
+# _abrir_camera saber se já existe uma janela pra só focar em vez de
+# abrir outra, e pra _fechar_camera saber se há algo a fechar.
+_janela_camera = None
+
+
+def _abrir_camera():
+    global _janela_camera
+
+    # Se já estiver aberta, não abre uma segunda — só foca a
+    # existente (traz pra frente e dá foco).
+    if _janela_camera is not None:
+        _janela_camera.raise_()
+        _janela_camera.activateWindow()
+        return
+
+    from ui.camera_window import JanelaCamera
+
+    _janela_camera = JanelaCamera(ao_fechar=_ao_fechar_camera)
+    _janela_camera.show()
+
+
+def _fechar_camera():
+    if _janela_camera is not None:
+        _janela_camera.close()
+
+
+def _ao_fechar_camera():
+    global _janela_camera
+    _janela_camera = None
+
+
 # [CURSO] Função principal da aplicação.
 # [CURSO] Ela inicializa o Qt, cria a janela e inicia o loop de eventos.
 def main():
@@ -139,6 +172,15 @@ def main():
     )
     obter_sinalizador().solicitou_abrir_envio_arquivo.connect(
         _abrir_envio_arquivo
+    )
+
+    # Mesmo padrão, pra janela de vídeo ao vivo da câmera (emitidos
+    # de uma thread de fundo, dentro de camera_preview/__init__.py).
+    obter_sinalizador().solicitou_abrir_camera.connect(
+        _abrir_camera
+    )
+    obter_sinalizador().solicitou_fechar_camera.connect(
+        _fechar_camera
     )
 
     # Entrega a transcrição de cada resposta falada do Gemini pra

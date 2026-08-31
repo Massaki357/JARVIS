@@ -3,10 +3,10 @@
 Este arquivo é a fonte da verdade de como religar os pacotes isolados
 (`rede_jarvis/`, `casa_inteligente/`, `delegacao_ia/`, `admin_terminal/`,
 `configuracoes/`, `identificacao_planta/`, `identificacao_visual/`,
-`explorador_windows/`, `chat_jarvis/`, `abrir_app_local/`, e outros que vierem
-depois) a QUALQUER arquivo cliente Gemini Live — seja o `gemini/live_client_basic.py`
-atual (temporário, será substituído quando a versão completa do curso chegar) ou o
-arquivo cliente da versão final.
+`explorador_windows/`, `chat_jarvis/`, `abrir_app_local/`, `discord_jarvis/`, e
+outros que vierem depois) a QUALQUER arquivo cliente Gemini Live — seja o
+`gemini/live_client_basic.py` atual (temporário, será substituído quando a versão
+completa do curso chegar) ou o arquivo cliente da versão final.
 
 **Atualize este arquivo toda vez que um pacote novo for criado, ou que
 a forma de religar um pacote existente mudar.**
@@ -61,6 +61,7 @@ import identificacao_planta
 import identificacao_visual
 import chat_jarvis
 import abrir_app_local
+import discord_jarvis
 
 
 # 2. Registro dos pacotes — a única lista que precisa ser editada
@@ -75,6 +76,7 @@ PACOTES_REGISTRADOS = [
     identificacao_visual,
     chat_jarvis,
     abrir_app_local,
+    discord_jarvis,
 ]
 
 
@@ -520,6 +522,113 @@ Sem wiring extra — só o contrato padrão (`obter_function_declarations()`/
 `despachar()`), mesmo caso de `casa_inteligente`/`delegacao_ia`. Nenhum callback de
 sessão, inicialização em background ou estado por chamada de voz: busca (via
 subprocess pro PowerShell) e abertura de app são ambas pontuais e síncronas.
+
+### `discord_jarvis`
+
+Precisa de uma chamada de inicialização no `__init__` do worker — mesmo padrão de
+`rede_jarvis.iniciar_rede_jarvis`/`admin_terminal.iniciar_admin_terminal`:
+
+```python
+# No __init__ do worker/cliente, uma vez (idempotente):
+discord_jarvis.iniciar_discord_jarvis()
+```
+
+Diferente de `rede_jarvis` (que usa paho-mqtt, síncrono e thread-safe por natureza),
+`discord_jarvis` usa `discord.py`, que exige um loop `asyncio` próprio vivo o tempo
+todo. `iniciar_discord_jarvis()` sobe uma thread de fundo dedicada com seu próprio
+loop (`discord_jarvis/cliente.py`), rodando `cliente.start(token)` até a conexão
+cair — mesmo padrão de loop de fundo dedicado já usado em
+`rede_jarvis/visualizacao_remota.py`. Chamadas síncronas vindas de `despachar()`
+(que já roda em thread separada via `asyncio.to_thread`) usam
+`asyncio.run_coroutine_threadsafe(corrotina, loop_do_bot).result(timeout=...)` pra
+entrar nesse loop e esperar o resultado — a mesma técnica de
+`visualizacao_remota.py`, não um mecanismo novo.
+
+**Setup fora do código, obrigatório antes de funcionar**: além de `DISCORD_BOT_TOKEN`
+no `.env`, o bot precisa ter **"Server Members Intent"** e **"Message Content
+Intent"** ativadas em Privileged Gateway Intents no Developer Portal
+(discord.com/developers/applications) — confirmado ao vivo: sem isso, a conexão
+falha explicitamente (`discord.errors.PrivilegedIntentsRequired`), não falha
+silenciosamente. O bot também precisa estar convidado num servidor onde as pessoas
+que vão receber DM estejam — `buscar_membro`/`buscar_canal` só enxergam servidores
+em comum com o bot.
+
+### `camera_preview`
+
+Mesmo padrão de `configuracoes` (sinalizador genérico, `despachar()` só emite —
+ver a seção `configuracoes` acima pro trecho completo do mecanismo), com duas
+tools em vez de uma (`abrir_camera`/`fechar_camera`) e uma diferença: a janela
+(`ui/camera_window.py`, `JanelaCamera`) precisa ser **focada em vez de duplicada**
+se já estiver aberta, e **avisar `main_basic.py` quando fecha** (pelo X ou por
+`fechar_camera`), pra que uma abertura seguinte crie uma janela nova em vez de
+achar que a antiga ainda existe — mesmo padrão de `ao_fechar` já usado por
+`ChatWindow`/`EnvioArquivoWindow` (ver seção `chat_jarvis` acima):
+
+```python
+# interfaces_extras/sinalizador.py — dois Signals novos, mesma classe:
+solicitou_abrir_camera = Signal()
+solicitou_fechar_camera = Signal()
+
+# main_basic.py:
+_janela_camera = None
+
+def _abrir_camera():
+    global _janela_camera
+    if _janela_camera is not None:
+        _janela_camera.raise_()
+        _janela_camera.activateWindow()
+        return
+    from ui.camera_window import JanelaCamera
+    _janela_camera = JanelaCamera(ao_fechar=_ao_fechar_camera)
+    _janela_camera.show()
+
+def _fechar_camera():
+    if _janela_camera is not None:
+        _janela_camera.close()
+
+def _ao_fechar_camera():
+    global _janela_camera
+    _janela_camera = None
+
+obter_sinalizador().solicitou_abrir_camera.connect(_abrir_camera)
+obter_sinalizador().solicitou_fechar_camera.connect(_fechar_camera)
+```
+
+**Risco de concorrência no dispositivo — confirmado ao vivo antes de implementar,
+não assumido**: a maioria das webcams (testado aqui via backend MSMF do OpenCV, o
+padrão no Windows) não erra ao abrir um segundo `cv2.VideoCapture(0)` enquanto um
+primeiro já está aberto, mas o segundo handle interfere na leitura do primeiro
+enquanto ambos coexistem — um teste real mostrou o handle já aberto perdendo
+100% dos frames durante toda a janela em que um segundo handle ficava aberto,
+voltando ao normal assim que o segundo era liberado. Por isso `JanelaCamera` e
+`vision.camera_capture.capturar_camera_bytes()` (usada por `analisar_camera`,
+`tirar_foto_camera`, `identificar_planta`, `consultar_segunda_opiniao_visual`)
+**compartilham o MESMO handle** em vez de abrir um cada:
+
+```python
+# vision/camera_capture.py — API do handle compartilhado:
+abrir_camera_compartilhada()        # -> bool; idempotente; só chamada por JanelaCamera
+fechar_camera_compartilhada()       # só chamada por JanelaCamera, no closeEvent
+camera_compartilhada_esta_aberta()  # -> bool
+ler_frame_camera_compartilhada()    # -> (bool, frame_bgr | None); sob lock
+```
+
+`JanelaCamera` é a DONA do ciclo de vida do handle compartilhado (abre no
+`__init__`, fecha no `closeEvent`) — ela é quem chama
+`abrir_camera_compartilhada()`/`fechar_camera_compartilhada()`.
+`capturar_camera_bytes()` nunca abre nem fecha o handle compartilhado, só lê
+dele quando `camera_compartilhada_esta_aberta()` é `True`; quando é `False`
+(preview fechado, caso normal), seu comportamento original — abrir seu próprio
+`cv2.VideoCapture(0)`, aquecer, ler, liberar — continua idêntico e inalterado.
+Um `threading.Lock` protege as leituras/aberturas/fechamentos contra o QTimer do
+preview (thread principal) e uma captura pontual (thread do worker Gemini)
+colidindo.
+
+Um pacote futuro que também precise manter um recurso de hardware aberto
+continuamente (não só uma janela) deveria seguir esse mesmo formato — dono único
+do ciclo de vida do recurso, ponto de leitura compartilhado sob lock, e o
+consumidor pontual (`capturar_camera_bytes`) só lê se já estiver aberto, nunca
+abre por conta própria.
 
 ## Checklist para religar tudo em um cliente novo
 

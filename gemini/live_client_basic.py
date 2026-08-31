@@ -40,9 +40,14 @@ from core.config import (
 # tanto na análise pontual de tela quanto na visualização contínua
 # local, já que o usuário tem vários monitores e o que importa é o
 # que ele está de fato olhando/mostrando no momento.
-from vision.screen_capture import capturar_monitor_do_cursor_bytes
-# Função responsável por capturar a webcam e retornar a imagem em bytes.
-from vision.camera_capture import capturar_camera_bytes
+from vision.screen_capture import (
+    capturar_monitor_do_cursor_bytes,
+    salvar_print_bytes,
+)
+# Função responsável por capturar a webcam e retornar a imagem em
+# bytes, e função responsável por salvar esses bytes em disco (mesmo
+# padrão de salvar_print_bytes, ver vision/camera_capture.py).
+from vision.camera_capture import capturar_camera_bytes, salvar_foto_bytes
 # Classe responsável pelo loop de captura contínua da tela.
 from vision.monitor_continuo import MonitorTelaContinuo
 
@@ -120,6 +125,22 @@ import chat_jarvis
 # nenhum cache ou lógica é compartilhado com nenhum dos dois.
 import abrir_app_local
 
+# Pacote isolado com conexão persistente ao bot do Discord e envio
+# de DM pra um amigo pelo nome (ver discord_jarvis/__init__.py). A
+# conexão precisa ficar de pé o tempo todo (não só durante um
+# despachar() pontual) — por isso, além do contrato padrão, também
+# precisa de iniciar_discord_jarvis() chamado uma vez no __init__ do
+# worker, mesmo padrão de rede_jarvis.iniciar_rede_jarvis.
+import discord_jarvis
+
+# Pacote isolado com a janela de vídeo AO VIVO da webcam (ver
+# camera_preview/__init__.py). despachar() aqui só emite um sinal
+# (ver interfaces_extras/sinalizador.py) — mesmo padrão de
+# configuracoes; a janela em si é criada/fechada na thread principal,
+# conectada em main_basic.py. Diferente de analisar_camera (um único
+# frame, sem janela) e tirar_foto_camera (salva um único frame).
+import camera_preview
+
 # Sinalizador genérico (ver interfaces_extras/sinalizador.py) — aqui
 # usado só pra ENTREGAR a transcrição da resposta falada do Gemini
 # pra uma eventual janela de chat aberta (resposta_texto_recebida),
@@ -128,12 +149,12 @@ from interfaces_extras.sinalizador import obter_sinalizador
 
 # Todo pacote de tools isolado (rede_jarvis, casa_inteligente,
 # delegacao_ia, admin_terminal, configuracoes, identificacao_planta,
-# identificacao_visual, chat_jarvis, abrir_app_local, e outros que
-# vierem depois) expõe obter_function_declarations()/despachar() —
-# ver INTEGRATION.md na raiz do projeto para o padrão completo e o
-# trecho pronto pra copiar em outro arquivo cliente. Adicionar um
-# pacote novo é só importar e incluir aqui, nada mais muda neste
-# arquivo.
+# identificacao_visual, chat_jarvis, abrir_app_local,
+# discord_jarvis, camera_preview, e outros que vierem depois) expõe
+# obter_function_declarations()/despachar() — ver INTEGRATION.md na
+# raiz do projeto para o padrão completo e o trecho pronto pra
+# copiar em outro arquivo cliente. Adicionar um pacote novo é só
+# importar e incluir aqui, nada mais muda neste arquivo.
 PACOTES_REGISTRADOS = [
     rede_jarvis,
     casa_inteligente,
@@ -144,6 +165,8 @@ PACOTES_REGISTRADOS = [
     identificacao_visual,
     chat_jarvis,
     abrir_app_local,
+    discord_jarvis,
+    camera_preview,
 ]
 
 # Importa as funções da memória persistente do ALFRED.
@@ -173,6 +196,14 @@ ATRASO_REABRIR_MICROFONE = 0.8
 # caso o computador ou a conexão fiquem temporariamente lentos.
 LIMITE_FILA_MICROFONE = 50
 
+# Liga logs temporários de tempo no console (diagnóstico de
+# travamento perceptível entre falas, relacionado à execução de
+# tools) — desligado por padrão. Só ativar pontualmente pra
+# investigar um travamento reportado; nunca deixar True em uso
+# normal. Ver receber_audio/processar_chamada_de_funcao pra onde os
+# tempos são medidos.
+DEBUG_TIMING_DISPATCH = False
+
 # Intervalo mínimo, em segundos, entre chamadas visuais repetidas.
 # Isso evita capturas duplicadas para o mesmo pedido.
 COOLDOWN_FUNCAO_VISUAL = 8.0
@@ -191,6 +222,14 @@ TIMEOUT_VISUALIZACAO_CONTINUA = 90
 # rascunho antigo que o usuário já esqueceu, numa parte totalmente
 # diferente da conversa.
 TIMEOUT_RASCUNHO_EMAIL = 120
+
+# Tempo máximo, em segundos, que a última captura desta sessão
+# (self.ultima_captura_caminho — um print OU uma foto, o que tiver
+# sido capturado por último) continua válida pra reaproveitar em
+# enviar_captura_email/enviar_captura_discord_dm/enviar_captura_remoto
+# sem capturar de novo — evita reenviar uma captura velha quando o
+# usuário pede "envie isso" bem depois da última captura.
+TIMEOUT_ULTIMA_CAPTURA_SEGUNDOS = 300
 
 
 # Classe principal responsável pela sessão em tempo real com o Gemini.
@@ -255,6 +294,20 @@ class GeminiLiveWorker(QThread):
         # criado_em (usado pra checar TIMEOUT_RASCUNHO_EMAIL).
         self.email_pendente = None
 
+        # Caminho e instante (time.monotonic()) da última captura
+        # visual salva em disco nesta sessão — print OU foto, o que
+        # tiver acontecido por último (salvar_print_tela,
+        # tirar_foto_camera, ou indiretamente por
+        # enviar_captura_email/enviar_captura_discord_dm/
+        # enviar_captura_remoto quando elas mesmas capturam). "Última
+        # captura" única, não uma pra cada tipo — reaproveitada pelas
+        # três tools de envio quando o pedido é só "envie isso"/"envie
+        # este print"/"envie essa foto", sem precisar capturar de novo
+        # (ver _obter_ou_capturar_ultima_captura e
+        # TIMEOUT_ULTIMA_CAPTURA_SEGUNDOS).
+        self.ultima_captura_caminho = None
+        self.ultima_captura_timestamp = None
+
         # Sobe (ou apenas reconecta os callbacks de, se já estiver de
         # pé) o listener de comandos remotos via MQTT. Roda aqui —
         # no construtor, chamado pela thread da UI antes de .start() —
@@ -274,6 +327,13 @@ class GeminiLiveWorker(QThread):
         admin_terminal.iniciar_admin_terminal(
             callback_falar=self._falar_espontaneamente,
         )
+
+        # Sobe (ou apenas confirma que já está de pé) a conexão
+        # persistente com o bot do Discord — idempotente, mesmo
+        # motivo de rede_jarvis acima: GeminiLiveWorker é recriado a
+        # cada chamada, mas a conexão com o Discord deve continuar
+        # viva independente disso.
+        discord_jarvis.iniciar_discord_jarvis()
 
     # Callback genérico usado por pacotes isolados (rede_jarvis,
     # admin_terminal) para o ALFRED anunciar algo por voz de forma
@@ -512,8 +572,30 @@ class GeminiLiveWorker(QThread):
                         description=(
                             "Use esta função somente quando o usuário pedir "
                             "explicitamente para analisar, ver, observar ou "
-                            "explicar a tela do computador. Não use "
-                            "espontaneamente e não repita para o mesmo pedido."
+                            "explicar a tela do computador. Só descreve o que "
+                            "está sendo mostrado — nunca salva nada em disco. "
+                            "Se o usuário pedir pra salvar, guardar ou tirar "
+                            "um print, use salvar_print_tela em vez desta. "
+                            "Não use espontaneamente e não repita para o "
+                            "mesmo pedido."
+                        ),
+                    ),
+
+                    types.FunctionDeclaration(
+                        name="salvar_print_tela",
+                        description=(
+                            "Captura o monitor onde o cursor do mouse está "
+                            "agora e SALVA a imagem em arquivo (pasta "
+                            "JarvisRecebidos na Área de Trabalho) — diferente "
+                            "de analisar_tela, que só descreve o que está "
+                            "sendo mostrado, sem gravar nada em disco. Use "
+                            "esta função somente quando o usuário pedir "
+                            "explicitamente para salvar, guardar, tirar e "
+                            "guardar um print, ou capturar e salvar a tela. "
+                            "Se o usuário só pedir pra você ver, olhar ou "
+                            "analisar a tela, use analisar_tela em vez "
+                            "desta — não salve nada nesse caso. Não use "
+                            "espontaneamente."
                         ),
                     ),
 
@@ -522,8 +604,29 @@ class GeminiLiveWorker(QThread):
                         description=(
                             "Use esta função somente quando o usuário pedir "
                             "explicitamente para analisar, ver, observar ou "
-                            "explicar a webcam ou câmera. Não use "
-                            "espontaneamente e não repita para o mesmo pedido."
+                            "explicar a webcam ou câmera. Só descreve o que "
+                            "está sendo mostrado — nunca salva nada em disco. "
+                            "Se o usuário pedir pra tirar, salvar ou guardar "
+                            "uma foto, use tirar_foto_camera em vez desta. "
+                            "Não use espontaneamente e não repita para o "
+                            "mesmo pedido."
+                        ),
+                    ),
+
+                    types.FunctionDeclaration(
+                        name="tirar_foto_camera",
+                        description=(
+                            "Captura uma imagem da webcam e SALVA a foto em "
+                            "arquivo (pasta JarvisRecebidos na Área de "
+                            "Trabalho) — diferente de analisar_camera, que só "
+                            "descreve o que está sendo mostrado, sem gravar "
+                            "nada em disco. Use esta função somente quando o "
+                            "usuário pedir explicitamente para tirar, salvar "
+                            "ou guardar uma foto, ou fotografar algo pela "
+                            "câmera. Se o usuário só pedir pra você ver, "
+                            "olhar ou analisar a câmera, use analisar_camera "
+                            "em vez desta — não salve nada nesse caso. Não "
+                            "use espontaneamente."
                         ),
                     ),
 
@@ -758,6 +861,222 @@ class GeminiLiveWorker(QThread):
                     ),
 
                     types.FunctionDeclaration(
+                        name="enviar_captura_email",
+                        description=(
+                            "Captura um print da tela OU uma foto da "
+                            "câmera (ou reaproveita a última captura já "
+                            "feita, se recente — print ou foto, o que "
+                            "tiver sido capturado por último) e prepara "
+                            "um email com ela anexada — MESMO fluxo de "
+                            "confirmação de preparar_email, nunca envia "
+                            "direto. Use quando o usuário pedir pra "
+                            "tirar/enviar um print ou uma foto por email "
+                            "(ex: 'tire um print e manda por email pro "
+                            "fulano', 'tira uma foto e envia pro meu "
+                            "email', 'envia esse print/essa foto pro meu "
+                            "email'). destinatario é sempre obrigatório e "
+                            "nunca deve ser inventado. assunto e corpo "
+                            "são opcionais — se o usuário não "
+                            "especificar, um padrão razoável é usado, já "
+                            "que ele pode não ter dado esses detalhes ao "
+                            "pedir isso rapidamente. Depois de chamar "
+                            "esta função, o fluxo de confirmação normal "
+                            "do email continua igual — leia o rascunho "
+                            "de volta e espere a resposta do usuário "
+                            "antes de chamar confirmar_envio_email."
+                        ),
+                        parameters=types.Schema(
+                            type="OBJECT",
+                            properties={
+                                "destinatario": types.Schema(
+                                    type="STRING",
+                                    description=(
+                                        "Endereço de email do "
+                                        "destinatário, informado "
+                                        "explicitamente pelo usuário."
+                                    ),
+                                ),
+                                "assunto": types.Schema(
+                                    type="STRING",
+                                    description=(
+                                        "Assunto do email. Opcional — "
+                                        "deixe vazio se o usuário não "
+                                        "especificar."
+                                    ),
+                                ),
+                                "corpo": types.Schema(
+                                    type="STRING",
+                                    description=(
+                                        "Conteúdo do email. Opcional — "
+                                        "deixe vazio se o usuário não "
+                                        "especificar."
+                                    ),
+                                ),
+                                "capturar_novo": types.Schema(
+                                    type="BOOLEAN",
+                                    description=(
+                                        "Verdadeiro se o usuário pediu "
+                                        "explicitamente pra tirar um "
+                                        "print ou uma foto NOVA agora "
+                                        "(ex: 'tire um print e manda...', "
+                                        "'tira uma foto e envia...'). "
+                                        "Falso (ou omitido) se ele está "
+                                        "se referindo a uma captura já "
+                                        "feita antes (ex: 'envie este "
+                                        "print', 'manda essa foto', "
+                                        "'envie isso')."
+                                    ),
+                                ),
+                                "tipo_captura": types.Schema(
+                                    type="STRING",
+                                    enum=["print", "foto"],
+                                    description=(
+                                        "'print' ou 'foto', conforme o "
+                                        "usuário pediu. Só é usado quando "
+                                        "capturar_novo é verdadeiro, ou "
+                                        "quando não há nenhuma captura "
+                                        "recente pra reaproveitar — nesses "
+                                        "casos a função precisa saber o "
+                                        "que capturar. Se capturar_novo "
+                                        "for falso e já existir uma "
+                                        "captura recente, pode deixar "
+                                        "vazio."
+                                    ),
+                                ),
+                            },
+                            required=[
+                                "destinatario",
+                            ],
+                        ),
+                    ),
+
+                    types.FunctionDeclaration(
+                        name="enviar_captura_discord_dm",
+                        description=(
+                            "Captura um print da tela OU uma foto da "
+                            "câmera (ou reaproveita a última captura já "
+                            "feita, se recente) e manda direto (DM) pro "
+                            "amigo especificado pelo Discord, com a "
+                            "captura anexada — mesma resolução de "
+                            "contato de enviar_dm_discord. Use quando o "
+                            "usuário pedir pra tirar/enviar um print ou "
+                            "uma foto pra alguém pelo Discord (ex: 'tire "
+                            "um print e manda pro Luan no discord', "
+                            "'tira uma foto e manda pro Luan'). "
+                            "nome_amigo é sempre obrigatório. texto é "
+                            "opcional. Se a função retornar mais de um "
+                            "candidato parecido, pergunte qual antes de "
+                            "chamar de novo — nunca escolha sozinho."
+                        ),
+                        parameters=types.Schema(
+                            type="OBJECT",
+                            properties={
+                                "nome_amigo": types.Schema(
+                                    type="STRING",
+                                    description=(
+                                        "Nome do amigo, exatamente como "
+                                        "o usuário falou."
+                                    ),
+                                ),
+                                "texto": types.Schema(
+                                    type="STRING",
+                                    description=(
+                                        "Mensagem a acompanhar a "
+                                        "captura. Opcional."
+                                    ),
+                                ),
+                                "capturar_novo": types.Schema(
+                                    type="BOOLEAN",
+                                    description=(
+                                        "Verdadeiro se o usuário pediu "
+                                        "explicitamente pra tirar um "
+                                        "print ou uma foto NOVA agora. "
+                                        "Falso (ou omitido) se ele está "
+                                        "se referindo a uma captura já "
+                                        "feita antes."
+                                    ),
+                                ),
+                                "tipo_captura": types.Schema(
+                                    type="STRING",
+                                    enum=["print", "foto"],
+                                    description=(
+                                        "'print' ou 'foto', conforme o "
+                                        "usuário pediu. Só é usado quando "
+                                        "capturar_novo é verdadeiro, ou "
+                                        "quando não há nenhuma captura "
+                                        "recente pra reaproveitar. Se "
+                                        "capturar_novo for falso e já "
+                                        "existir uma captura recente, "
+                                        "pode deixar vazio."
+                                    ),
+                                ),
+                            },
+                            required=[
+                                "nome_amigo",
+                            ],
+                        ),
+                    ),
+
+                    types.FunctionDeclaration(
+                        name="enviar_captura_remoto",
+                        description=(
+                            "Captura um print da tela OU uma foto da "
+                            "câmera (ou reaproveita a última captura já "
+                            "feita, se recente) e envia pra outra "
+                            "máquina do jarvis, usando o mesmo mecanismo "
+                            "de transferência de arquivo remoto já "
+                            "existente. Use quando o usuário pedir pra "
+                            "tirar/enviar um print ou uma foto pra outro "
+                            "computador (ex: 'tire um print e manda pro "
+                            "computador da loja', 'tira uma foto e manda "
+                            "pra loja'). maquina_destino é sempre "
+                            "obrigatório — o nome da máquina exatamente "
+                            "como o usuário se referiu a ela."
+                        ),
+                        parameters=types.Schema(
+                            type="OBJECT",
+                            properties={
+                                "maquina_destino": types.Schema(
+                                    type="STRING",
+                                    description=(
+                                        "Nome da máquina remota, "
+                                        "conforme o usuário se referiu "
+                                        "a ela."
+                                    ),
+                                ),
+                                "capturar_novo": types.Schema(
+                                    type="BOOLEAN",
+                                    description=(
+                                        "Verdadeiro se o usuário pediu "
+                                        "explicitamente pra tirar um "
+                                        "print ou uma foto NOVA agora. "
+                                        "Falso (ou omitido) se ele está "
+                                        "se referindo a uma captura já "
+                                        "feita antes."
+                                    ),
+                                ),
+                                "tipo_captura": types.Schema(
+                                    type="STRING",
+                                    enum=["print", "foto"],
+                                    description=(
+                                        "'print' ou 'foto', conforme o "
+                                        "usuário pediu. Só é usado quando "
+                                        "capturar_novo é verdadeiro, ou "
+                                        "quando não há nenhuma captura "
+                                        "recente pra reaproveitar. Se "
+                                        "capturar_novo for falso e já "
+                                        "existir uma captura recente, "
+                                        "pode deixar vazio."
+                                    ),
+                                ),
+                            },
+                            required=[
+                                "maquina_destino",
+                            ],
+                        ),
+                    ),
+
+                    types.FunctionDeclaration(
                         name="salvar_memoria",
                         description=(
                             "Salva uma informação curta e útil na memória "
@@ -922,12 +1241,103 @@ class GeminiLiveWorker(QThread):
 
             # VISÃO
             "Só chame analisar_tela quando o usuário pedir explicitamente "
-            "para ver, analisar, observar ou explicar a tela. "
+            "para ver, analisar, observar ou explicar a tela — essa função "
+            "só descreve o que está sendo mostrado, nunca salva nada em "
+            "disco. "
+            "Só chame salvar_print_tela quando o usuário pedir "
+            "explicitamente para salvar, guardar, tirar e guardar um "
+            "print, ou capturar e salvar a tela — ex: 'salva um print "
+            "disso', 'tira um print e guarda', 'captura e salva a tela'. "
+            "Não confunda as duas: um pedido só de 'ver'/'analisar' é "
+            "sempre analisar_tela, sem salvar nada; um pedido de "
+            "'salvar'/'guardar' é sempre salvar_print_tela. Depois de "
+            "salvar_print_tela, informe ao usuário o caminho exato do "
+            "arquivo que a função retornar. "
+            "Só chame tirar_foto_camera quando o usuário pedir "
+            "explicitamente para tirar, salvar ou guardar uma foto, ou "
+            "fotografar algo pela câmera — ex: 'tira uma foto', 'tira "
+            "uma foto disso e guarda', 'fotografa e salva'. Mesma "
+            "distinção: um pedido só de 'ver'/'analisar' a câmera é "
+            "sempre analisar_camera, sem salvar nada; um pedido de "
+            "'tirar'/'salvar'/'guardar' uma foto é sempre "
+            "tirar_foto_camera. Depois de tirar_foto_camera, informe "
+            "ao usuário o caminho exato do arquivo que a função "
+            "retornar. "
+
+            # ENVIO DE CAPTURA (PRINT OU FOTO)
+            "Três tools enviam uma captura visual diretamente — "
+            "enviar_captura_email (por email), enviar_captura_discord_dm "
+            "(por DM no Discord pra um amigo) e enviar_captura_remoto "
+            "(pra outra máquina da rede jarvis). Cada uma serve tanto "
+            "pra um print de tela quanto pra uma foto da câmera — use "
+            "uma delas quando o usuário pedir claramente pra ENVIAR um "
+            "print ou uma foto, não só salvar ou analisar (ex: 'tire um "
+            "print e manda...', 'tira uma foto e envia...', 'manda esse "
+            "print', 'envie essa foto', 'envie isso'). "
+            "Todas têm dois parâmetros relacionados: "
+            "capturar_novo (booleano) — true quando o pedido já veio "
+            "como 'tire um print/uma foto e envie' (o usuário quer uma "
+            "captura NOVA agora); false ou omitido quando o pedido for "
+            "'envie este print'/'manda essa foto'/'envie isso' logo "
+            "depois de uma captura recente (salvar_print_tela ou "
+            "tirar_foto_camera — as únicas duas que de fato salvam "
+            "algo) — nesse caso a função reaproveita "
+            "automaticamente a ÚLTIMA captura feita nesta sessão, seja "
+            "print ou foto, sem capturar de novo, contanto que não "
+            "seja velha demais. "
+            "tipo_captura ('print' ou 'foto') — diga qual tipo o "
+            "usuário quer capturar sempre que capturar_novo for true "
+            "(ex: pediu 'print' → 'print'; pediu 'foto' → 'foto'). Se "
+            "capturar_novo for false mas não houver nenhuma captura "
+            "recente pra reaproveitar, a função pode pedir pra você "
+            "esclarecer se é print ou foto antes de capturar — nesse "
+            "caso pergunte ao usuário e chame a função de novo com "
+            "tipo_captura preenchido, nunca escolha um dos dois "
+            "sozinho. Quando existir uma captura recente e "
+            "capturar_novo for false, pode deixar tipo_captura vazio — "
+            "'envie isso' sempre se refere à captura mais recente, seja "
+            "qual for o tipo. "
+            "enviar_captura_email exige destinatario — nunca invente um "
+            "email, pergunte se o usuário não disser. assunto e corpo "
+            "são opcionais (a função usa um texto padrão razoável se "
+            "não vierem) — mas se o usuário ditar um assunto ou corpo "
+            "específico, use exatamente o que ele disse. IMPORTANTE: "
+            "esta função só PREPARA o email, do mesmo jeito que "
+            "preparar_email — ela NUNCA envia direto. Depois de "
+            "chamá-la, leia o rascunho de volta pro usuário e pergunte "
+            "se pode enviar, e só chame confirmar_envio_email depois "
+            "da resposta dele, exatamente como no fluxo normal de "
+            "email — nunca pule essa confirmação achando que "
+            "'enviar_captura_email' já envia. "
+            "enviar_captura_discord_dm exige nome_amigo, com a mesma "
+            "regra de resolução de contato de enviar_dm_discord: se "
+            "retornar mais de um candidato parecido, pergunte qual "
+            "antes de chamar de novo, nunca escolha sozinho. "
+            "enviar_captura_remoto exige maquina_destino — o nome da "
+            "máquina como o usuário falou. "
+            "Nenhuma das três deve ser usada espontaneamente. "
+
             "Só chame analisar_camera quando o usuário pedir explicitamente "
             "para ver, analisar, observar ou explicar a câmera, webcam "
-            "ou algo mostrado nela. "
+            "ou algo mostrado nela — só descreve, nunca salva nada. Se o "
+            "usuário pedir pra tirar/salvar/guardar uma foto, use "
+            "tirar_foto_camera em vez desta. "
             "Nunca use função visual espontaneamente. "
             "Para cada pedido visual, execute no máximo uma captura. "
+
+            # VÍDEO AO VIVO DA CÂMERA
+            "abrir_camera e fechar_camera são diferentes de "
+            "analisar_camera/tirar_foto_camera: em vez de um único "
+            "frame, abrem/fecham uma JANELA com o vídeo da webcam "
+            "atualizado continuamente. Só chame abrir_camera quando o "
+            "usuário pedir explicitamente pra abrir, mostrar ou ver a "
+            "câmera AO VIVO, num preview contínuo — ex: 'abra minha "
+            "câmera', 'mostra o vídeo da webcam'. Se ele só pedir pra "
+            "ver/analisar (sem indicar que quer algo contínuo), use "
+            "analisar_camera em vez desta. Só chame fechar_camera "
+            "quando o usuário pedir explicitamente pra fechar a "
+            "câmera ou parar de ver o vídeo ao vivo. Nenhuma das duas "
+            "deve ser usada espontaneamente. "
             "Só chame iniciar_visualizacao_continua quando o usuário pedir "
             "explicitamente para você acompanhar, ver continuamente ou "
             "observar o que ele está fazendo na tela, como em 'veja o que "
@@ -1177,6 +1587,39 @@ class GeminiLiveWorker(QThread):
             "mais de um aplicativo parecido, pergunte qual antes de "
             "chamar de novo — nunca escolha sozinho. Se não "
             "encontrar nenhum, avise e não tente de novo sozinho. "
+
+            # DISCORD
+            "Duas tools de Discord, não confunda uma com a outra: "
+            "enviar_dm_discord manda mensagem DIRETA (privada) pra "
+            "uma pessoa específica; enviar_mensagem_discord manda "
+            "mensagem num CANAL de texto, sem destinatário "
+            "específico. "
+            "Use enviar_dm_discord quando o usuário mencionar uma "
+            "pessoa pelo nome — ex: 'manda mensagem no discord pro "
+            "Luan chamando ele pra jogar', 'manda um oi pro Pedro no "
+            "discord'. Passe em nome_amigo exatamente o nome como o "
+            "usuário falou, e em texto exatamente o que ele pediu "
+            "pra dizer — nunca invente ou complete o conteúdo da "
+            "mensagem. Se a função retornar mais de uma pessoa "
+            "parecida, pergunte qual delas antes de chamar de novo "
+            "— nunca escolha sozinho, mesmo que um nome pareça mais "
+            "provável que outro. Se não encontrar ninguém, avise e "
+            "não tente de novo sozinho. "
+            "Use enviar_mensagem_discord quando o usuário pedir pra "
+            "mandar mensagem no Discord sem mencionar uma pessoa "
+            "específica — ex: 'manda mensagem no discord dizendo "
+            "que já cheguei', 'avisa no canal geral que a reunião "
+            "começou'. Se ele mencionar o canal, passe em canal "
+            "exatamente o nome falado; se não mencionar, deixe canal "
+            "vazio — a função decide sozinha se dá pra usar um canal "
+            "já conhecido como padrão ou se precisa perguntar qual. "
+            "Se a função retornar mais de um canal parecido (pode "
+            "acontecer com canais de mesmo nome em servidores "
+            "diferentes) ou pedir pra especificar, pergunte ao "
+            "usuário antes de chamar de novo — nunca escolha "
+            "sozinho. "
+            "Nunca use nenhuma das duas tools de Discord "
+            "espontaneamente. "
 
             # ENCERRAMENTO
             "Quando o usuário pedir claramente para encerrar, finalizar, "
@@ -1432,10 +1875,29 @@ class GeminiLiveWorker(QThread):
                 # Quando o Gemini solicita uma ferramenta,
                 # encaminha para o processador de funções.
                 if resposta.tool_call:
+                    # [DIAGNÓSTICO DE TRAVAMENTO] Mede quanto tempo
+                    # este "async for" fica sem iterar de novo — ou
+                    # seja, quanto tempo a sessão inteira (áudio
+                    # incluído) fica bloqueada — enquanto a tool
+                    # roda. Ver DEBUG_TIMING_DISPATCH.
+                    if DEBUG_TIMING_DISPATCH:
+                        inicio_bloqueio = time.perf_counter()
+
                     await self.processar_chamada_de_funcao(
                         sessao,
                         resposta.tool_call,
                     )
+
+                    if DEBUG_TIMING_DISPATCH:
+                        duracao_bloqueio_ms = (
+                            time.perf_counter() - inicio_bloqueio
+                        ) * 1000
+
+                        print(
+                            "[TIMING] receber_audio ficou "
+                            f"{duracao_bloqueio_ms:.1f}ms sem iterar "
+                            "(bloqueado por processar_chamada_de_funcao)"
+                        )
 
                 # Acumula a transcrição da fala do ALFRED (chega em
                 # pedaços, ao longo do turno) e entrega o texto
@@ -1463,6 +1925,108 @@ class GeminiLiveWorker(QThread):
                     )
 
                     self._buffer_transcricao_atual = ""
+
+    # Retorna (caminho, capturou_novo, pergunta_ambiguidade) pra
+    # anexar/enviar uma captura visual — print OU foto. Usada por
+    # enviar_captura_email/enviar_captura_discord_dm/
+    # enviar_captura_remoto — nenhuma delas reimplementa captura,
+    # todas passam por aqui — e indiretamente por salvar_print_tela e
+    # tirar_foto_camera (que sempre atualizam self.ultima_captura_*
+    # depois de capturar).
+    #
+    # forcar_captura_nova=True quando o próprio pedido do usuário já
+    # veio como "tire um print/uma foto e envie" (o Gemini seta isso
+    # via capturar_novo na chamada) — nesse caso sempre captura de
+    # novo, mesmo que exista uma captura recente. Caso contrário,
+    # reaproveita self.ultima_captura_caminho (print ou foto, o que
+    # tiver sido capturado por último) se ainda estiver dentro de
+    # TIMEOUT_ULTIMA_CAPTURA_SEGUNDOS.
+    #
+    # Quando não há nenhuma captura reaproveitável (nunca capturado,
+    # ou velho demais) OU forcar_captura_nova é True, tipo_captura
+    # precisa dizer 'print' ou 'foto' — se vier vazio/inválido nesse
+    # caso, a função NÃO adivinha: devolve caminho=None e uma
+    # pergunta_ambiguidade pro Gemini repassar ao usuário antes de
+    # chamar de novo.
+    async def _obter_ou_capturar_ultima_captura(
+        self,
+        forcar_captura_nova=False,
+        tipo_captura=None,
+    ):
+        tem_captura_recente = (
+            self.ultima_captura_caminho is not None
+            and self.ultima_captura_timestamp is not None
+            and (
+                time.monotonic() - self.ultima_captura_timestamp
+            )
+            <= TIMEOUT_ULTIMA_CAPTURA_SEGUNDOS
+        )
+
+        if tem_captura_recente and not forcar_captura_nova:
+            return self.ultima_captura_caminho, False, None
+
+        tipo_captura = (tipo_captura or "").strip().lower()
+
+        if tipo_captura not in ("print", "foto"):
+            return (
+                None,
+                False,
+                "Não há uma captura recente pra reaproveitar, e não "
+                "ficou claro se é pra capturar um print da tela ou "
+                "uma foto da câmera — pergunte ao usuário qual dos "
+                "dois ele quer e chame esta função de novo com "
+                "tipo_captura preenchido.",
+            )
+
+        if tipo_captura == "foto":
+            # Mesma captura já usada por analisar_camera/
+            # tirar_foto_camera (reaproveitada, não duplicada) —
+            # chamada direta, sem asyncio.to_thread, mesmo padrão já
+            # usado pra essa função em enviar_camera_para_gemini.
+            imagem_bytes = capturar_camera_bytes()
+
+            caminho_salvo = await asyncio.to_thread(
+                salvar_foto_bytes,
+                imagem_bytes,
+            )
+        else:
+            # Mesma captura já usada por analisar_tela/salvar_print_tela
+            # (reaproveitada, não duplicada) — chamada direta, sem
+            # asyncio.to_thread, mesmo padrão já usado pra essa função em
+            # enviar_tela_para_gemini.
+            imagem_bytes = capturar_monitor_do_cursor_bytes()
+
+            caminho_salvo = await asyncio.to_thread(
+                salvar_print_bytes,
+                imagem_bytes,
+            )
+
+        self.ultima_captura_caminho = caminho_salvo
+        self.ultima_captura_timestamp = time.monotonic()
+
+        return caminho_salvo, True, None
+
+    # Monta o rascunho pendente de email e o texto de leitura, a
+    # partir de dados já resolvidos (destinatário/assunto/corpo/
+    # anexo) — extraído do dispatch de preparar_email pra
+    # enviar_captura_email poder reaproveitar EXATAMENTE o mesmo
+    # fluxo de confirmação, sem duplicar essa lógica.
+    def _preparar_rascunho_email(
+        self,
+        destinatario,
+        assunto,
+        corpo,
+        caminho_anexo,
+    ):
+        self.email_pendente = {
+            "destinatario": destinatario,
+            "assunto": assunto,
+            "corpo": corpo,
+            "caminho_anexo": caminho_anexo,
+            "criado_em": time.monotonic(),
+        }
+
+        return self._montar_leitura_rascunho_email()
 
     # Monta o texto de retorno de preparar_email — instrui o Gemini a
     # ler o rascunho de volta pro usuário e parar, esperando a
@@ -1517,6 +2081,13 @@ class GeminiLiveWorker(QThread):
                 chamada.args or {}
             )
 
+            # [DIAGNÓSTICO DE TRAVAMENTO] Marca o início do
+            # processamento desta chamada específica — ver o print
+            # de tempo total logo antes de function_responses.append,
+            # mais abaixo. Ver DEBUG_TIMING_DISPATCH.
+            if DEBUG_TIMING_DISPATCH:
+                inicio_chamada = time.perf_counter()
+
             # Exceção ao despacho genérico, compartilhada por
             # identificar_planta e consultar_segunda_opiniao_visual:
             # nenhuma das duas tem uma imagem como parâmetro vindo do
@@ -1546,15 +2117,48 @@ class GeminiLiveWorker(QThread):
             # reconhecer cai nas tools nativas abaixo.
             resultado_pacote = None
 
+            # [DIAGNÓSTICO DE TRAVAMENTO] Ver DEBUG_TIMING_DISPATCH.
+            if DEBUG_TIMING_DISPATCH:
+                inicio_despacho_pacotes = time.perf_counter()
+                tempos_por_pacote = []
+
             for pacote in PACOTES_REGISTRADOS:
+                if DEBUG_TIMING_DISPATCH:
+                    inicio_pacote = time.perf_counter()
+
                 resultado_pacote = await asyncio.to_thread(
                     pacote.despachar,
                     nome,
                     args,
                 )
 
+                if DEBUG_TIMING_DISPATCH:
+                    tempos_por_pacote.append(
+                        (
+                            pacote.__name__,
+                            (time.perf_counter() - inicio_pacote) * 1000,
+                        )
+                    )
+
                 if resultado_pacote is not None:
                     break
+
+            if DEBUG_TIMING_DISPATCH:
+                duracao_despacho_ms = (
+                    time.perf_counter() - inicio_despacho_pacotes
+                ) * 1000
+
+                detalhe = ", ".join(
+                    f"{nome_pacote}={tempo_ms:.1f}ms"
+                    for nome_pacote, tempo_ms in tempos_por_pacote
+                )
+
+                print(
+                    f"[TIMING] '{nome}': despacho por pacotes levou "
+                    f"{duracao_despacho_ms:.1f}ms no total "
+                    f"({len(tempos_por_pacote)}/{len(PACOTES_REGISTRADOS)} "
+                    f"pacotes tentados) -> {detalhe}"
+                )
 
             if resultado_pacote is not None:
                 resultado = resultado_pacote
@@ -1588,6 +2192,59 @@ class GeminiLiveWorker(QThread):
                 resultado = await self.processar_funcao_visual(
                     nome
                 )
+
+            elif nome == "salvar_print_tela":
+                self.status_recebido.emit(
+                    "Salvando print da tela..."
+                )
+
+                # Mesma captura já usada por analisar_tela (reaproveitada,
+                # não duplicada) — chamada direta, sem asyncio.to_thread,
+                # mesmo padrão já usado pra essa função em
+                # enviar_tela_para_gemini.
+                imagem_bytes = capturar_monitor_do_cursor_bytes()
+
+                # Gravar em disco é I/O bloqueante, por isso roda em
+                # uma thread separada para não travar o loop assíncrono.
+                caminho_salvo = await asyncio.to_thread(
+                    salvar_print_bytes,
+                    imagem_bytes,
+                )
+
+                # Atualiza a referência de "última captura" — usada por
+                # enviar_captura_email/enviar_captura_discord_dm/
+                # enviar_captura_remoto quando o pedido seguinte for só
+                # "envie este print"/"envie isso", sem precisar
+                # capturar de novo.
+                self.ultima_captura_caminho = caminho_salvo
+                self.ultima_captura_timestamp = time.monotonic()
+
+                resultado = f"Print da tela salvo em: {caminho_salvo}"
+
+            elif nome == "tirar_foto_camera":
+                self.status_recebido.emit(
+                    "Tirando foto da câmera..."
+                )
+
+                # Mesma captura já usada por analisar_camera
+                # (reaproveitada, não duplicada) — chamada direta, sem
+                # asyncio.to_thread, mesmo padrão já usado pra essa
+                # função em enviar_camera_para_gemini.
+                imagem_bytes = capturar_camera_bytes()
+
+                # Gravar em disco é I/O bloqueante, por isso roda em
+                # uma thread separada para não travar o loop assíncrono.
+                caminho_salvo = await asyncio.to_thread(
+                    salvar_foto_bytes,
+                    imagem_bytes,
+                )
+
+                # Mesma referência compartilhada de "última captura"
+                # que salvar_print_tela atualiza acima.
+                self.ultima_captura_caminho = caminho_salvo
+                self.ultima_captura_timestamp = time.monotonic()
+
+                resultado = f"Foto salva em: {caminho_salvo}"
 
             elif nome == "iniciar_visualizacao_continua":
                 resultado = await self.iniciar_visualizacao_continua()
@@ -1664,22 +2321,21 @@ class GeminiLiveWorker(QThread):
                     resultado = falha_anexo
 
                 else:
-                    # Substitui qualquer rascunho pendente anterior —
-                    # só existe um por vez, de propósito (ver
-                    # FunctionDeclaration de preparar_email).
-                    self.email_pendente = {
-                        "destinatario": destinatario,
-                        "assunto": assunto,
-                        "corpo": corpo,
-                        "caminho_anexo": caminho_anexo,
-                        "criado_em": time.monotonic(),
-                    }
-
                     self.status_recebido.emit(
                         "Email preparado, aguardando confirmação..."
                     )
 
-                    resultado = self._montar_leitura_rascunho_email()
+                    # Substitui qualquer rascunho pendente anterior —
+                    # só existe um por vez, de propósito (ver
+                    # FunctionDeclaration de preparar_email). Mesmo
+                    # helper reaproveitado por enviar_captura_email, pra
+                    # nunca duplicar o fluxo de confirmação.
+                    resultado = self._preparar_rascunho_email(
+                        destinatario,
+                        assunto,
+                        corpo,
+                        caminho_anexo,
+                    )
 
             elif nome == "confirmar_envio_email":
                 confirmar = bool(
@@ -1790,6 +2446,181 @@ class GeminiLiveWorker(QThread):
                     criterio,
                 )
 
+            elif nome == "enviar_captura_email":
+                destinatario = args.get(
+                    "destinatario",
+                    "",
+                )
+
+                tipo_captura = args.get("tipo_captura")
+
+                assunto = args.get("assunto") or (
+                    "Foto da câmera"
+                    if tipo_captura == "foto"
+                    else "Print de tela"
+                )
+
+                corpo = args.get("corpo") or (
+                    "Segue a foto solicitada."
+                    if tipo_captura == "foto"
+                    else "Segue o print de tela solicitado."
+                )
+
+                capturar_novo = bool(
+                    args.get(
+                        "capturar_novo",
+                        False,
+                    )
+                )
+
+                if not destinatario:
+                    resultado = (
+                        "É necessário informar o destinatário do email."
+                    )
+
+                else:
+                    self.status_recebido.emit(
+                        "Capturando para enviar por email..."
+                    )
+
+                    caminho_captura, capturou_novo, pergunta = (
+                        await self._obter_ou_capturar_ultima_captura(
+                            capturar_novo,
+                            tipo_captura,
+                        )
+                    )
+
+                    if pergunta:
+                        resultado = pergunta
+
+                    else:
+                        # Mesmo fluxo de confirmação de preparar_email,
+                        # reaproveitado — nunca envia direto.
+                        resultado = self._preparar_rascunho_email(
+                            destinatario,
+                            assunto,
+                            corpo,
+                            caminho_captura,
+                        )
+
+                        if capturou_novo:
+                            resultado = (
+                                "Capturei uma nova imagem agora. "
+                                + resultado
+                            )
+
+            elif nome == "enviar_captura_discord_dm":
+                nome_amigo = args.get(
+                    "nome_amigo",
+                    "",
+                )
+
+                texto = args.get(
+                    "texto"
+                ) or "Olha só."
+
+                tipo_captura = args.get("tipo_captura")
+
+                capturar_novo = bool(
+                    args.get(
+                        "capturar_novo",
+                        False,
+                    )
+                )
+
+                if not nome_amigo:
+                    resultado = "É necessário informar o nome do amigo."
+
+                else:
+                    self.status_recebido.emit(
+                        "Capturando para enviar no Discord..."
+                    )
+
+                    caminho_captura, capturou_novo, pergunta = (
+                        await self._obter_ou_capturar_ultima_captura(
+                            capturar_novo,
+                            tipo_captura,
+                        )
+                    )
+
+                    if pergunta:
+                        resultado = pergunta
+
+                    else:
+                        # Reaproveita a MESMA resolução de contato (busca
+                        # + cache) e envio de DM já implementados em
+                        # discord_jarvis — só passa o caminho da captura
+                        # como anexo. Chamado direto (fora do despachar()
+                        # genérico) porque caminho_anexo não é um
+                        # parâmetro que o Gemini controla.
+                        resultado = await asyncio.to_thread(
+                            discord_jarvis.enviar_dm_discord,
+                            nome_amigo,
+                            texto,
+                            caminho_captura,
+                        )
+
+                        if capturou_novo:
+                            resultado = (
+                                "Capturei uma nova imagem agora. "
+                                + resultado
+                            )
+
+            elif nome == "enviar_captura_remoto":
+                maquina_destino = args.get(
+                    "maquina_destino",
+                    "",
+                )
+
+                tipo_captura = args.get("tipo_captura")
+
+                capturar_novo = bool(
+                    args.get(
+                        "capturar_novo",
+                        False,
+                    )
+                )
+
+                if not maquina_destino:
+                    resultado = (
+                        "É necessário informar qual máquina de destino."
+                    )
+
+                else:
+                    self.status_recebido.emit(
+                        "Capturando para enviar pra outra máquina..."
+                    )
+
+                    caminho_captura, capturou_novo, pergunta = (
+                        await self._obter_ou_capturar_ultima_captura(
+                            capturar_novo,
+                            tipo_captura,
+                        )
+                    )
+
+                    if pergunta:
+                        resultado = pergunta
+
+                    else:
+                        # Reaproveita o MESMO fluxo de transferência de
+                        # arquivo já implementado em rede_jarvis
+                        # (enviar_arquivo, via MQTT) — mesmo comando já
+                        # usado por enviar_comando_remoto.
+                        resultado = await asyncio.to_thread(
+                            rede_jarvis.enviar_comando_remoto,
+                            maquina_destino,
+                            "enviar_arquivo",
+                            {
+                                "caminho": caminho_captura,
+                            },
+                        )
+
+                        if capturou_novo:
+                            resultado = (
+                                "Capturei uma nova imagem agora. "
+                                + resultado
+                            )
+
             elif nome == "salvar_memoria":
                 texto = args.get(
                     "texto",
@@ -1840,6 +2671,21 @@ class GeminiLiveWorker(QThread):
             else:
                 resultado = (
                     "Função desconhecida. Nenhuma ação foi executada."
+                )
+
+            # [DIAGNÓSTICO DE TRAVAMENTO] Tempo total desta chamada
+            # (despacho por pacotes + execução real, incluindo
+            # chamadas de rede) — comparar com o valor de
+            # receber_audio pra confirmar que é o mesmo intervalo
+            # (ou não). Ver DEBUG_TIMING_DISPATCH.
+            if DEBUG_TIMING_DISPATCH:
+                duracao_chamada_ms = (
+                    time.perf_counter() - inicio_chamada
+                ) * 1000
+
+                print(
+                    f"[TIMING] '{nome}' processada em "
+                    f"{duracao_chamada_ms:.1f}ms no total"
                 )
 
             # Cria a resposta estruturada que será devolvida ao Gemini.

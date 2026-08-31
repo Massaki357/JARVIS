@@ -17,6 +17,15 @@ from PIL import Image
 # monitor o cursor está.
 import win32api
 
+# win32comext.shell resolve o caminho REAL de pastas conhecidas do
+# Windows (ex: Área de Trabalho) — usado só por salvar_print_bytes().
+from win32comext.shell import shell, shellcon
+
+# Usados só por salvar_print_bytes(), pra montar o caminho e o nome
+# do arquivo salvo.
+from datetime import datetime
+from pathlib import Path
+
 
 # [CURSO] Esta função captura a tela principal do computador
 # [CURSO] e devolve uma imagem JPEG em formato de bytes.
@@ -133,3 +142,70 @@ def capturar_monitor_do_cursor_bytes():
         screenshot = sct.grab(monitor_do_cursor)
 
         return _screenshot_para_jpeg_bytes(screenshot)
+
+
+# Resolve o caminho REAL da Área de Trabalho do usuário atual, via a
+# API de pastas conhecidas do Windows (SHGetKnownFolderPath) — nunca
+# hardcoded como C:\Users\<nome>\Desktop, porque a Área de Trabalho
+# pode estar redirecionada (ex: sincronização do OneDrive move a
+# pasta pra dentro de C:\Users\<nome>\OneDrive\Área de Trabalho, e
+# essa API já resolve isso corretamente). Confirmado ao vivo antes
+# de usar, inclusive depois do PySide6 já ter inicializado o COM
+# (sem o mesmo problema de conflito do win11toast/WinRT).
+def _obter_pasta_area_trabalho():
+    return Path(
+        shell.SHGetKnownFolderPath(
+            shellcon.FOLDERID_Desktop,
+            0,
+            0,
+        )
+    )
+
+
+# Evita sobrescrever um print anterior salvo no mesmo segundo (nome
+# de arquivo tem granularidade de segundos) — acrescenta um contador
+# se ainda assim colidir.
+def _caminho_sem_sobrescrever(caminho):
+    if not caminho.exists():
+        return caminho
+
+    contador = 1
+
+    while True:
+        candidato = caminho.with_stem(
+            f"{caminho.stem}_{contador}"
+        )
+
+        if not candidato.exists():
+            return candidato
+
+        contador += 1
+
+
+# Salva bytes JPEG já capturados (ex: por capturar_tela_bytes ou
+# capturar_monitor_do_cursor_bytes) num arquivo, dentro de
+# <Área de Trabalho>\JarvisRecebidos — cria a pasta se não existir.
+# Nome do arquivo com timestamp, pra nunca sobrescrever um print
+# anterior silenciosamente. Retorna o caminho completo do arquivo
+# salvo (string), pro Jarvis poder confirmar por voz onde ficou.
+def salvar_print_bytes(imagem_bytes):
+    pasta_destino = _obter_pasta_area_trabalho() / "JarvisRecebidos"
+
+    pasta_destino.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    nome_arquivo = (
+        "print_"
+        + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        + ".jpg"
+    )
+
+    caminho_arquivo = _caminho_sem_sobrescrever(
+        pasta_destino / nome_arquivo
+    )
+
+    caminho_arquivo.write_bytes(imagem_bytes)
+
+    return str(caminho_arquivo)

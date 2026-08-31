@@ -26,6 +26,12 @@ class SinalizadorInterfacesExtras(QObject):
     solicitou_abrir_chat = Signal()
     solicitou_abrir_envio_arquivo = Signal()
 
+    # Emitidos por camera_preview/__init__.py quando o usuário pede
+    # por voz para abrir ou fechar a janela de vídeo ao vivo da
+    # webcam — mesmo padrão dos sinais acima.
+    solicitou_abrir_camera = Signal()
+    solicitou_fechar_camera = Signal()
+
     # Diferente dos três sinais acima (que só pedem pra abrir uma
     # janela, sem carregar dado nenhum): este carrega o texto
     # transcrito da resposta falada do Gemini, emitido por

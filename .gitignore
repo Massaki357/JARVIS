@@ -11,3 +11,9 @@ admin_terminal/_fila/
 # abrir_app_local: cache técnico nome->AppID, específico de cada
 # máquina (AppIDs mudam conforme o que está instalado).
 abrir_app_local/apps_conhecidos.json
+
+# discord_jarvis: cache técnico nome->contato e nome->canal do
+# Discord — específico da conta/servidor do usuário, nunca
+# versionado (e contém IDs reais de pessoas).
+discord_jarvis/contatos_conhecidos.json
+discord_jarvis/canais_conhecidos.json
