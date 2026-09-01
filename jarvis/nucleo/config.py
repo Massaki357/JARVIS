@@ -71,6 +71,15 @@ def config_schema():
 # Modelo usado pelo ALFRED
 GEMINI_LIVE_MODEL = "gemini-3.1-flash-live-preview"
 
+# Modelo alternativo: só é tentado quando GEMINI_LIVE_MODEL falha ao
+# CONECTAR (não numa falha no meio de uma chamada já conectada — ver
+# GeminiLiveWorker._conectar_sessao_gemini em jarvis/gemini/cliente_live.py).
+# Só se este também falhar é que o cérebro reserva assume a chamada
+# inteira — pedido explícito do usuário. Nome confirmado ao vivo contra
+# client.models.list() antes de usar (não adivinhado), junto com as
+# outras opções comentadas abaixo.
+GEMINI_LIVE_MODEL_FALLBACK = "gemini-2.5-flash-native-audio-preview-12-2025"
+
 # ============================================================
 # MODELOS DISPONÍVEIS PARA TESTE
 # ============================================================

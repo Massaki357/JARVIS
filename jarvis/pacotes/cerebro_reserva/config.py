@@ -54,11 +54,15 @@ MODELO_CEREBRO = os.getenv(
     "mistral-small-latest",
 )
 
-# Só é usado quando RESERVA_USAR_VOZ_LOCAL=false. As vozes da Mistral
-# são todas marcadas como en_us/en_gb, mas FALAM português
+# Só é usado se "mistral" aparecer na ordem de tentativa (ver
+# PROVEDOR_VOZ_PREFERIDO abaixo — não é mais o padrão). As vozes da
+# Mistral são todas marcadas como en_us/en_gb, mas FALAM português
 # corretamente — confirmado sintetizando uma frase em português e
 # transcrevendo de volta com o Whisper (voltou idêntica). A etiqueta
-# de idioma descreve a origem da voz, não uma limitação.
+# de idioma descreve a origem da voz, não uma limitação. Mesmo assim,
+# ouvindo de verdade, o usuário achou o sotaque ruim — por isso deixou
+# de ser tentada primeiro (ver PROVEDOR_VOZ_PREFERIDO), mas continua
+# funcional como último recurso.
 MODELO_FALA_MISTRAL = os.getenv(
     "RESERVA_MODELO_FALA",
     "voxtral-mini-tts-latest",
@@ -66,21 +70,54 @@ MODELO_FALA_MISTRAL = os.getenv(
 
 VOZ_MISTRAL = os.getenv("RESERVA_VOZ_MISTRAL", "en_paul_neutral")
 
+# --- Voz neural por rede (edge-tts) ---
+# Acessa o mesmo serviço de voz neural que o "ler em voz alta" do
+# Microsoft Edge usa, sem precisar do navegador, do Windows nem de
+# chave de API (biblioteca `edge-tts`, gratuita, sem conta). Virou o
+# provedor padrão (ver PROVEDOR_VOZ_PREFERIDO) depois de comparado ao
+# vivo com a Mistral e o SAPI local, a pedido explícito do usuário por
+# uma voz melhor — confirmado com o mesmo teste objetivo do resto
+# deste arquivo (sintetizar uma frase em português e transcrever de
+# volta com o Whisper): bateu 100%, e soa muito mais natural que o
+# SAPI ao ouvir de verdade. Nomes de voz confirmados ao vivo via
+# `python -m edge_tts --list-voices` antes de usar, não adivinhados.
+VOZ_EDGE = os.getenv("RESERVA_VOZ_EDGE", "pt-BR-FranciscaNeural")
+
 # --- Voz local (SAPI do Windows) ---
-# Padrão ligado: é 20x mais rápida que a TTS por rede (0,10s contra
-# 2,0s), não gasta cota, e continua funcionando quando a rede está
-# instável — que é justamente quando o Gemini tende a falhar e este
-# pacote é acionado.
-USAR_VOZ_LOCAL = os.getenv(
-    "RESERVA_USAR_VOZ_LOCAL",
-    "true",
-).strip().lower() != "false"
+# Continua existindo como o fallback mais resiliente: não depende de
+# rede, então continua funcionando mesmo quando a causa do Gemini ter
+# falhado é justamente a rede estar instável.
+
+# Qual provedor de voz falar() tenta PRIMEIRO — os outros dois são
+# tentados na ordem fixa [edge, local, mistral] (pulando o que já foi
+# tentado) se o preferido falhar. "edge" é o padrão (ver o comentário
+# de VOZ_EDGE); "local" volta ao SAPI do Windows; "mistral" volta ao
+# comportamento mais antigo. Valor desconhecido cai de volta em "edge"
+# em vez de falhar.
+PROVEDOR_VOZ_PREFERIDO = os.getenv(
+    "RESERVA_PROVEDOR_VOZ",
+    "edge",
+).strip().lower()
+
+if PROVEDOR_VOZ_PREFERIDO not in ("edge", "local", "mistral"):
+    PROVEDOR_VOZ_PREFERIDO = "edge"
 
 # Trecho procurado na descrição das vozes SAPI instaladas. A desta
 # máquina é "Microsoft Maria Desktop - Portuguese(Brazil)".
 TRECHO_VOZ_LOCAL = os.getenv(
     "RESERVA_VOZ_LOCAL",
     "Portuguese",
+)
+
+# Velocidade da voz SAPI (propriedade Rate do SAPI.SpVoice — inteiro
+# de -10, mais lenta, a 10, mais rápida; 0 é a velocidade normal do
+# Windows). Pedido explícito do usuário depois de testar: a voz
+# padrão soa lenta demais, e uma resposta atrasada (mesmo que
+# robótica) ainda é melhor que nenhuma resposta — daí acelerar em vez
+# de voltar pra voz por rede (que, testada, não soou natural em
+# português apesar de falar as palavras certas).
+VELOCIDADE_VOZ_LOCAL = int(
+    os.getenv("RESERVA_VELOCIDADE_VOZ_LOCAL", "3")
 )
 
 # --- Captura de áudio (mesmos parâmetros do microfone da chamada
@@ -164,14 +201,26 @@ def config_schema():
             "obrigatoria": False,
         },
         {
-            "nome": "RESERVA_USAR_VOZ_LOCAL",
-            "rotulo": "Usar a voz do Windows em vez da voz por rede (true/false, padrão: true)",
+            "nome": "RESERVA_PROVEDOR_VOZ",
+            "rotulo": "Voz tentada primeiro: edge, local ou mistral (padrão: edge)",
+            "sensivel": False,
+            "obrigatoria": False,
+        },
+        {
+            "nome": "RESERVA_VOZ_EDGE",
+            "rotulo": "Nome da voz neural do edge-tts (padrão: pt-BR-FranciscaNeural)",
             "sensivel": False,
             "obrigatoria": False,
         },
         {
             "nome": "RESERVA_VOZ_LOCAL",
             "rotulo": "Trecho do nome da voz do Windows (padrão: Portuguese)",
+            "sensivel": False,
+            "obrigatoria": False,
+        },
+        {
+            "nome": "RESERVA_VELOCIDADE_VOZ_LOCAL",
+            "rotulo": "Velocidade da voz do Windows, de -10 a 10 (padrão: 3)",
             "sensivel": False,
             "obrigatoria": False,
         },

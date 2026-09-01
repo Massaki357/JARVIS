@@ -68,7 +68,9 @@ def motivo_indisponivel():
 
 
 # Assume a conversa. Roda até deve_continuar() devolver False (o
-# usuário encerrou a chamada pela interface ou pela voz).
+# usuário encerrou a chamada pela interface ou pela voz, OU — modo
+# novo — o Gemini voltou a responder no meio da própria chamada, ver
+# jarvis/gemini/cliente_live.py:_conduzir_reserva_temporaria).
 #
 # Parâmetros:
 #   pacotes_registrados  a mesma lista PACOTES_REGISTRADOS do cliente,
@@ -77,6 +79,31 @@ def motivo_indisponivel():
 #                        import circular).
 #   deve_continuar       callable sem argumentos; False encerra o modo.
 #   ao_status            callable(texto) opcional, para a interface.
+#   historico_inicial    lista opcional de {"role", "content"} já
+#                        existente (ex: transcript da conversa com o
+#                        Gemini antes dele ficar mudo) — permite este
+#                        pacote assumir NO MEIO de uma conversa já em
+#                        andamento, sem perder o contexto. None/omitido
+#                        = começa do zero, comportamento de sempre.
+#   fila_bloco_externa   queue.Queue opcional repassada pra
+#                        escuta.ouvir() — ver o comentário em
+#                        escuta.gravar_fala pro porquê (nunca abrir um
+#                        segundo stream de microfone concorrente com o
+#                        que uma chamada do Gemini ainda ativa já
+#                        mantém aberto).
+#   ao_turno_concluido   callable(role, texto) opcional, chamado depois
+#                        de cada fala do usuário ("user") e cada
+#                        resposta falada ("assistant") — permite quem
+#                        chamou manter seu próprio transcript da
+#                        conversa em dia enquanto este pacote conduz.
+#   audio_primeiro_turno bytes WAV opcional — usado SÓ na primeira
+#                        escuta do laço (ver escuta.ouvir), pra
+#                        aproveitar o áudio que o usuário JÁ tinha
+#                        falado, capturado num buffer circular
+#                        enquanto ele esperava o Gemini responder, em
+#                        vez de esperar ele repetir a pergunta pro
+#                        reserva. Turnos seguintes voltam a ouvir ao
+#                        vivo normalmente.
 #
 # Nunca levanta exceção: qualquer falha vira uma volta do laço ou o
 # encerramento limpo do modo reserva.
@@ -84,10 +111,18 @@ def assumir(
     pacotes_registrados,
     deve_continuar,
     ao_status=None,
+    historico_inicial=None,
+    fila_bloco_externa=None,
+    ao_turno_concluido=None,
+    audio_primeiro_turno=None,
 ):
     def status(texto):
         if ao_status:
             ao_status(texto)
+
+    def notificar_turno(role, texto):
+        if ao_turno_concluido:
+            ao_turno_concluido(role, texto)
 
     if not esta_disponivel():
         print(f"[RESERVA] {motivo_indisponivel()}")
@@ -105,12 +140,20 @@ def assumir(
         f"{len(ferramentas)} ferramentas disponíveis."
     )
 
-    historico = []
+    historico = list(historico_inicial or [])
     assumiu_algum_turno = False
 
     while deve_continuar():
         try:
-            ouvido = escuta.ouvir(deve_continuar)
+            ouvido = escuta.ouvir(
+                deve_continuar,
+                fila_bloco_externa=fila_bloco_externa,
+                audio_wav_pronto=audio_primeiro_turno,
+            )
+
+            # Só a primeira escuta usa o áudio pronto — a partir daqui
+            # volta a ouvir ao vivo, mesmo que o Gemini continue mudo.
+            audio_primeiro_turno = None
 
         except Exception as erro:
             print(f"[RESERVA] Falha ao ouvir: {erro}")
@@ -129,6 +172,7 @@ def assumir(
             continue
 
         status("Pensando...")
+        notificar_turno("user", texto_usuario)
 
         historico = cerebro.podar_historico(
             historico + [{"role": "user", "content": texto_usuario}]
@@ -157,6 +201,11 @@ def assumir(
 
         if not sucesso_fala:
             print(f"[RESERVA] Falha ao falar: {erro_fala}")
+
+        # Notifica o que foi REALMENTE falado, sucesso ou não — mesmo
+        # uma mensagem de erro faz parte da conversa que o usuário
+        # ouviu de verdade.
+        notificar_turno("assistant", resposta)
 
         assumiu_algum_turno = True
 

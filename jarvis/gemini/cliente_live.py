@@ -21,6 +21,10 @@ import winsound
 # que cada bloco de áudio de resposta entrou em fila_saida — usado só
 # pra medir o atraso fila->reprodução (ver _debug_fila_timestamps).
 import collections
+# queue.Queue (thread-safe nativamente, diferente de asyncio.Queue) é
+# usada pra espelhar blocos de microfone pro cérebro reserva enquanto
+# ele conduz a conversa — ver enviar_microfone/_conduzir_reserva_temporaria.
+import queue
 
 # Lê config.json (raiz do projeto) e diz se o usuário pode interromper
 # a fala do jarvis falando por cima — ver jarvis/nucleo/preferencias.py e
@@ -58,6 +62,7 @@ from jarvis.nucleo.config import (
     EXIGIR_AUTENTICACAO,
     GEMINI_API_KEY,
     GEMINI_LIVE_MODEL,
+    GEMINI_LIVE_MODEL_FALLBACK,
     GEMINI_VOICE,
     TIMEOUT_INATIVIDADE_SEGUNDOS,
 )
@@ -314,10 +319,30 @@ DEBUG_TIMING_MICROFONE = False
 # microfone realmente enviado ao Gemini, e a fila RESIDUAL (que já
 # deveria estar zerada) no início de cada turno — ver
 # _debug_timestamp_ultimo_envio_mic/_debug_numero_turno em receber_audio.
-# LIGADO agora, de propósito, pra esta investigação — voltar pra False
-# depois de coletar os dados da chamada de reprodução, mesma disciplina
-# das outras duas DEBUG_TIMING_*.
-DEBUG_TIMING_FILA_SAIDA = True
+DEBUG_TIMING_FILA_SAIDA = False
+
+# [DIAGNÓSTICO DE CONGELAMENTO] Liga logs temporários no console (mesma
+# convenção das demais DEBUG_TIMING_*) — investiga um relato distinto
+# do atraso crescente acima: a chamada parou de responder por completo
+# (nenhum áudio, nenhuma atividade) e nem encerrar a chamada e tentar
+# de novo resolveu — só reiniciar o app resolveu. Mede duas coisas
+# sem mudar nenhum comportamento real: (1) há quanto tempo NADA chega
+# de resposta.receive() (nem resposta.data, nem tool_call, nem
+# qualquer outra mensagem — ver _debug_timestamp_ultima_resposta_qualquer
+# em receber_audio), pra saber se o transporte (WebSocket) realmente
+# ficou mudo; (2) quanto tempo a limpeza de executar() (cancelar as
+# tarefas + esperar asyncio.gather) leva de verdade quando a chamada é
+# encerrada — suspeita, encontrada lendo jarvis/ui/janela_principal.py
+# (não ainda confirmada com dados reais): chamada_encerrada só é
+# emitido quando executar() retorna por completo, e
+# janela_principal.py só zera self.live_worker nesse sinal — se essa
+# limpeza travar (ou só demorar bastante) com uma tarefa que não
+# cancela a tempo, clicar em "ENCERRAR CHAMADA" de novo não inicia
+# uma chamada nova nenhuma, porque self.live_worker continua não
+# sendo None. LIGADO agora, de propósito, pra esta investigação —
+# voltar pra False depois de reproduzir o travamento e coletar os
+# dados, mesma disciplina das outras DEBUG_TIMING_*.
+DEBUG_TIMING_CONGELAMENTO = False
 
 # Intervalo mínimo, em segundos, entre chamadas visuais repetidas.
 # Isso evita capturas duplicadas para o mesmo pedido.
@@ -462,6 +487,50 @@ LIMITE_FILA_SAIDA_PARADA = 200
 # num stream saudável.
 LIMITE_MICROFONE_MUDO_SEGUNDOS = 10.0
 
+# Por quanto tempo o Gemini pode ficar devendo uma resposta a ESTE
+# TURNO (desde que o microfone reabriu, ver self.timestamp_mic_reaberto)
+# sem gerar nada de verdade (resposta.data/tool_call) antes do cérebro
+# reserva assumir temporariamente — ver vigiar_resposta_lenta/
+# _conduzir_reserva_temporaria. Antes disto media silêncio da CONEXÃO
+# inteira (20s, a cada 5s) — trocado por pedido explícito do usuário:
+# aquele gatilho era lento demais (a conversa inteira congelava até
+# passar de 20s) e, quando disparava, não dava tempo do reserva
+# responder antes do Gemini "voltar" (às vezes só com uma transcrição
+# de entrada — ver o fix de resposta.data/tool_call em receber_audio).
+# Por turno, mais rápido, resolve os dois problemas de uma vez.
+LIMITE_RESPOSTA_GEMINI_SEGUNDOS = 5.0
+
+# Intervalo de checagem de vigiar_resposta_lenta — deliberadamente
+# menor que INTERVALO_VIGILANCIA_SEGUNDOS (5s, usado pelos outros
+# vigias): com um limite de resposta de só 5s, checar a cada 5s
+# poderia atrasar a detecção em quase mais 5s (até ~10s de espera no
+# pior caso) — o oposto do que "rápido" pedia. Tarefa própria, não
+# reaproveita vigiar_travamento, pra não mudar a cadência dos outros
+# vigias.
+INTERVALO_VIGIA_RESPOSTA_SEGUNDOS = 1.0
+
+# Nível (na mesma escala 0-1 de calcular_nivel_audio, já usada pelo
+# medidor visual) acima do qual um bloco de microfone conta como "o
+# usuário está falando agora" — usado só por vigiar_resposta_lenta,
+# para não confundir "o usuário está no meio de uma frase longa" com
+# "o Gemini está devendo resposta". BUG REAL relatado pelo usuário:
+# self.timestamp_mic_reaberto marca quando o microfone reabriu, não
+# quando o usuário PAROU de falar — então uma frase de mais de
+# LIMITE_RESPOSTA_GEMINI_SEGUNDOS disparava o cérebro reserva no meio
+# da própria fala, mesmo o Gemini nunca tendo tido chance de
+# responder (ele só recebe o áudio, não decide nada, enquanto a
+# pessoa ainda está falando). Valor aproximado (ruído de ambiente
+# tende a ficar bem abaixo, fala mesmo baixa tende a ficar acima) —
+# ajustar se algum microfone específico gerar falso positivo/negativo.
+LIMIAR_ATIVIDADE_VOZ_USUARIO = 0.12
+
+# Quanto tempo de áudio de microfone o buffer circular
+# (self._buffer_circular_mic) guarda antes de descartar os blocos mais
+# antigos. Folgado o suficiente pra cobrir qualquer turno real (uma
+# fala de alguns segundos) mais uma margem, sem crescer sem limite
+# numa chamada longa.
+LIMITE_BUFFER_CIRCULAR_MIC_SEGUNDOS = 30.0
+
 
 # Classe principal responsável pela sessão em tempo real com o Gemini.
 # Como herda de QThread, roda separadamente da interface gráfica.
@@ -496,6 +565,48 @@ class GeminiLiveWorker(QThread):
         # Indica quando o ALFRED está reproduzindo áudio.
         # Enquanto isso, o microfone é ignorado para evitar eco.
         self.alfred_falando = False
+
+        # Instante (time.monotonic()) em que o microfone reabriu pela
+        # última vez (self.alfred_falando virou False) — marca o
+        # INÍCIO da janela de escuta do turno atual. Usado por
+        # vigiar_resposta_lenta pra saber há quanto tempo o Gemini
+        # está devendo uma resposta a ESTE turno especificamente
+        # (diferente de "há quanto tempo a conexão está muda" —
+        # métrica antiga, removida). Ver LIMITE_RESPOSTA_GEMINI_SEGUNDOS.
+        self.timestamp_mic_reaberto = time.monotonic()
+
+        # Instante (time.monotonic()) do último bloco de microfone
+        # cujo volume passou de LIMIAR_ATIVIDADE_VOZ_USUARIO — ou
+        # seja, a última vez que o usuário estava de fato falando
+        # (não só "o microfone está aberto"). vigiar_resposta_lenta
+        # usa max(timestamp_mic_reaberto, este valor) como início real
+        # da espera por resposta, pra uma frase longa não disparar o
+        # cérebro reserva no meio dela. 0.0 no início: nenhuma
+        # atividade ainda nesta chamada, então max() cai de volta em
+        # timestamp_mic_reaberto sozinho.
+        self.timestamp_ultima_atividade_voz_usuario = 0.0
+
+        # Buffer circular (não limitado por contagem, podado por
+        # idade) do áudio de microfone capturado enquanto o usuário
+        # pode estar falando (mesmo ponto que já alimenta
+        # fila_microfone) — guarda só os últimos
+        # ~LIMITE_BUFFER_CIRCULAR_MIC_SEGUNDOS de áudio. Existe pra
+        # "primar" a primeira escuta do cérebro reserva com o que o
+        # usuário JÁ falou (ver vigiar_resposta_lenta/
+        # _conduzir_reserva_temporaria) — sem isso, o reserva só
+        # poderia ouvir uma fala NOVA, e o usuário teria que repetir a
+        # pergunta que já tinha feito ao Gemini.
+        self._buffer_circular_mic = collections.deque()
+
+        # Instante da última mensagem que é PROVA REAL de que o Gemini
+        # gerou alguma coisa (resposta.data ou resposta.tool_call) —
+        # diferente de self.timestamp_ultima_resposta_gemini (QUALQUER
+        # mensagem, incluindo só uma transcrição de entrada, ver
+        # DEBUG_TIMING_CONGELAMENTO). Usado por vigiar_resposta_lenta:
+        # comparar contra isto, não contra "qualquer mensagem", é o
+        # que evita repetir o bug relatado pelo usuário de considerar
+        # uma transcrição de entrada como "o Gemini respondeu".
+        self.timestamp_ultima_geracao_gemini = time.monotonic()
 
         # Lido UMA VEZ aqui, na criação do worker — não recarrega em
         # tempo real no meio de uma chamada; trocar config.json exige
@@ -549,6 +660,35 @@ class GeminiLiveWorker(QThread):
         # Instante em que esta chamada começou, só pra exibir "t=Ns
         # desde o início" nos logs de diagnóstico acima.
         self._debug_inicio_chamada = time.monotonic()
+
+        # [DIAGNÓSTICO DE CONGELAMENTO] Só usado sob
+        # DEBUG_TIMING_CONGELAMENTO. Atualizado a CADA mensagem que
+        # chega de sessao.receive() em receber_audio — mesmo uma sem
+        # resposta.data nem tool_call — pra distinguir "o Gemini está
+        # calado, mas o WebSocket segue vivo" de "o WebSocket parou de
+        # entregar qualquer coisa". Iniciado já com o valor atual (não
+        # None) pra não parecer parado desde antes mesmo da sessão
+        # conectar.
+        self._debug_timestamp_ultima_resposta_qualquer = time.monotonic()
+
+        # [DIAGNÓSTICO DE CONGELAMENTO] Só usado sob
+        # DEBUG_TIMING_CONGELAMENTO. Maior nível de áudio captado pelo
+        # microfone desde o último tick de vigiar_travamento — pra
+        # distinguir "o usuário falou e o ALFRED não respondeu" (nível
+        # alto durante um trecho de silêncio do Gemini) de "o usuário
+        # só ficou quieto" (nível baixo o tempo todo), sem depender só
+        # da memória de quem reproduziu o problema.
+        self._debug_nivel_mic_maximo_desde_tick = 0.0
+
+        # [DIAGNÓSTICO DE CONGELAMENTO] Só usado sob
+        # DEBUG_TIMING_CONGELAMENTO — ver _enviar_para_sessao. Tempo
+        # que cada envio pra sessão do Gemini (mic, texto, tool_response
+        # — todos passam por ali) realmente leva, acumulado desde o
+        # último tick de vigiar_travamento.
+        self._debug_envio_max_desde_tick = 0.0
+        self._debug_envio_soma_desde_tick = 0.0
+        self._debug_envio_contagem_desde_tick = 0
+
         # Referência para a tarefa que libera o microfone após a fala.
         self.tarefa_liberar_microfone = None
         # Referência para a tarefa que encerra a chamada após a despedida.
@@ -595,10 +735,74 @@ class GeminiLiveWorker(QThread):
         # receber_audio. Só faz sentido com interrupcao_habilitada.
         self.interrupcoes_na_chamada = 0
 
-        # True enquanto o cérebro reserva está conduzindo a conversa.
-        # parar() zera isto também, senão encerrar a chamada não teria
-        # efeito nenhum depois da troca.
+        # True enquanto o cérebro reserva está conduzindo a conversa —
+        # seja depois da chamada ter terminado por falha (fluxo
+        # original), seja NO MEIO de uma chamada ainda ativa quando o
+        # Gemini fica mudo por tempo demais (ver vigiar_travamento /
+        # _conduzir_reserva_temporaria). parar() zera isto também,
+        # senão encerrar a chamada não teria efeito nenhum durante a
+        # troca.
         self.reserva_ativa = False
+
+        # True só enquanto o cérebro reserva está de fato FALANDO
+        # (fala.falar(), via _status_reserva) — usado pelas mesmas
+        # checagens de self.alfred_falando em enviar_microfone/
+        # _laco_reproducao, pra nem o Gemini nem o próprio reserva
+        # (na escuta seguinte) ouvirem a voz SAPI/Mistral do reserva
+        # como se fosse o usuário.
+        self.reserva_falando = False
+
+        # True só durante o PRIMEIRO turno depois de _devolver_controle_ao_gemini
+        # — descarta a resposta em áudio/texto desse turno específico
+        # em vez de reproduzi-la, porque ela é a resposta ATRASADA à
+        # pergunta que o Gemini já estava processando ANTES do cérebro
+        # reserva assumir (o áudio do microfone continuou sendo
+        # enviado a ele o tempo todo, ver adicionar_audio em
+        # enviar_microfone), então essa resposta responde de novo algo
+        # que o usuário já ouviu do reserva. BUG REAL relatado pelo
+        # usuário: sem isto, ao retomar, o Gemini repetia em voz alta
+        # a mesma resposta que o cérebro reserva já tinha dado. Zerado
+        # de volta no turn_complete deste mesmo turno, pra turnos
+        # seguintes tocarem normalmente. Ver receber_audio.
+        self.suprimir_audio_pos_reserva = False
+
+        # queue.Queue (não asyncio.Queue) que espelha os blocos de
+        # microfone pro cérebro reserva enquanto self.reserva_ativa —
+        # criada sob demanda em _conduzir_reserva_temporaria, nunca um
+        # segundo sd.RawInputStream. maxsize pequeno de propósito: se o
+        # reserva não estiver consumindo (ex: processando uma
+        # ferramenta), blocos antigos devem ser descartados, não
+        # acumular atraso.
+        self._fila_bloco_reserva = None
+
+        # Transcript contínuo da conversa (usuário + ALFRED), como
+        # lista de {"role": "user"/"assistant", "content": str} — usado
+        # pra alimentar o cérebro reserva com o contexto já existente
+        # quando ele assume no meio da chamada, e pra montar o resumo
+        # injetado de volta no Gemini quando ele retoma. Ver
+        # receber_audio (acumula) e _conduzir_reserva_temporaria (lê).
+        self.transcricao_conversa = []
+        self._buffer_transcricao_usuario = ""
+
+        # Instante (time.monotonic()) da ÚLTIMA mensagem de QUALQUER
+        # tipo recebida de sessao.receive() — não só resposta.data/
+        # tool_call. Diferente de self.timestamp_ultima_atividade (que
+        # só marca atividade REAL do ALFRED): este mede se o Gemini
+        # está respondendo em absoluto, mesmo que ainda não tenha nada
+        # de conteúdo pra mostrar. Só usado sob DEBUG_TIMING_CONGELAMENTO
+        # hoje — o gatilho real do cérebro reserva usa
+        # self.timestamp_ultima_geracao_gemini (mais estrito, exige
+        # geração de verdade), não este.
+        self.timestamp_ultima_resposta_gemini = time.monotonic()
+
+        # Posição em self.transcricao_conversa no momento em que o
+        # cérebro reserva assumiu — tudo que for adicionado a partir
+        # daqui (pelas próprias falas do reserva, via
+        # ao_turno_concluido) é "o que aconteceu enquanto o Gemini
+        # estava fora", resumido de volta pra ele em
+        # _anunciar_retomada_gemini.
+        self._indice_transcricao_ao_assumir_reserva = 0
+
         self.tarefas_chamada = []
         self.ultima_funcao_visual = None
         self.tempo_ultima_funcao_visual = 0.0
@@ -692,11 +896,35 @@ class GeminiLiveWorker(QThread):
     # que já tratava antes — este método só adiciona o timeout e o
     # registro do travamento, nunca engole o erro.
     async def _enviar_para_sessao(self, corrotina):
+        # [DIAGNÓSTICO DE CONGELAMENTO] Ver DEBUG_TIMING_CONGELAMENTO.
+        # Único ponto por onde TODO envio pra sessão passa (mic, texto,
+        # tool_response) — mede quanto tempo cada envio realmente leva,
+        # pra saber se um travamento observado do lado da RECEPÇÃO
+        # (nada chega) também afeta o ENVIO (mic demorando pra sair),
+        # o que apontaria pra uma trava de rede nos dois sentidos, ou
+        # se o envio continua rápido o tempo todo, o que apontaria
+        # pro Gemini simplesmente demorando pra responder (ou alguma
+        # limitação do lado do servidor), sem problema de transporte.
+        if DEBUG_TIMING_CONGELAMENTO:
+            inicio_envio = time.monotonic()
+
         try:
-            return await asyncio.wait_for(
+            resultado = await asyncio.wait_for(
                 corrotina,
                 timeout=TIMEOUT_ENVIO_SESSAO_SEGUNDOS,
             )
+
+            if DEBUG_TIMING_CONGELAMENTO:
+                duracao_envio = time.monotonic() - inicio_envio
+
+                self._debug_envio_max_desde_tick = max(
+                    self._debug_envio_max_desde_tick,
+                    duracao_envio,
+                )
+                self._debug_envio_soma_desde_tick += duracao_envio
+                self._debug_envio_contagem_desde_tick += 1
+
+            return resultado
 
         except asyncio.TimeoutError:
             print(
@@ -725,6 +953,72 @@ class GeminiLiveWorker(QThread):
                             types.Part(
                                 text=prompts.ANUNCIO_ESPONTANEO.format(
                                     texto=texto
+                                )
+                            )
+                        ],
+                    )
+                ],
+                turn_complete=True,
+            )
+        )
+
+    # Chamado por receber_audio quando o Gemini volta a mandar
+    # qualquer coisa enquanto self.reserva_ativa ainda estava True —
+    # resume, num único texto, tudo que foi dito (usuário e reserva)
+    # desde que o reserva assumiu (self.transcricao_conversa a partir
+    # de self._indice_transcricao_ao_assumir_reserva) e injeta isso
+    # silenciosamente na sessão, pro Gemini continuar a conversa
+    # sabendo o que aconteceu na ausência dele. Nunca lança exceção
+    # própria — se a sessão realmente estiver ruim, _enviar_para_sessao
+    # já cuida de marcar conexao_travada e monitorar_conexao encerra a
+    # chamada, mesmo caminho de sempre.
+    # Chamado de receber_audio nos dois pontos que são prova real de
+    # que o Gemini voltou a GERAR resposta (resposta.data ou
+    # resposta.tool_call) — nunca em resposta.server_content sozinho
+    # (input_transcription chega mesmo com a geração ainda travada;
+    # tratar isso como "voltou" foi um bug real relatado pelo usuário:
+    # devolvia o controle instantaneamente, sem o reserva sequer ter
+    # tido tempo de responder, e o Gemini continuava mudo mesmo assim
+    # — os dois lados ficavam sem responder).
+    async def _devolver_controle_ao_gemini(self):
+        self.reserva_ativa = False
+
+        # Ver o comentário de self.suprimir_audio_pos_reserva em
+        # __init__: o turno que está chegando agora (o que provou que
+        # o Gemini voltou) é a resposta atrasada à pergunta que o
+        # cérebro reserva já respondeu — descartar em vez de tocar.
+        self.suprimir_audio_pos_reserva = True
+
+        print(
+            "[RESERVA] O Gemini voltou a gerar resposta — devolvendo "
+            "o controle a ele."
+        )
+
+        await self._anunciar_retomada_gemini()
+
+    async def _anunciar_retomada_gemini(self):
+        turnos_durante_ausencia = self.transcricao_conversa[
+            self._indice_transcricao_ao_assumir_reserva:
+        ]
+
+        if not turnos_durante_ausencia:
+            return
+
+        resumo = " ".join(
+            f"{'Usuário' if turno['role'] == 'user' else 'Você (via reserva)'}: "
+            f"{turno['content']}"
+            for turno in turnos_durante_ausencia
+        )
+
+        await self._enviar_para_sessao(
+            self.sessao.send_client_content(
+                turns=[
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(
+                                text=prompts.RETOMADA_CEREBRO_RESERVA.format(
+                                    resumo=resumo
                                 )
                             )
                         ],
@@ -906,6 +1200,66 @@ class GeminiLiveWorker(QThread):
             )
 
             self.chamada_encerrada.emit()
+
+    # Conecta a sessão do Gemini Live tentando GEMINI_LIVE_MODEL
+    # primeiro e, só se ele falhar ao CONECTAR, GEMINI_LIVE_MODEL_FALLBACK
+    # em seguida — pedido explícito do usuário. Só quando NENHUM dos
+    # dois conecta é que a chamada acaba indo pro cérebro reserva (ver
+    # o bloco de fallback perto do fim de executar()).
+    #
+    # `pilha` é um contextlib.AsyncExitStack criado por quem chama —
+    # usar ele em vez de um `async with client.aio.live.connect(...)`
+    # direto é o que permite tentar o modelo seguinte só quando a
+    # CONEXÃO em si falha (erro em __aenter__), sem confundir isso com
+    # uma falha no MEIO de uma chamada já conectada (que deve
+    # continuar sendo tratada exatamente como antes — ver
+    # self.encerrou_por_falha sendo setado em vários outros pontos
+    # deste arquivo, todos depois da sessão já existir). Quem chama
+    # entra no `async with pilha:` depois, e o encerramento da sessão
+    # (o `__aexit__` do modelo que efetivamente conectou) acontece ali,
+    # não aqui.
+    #
+    # Nunca retorna sem uma sessão — se os dois modelos falharem, marca
+    # self.encerrou_por_falha = True e relança o último erro, que sobe
+    # até run() exatamente como uma falha de conexão sempre subiu.
+    async def _conectar_sessao_gemini(self, client, config, pilha):
+        modelos = (
+            GEMINI_LIVE_MODEL,
+            GEMINI_LIVE_MODEL_FALLBACK,
+        )
+
+        ultimo_erro = None
+
+        for indice, modelo in enumerate(modelos):
+            try:
+                sessao = await pilha.enter_async_context(
+                    client.aio.live.connect(
+                        model=modelo,
+                        config=config,
+                    )
+                )
+
+            except Exception as erro:
+                ultimo_erro = erro
+
+                print(
+                    f"[GEMINI] Falha ao conectar com o modelo "
+                    f"'{modelo}': {erro}"
+                )
+
+                continue
+
+            if indice > 0:
+                print(
+                    "[GEMINI] Modelo principal indisponível — "
+                    f"conectado com o modelo alternativo '{modelo}'."
+                )
+
+            return sessao
+
+        self.encerrou_por_falha = True
+
+        raise ultimo_erro
 
     # Configura o Gemini Live, cria as filas de áudio
     # e mantém a sessão funcionando enquanto o worker estiver ativo.
@@ -1622,6 +1976,16 @@ class GeminiLiveWorker(QThread):
             # não traz nenhum texto na resposta.
             output_audio_transcription=types.AudioTranscriptionConfig(),
 
+            # Simétrico ao de cima, mas da FALA DO USUÁRIO (campo
+            # confirmado no SDK instalado antes de usar, mesmo cuidado
+            # de output_audio_transcription acima). Usado pra montar
+            # self.transcricao_conversa (ver receber_audio) — o
+            # contexto que o cérebro reserva recebe ao assumir no meio
+            # de uma chamada, e que é resumido de volta pro Gemini
+            # quando ele retoma. Sem isso não havia como saber o que o
+            # usuário disse, só o que o ALFRED respondeu.
+            input_audio_transcription=types.AudioTranscriptionConfig(),
+
             tools=tools,
 
             system_instruction=types.Content(
@@ -1644,12 +2008,20 @@ class GeminiLiveWorker(QThread):
             "Conectando ao Gemini Live..."
         )
 
-        # Abre a conexão assíncrona com o modelo Gemini Live.
-        # O bloco with encerra a conexão automaticamente ao final.
-        async with client.aio.live.connect(
-            model=GEMINI_LIVE_MODEL,
-            config=config,
-        ) as sessao:
+        # Abre a conexão assíncrona com o modelo Gemini Live — tenta
+        # GEMINI_LIVE_MODEL_FALLBACK antes de desistir, ver
+        # _conectar_sessao_gemini. O `async with pilha:` encerra a
+        # sessão automaticamente ao final, exatamente como o
+        # `async with client.aio.live.connect(...)` direto fazia antes.
+        pilha_sessao_gemini = contextlib.AsyncExitStack()
+
+        sessao = await self._conectar_sessao_gemini(
+            client,
+            config,
+            pilha_sessao_gemini,
+        )
+
+        async with pilha_sessao_gemini:
             self.sessao = sessao
 
             self.status_recebido.emit(
@@ -1734,6 +2106,14 @@ class GeminiLiveWorker(QThread):
                     ),
                     name="VIGIA",
                 ),
+
+                asyncio.create_task(
+                    self._tarefa_supervisionada(
+                        "VIGIA_RESPOSTA",
+                        self.vigiar_resposta_lenta(),
+                    ),
+                    name="VIGIA_RESPOSTA",
+                ),
             ]
 
             # vigiar_travamento() consulta esta lista para detectar
@@ -1745,6 +2125,22 @@ class GeminiLiveWorker(QThread):
                 await asyncio.sleep(
                     0.1
                 )
+
+            # [DIAGNÓSTICO DE CONGELAMENTO] Ver DEBUG_TIMING_CONGELAMENTO.
+            # Mede quanto tempo a limpeza abaixo (cancelar tarefas +
+            # esperar o gather) leva de verdade — suspeita a confirmar:
+            # se uma tarefa (RECEPÇÃO, presa em sessao.receive(), é a
+            # candidata mais provável) não terminar rápido depois de
+            # cancelada, executar() não retorna, chamada_encerrada
+            # nunca é emitido, e jarvis/ui/janela_principal.py nunca zera
+            # self.live_worker — clicar em "ENCERRAR CHAMADA" de novo
+            # não inicia uma chamada nova nenhuma enquanto isso durar.
+            if DEBUG_TIMING_CONGELAMENTO:
+                print(
+                    "[TIMING-CONGELAMENTO] Encerrando: cancelando "
+                    f"{len(tarefas)} tarefas e aguardando o gather..."
+                )
+                inicio_encerramento = time.monotonic()
 
             # Cancela as tarefas quando a chamada está sendo encerrada.
             for tarefa in tarefas:
@@ -1773,12 +2169,61 @@ class GeminiLiveWorker(QThread):
                 await self.monitor_tela_continuo.parar()
                 self.monitor_tela_continuo = None
 
-            await asyncio.gather(
+            resultados_encerramento = await asyncio.gather(
                 *tarefas,
                 return_exceptions=True,
             )
 
+            # [DIAGNÓSTICO DE CONGELAMENTO] Ver o print de início logo
+            # acima. Se "duracao" vier alta, a limpeza realmente
+            # trava/demora — confirma a suspeita. Se vier baixa (ex:
+            # frações de segundo) mesmo com a chamada tendo parecido
+            # travada, o problema não é a limpeza em si, e a pergunta
+            # vira "por que o clique em ENCERRAR CHAMADA não pareceu
+            # ter efeito" (delay na UI, outro estado preso, etc).
+            if DEBUG_TIMING_CONGELAMENTO:
+                duracao_encerramento = (
+                    time.monotonic() - inicio_encerramento
+                )
+
+                detalhe = ", ".join(
+                    f"{tarefa.get_name()}={type(resultado).__name__}"
+                    for tarefa, resultado in zip(
+                        tarefas, resultados_encerramento
+                    )
+                )
+
+                print(
+                    "[TIMING-CONGELAMENTO] Encerramento concluído em "
+                    f"{duracao_encerramento:.2f}s -> {detalhe}"
+                )
+
             self.tarefas_chamada = []
+
+        # Salva um resumo pesquisável da conversa inteira desta
+        # chamada (não fatos pessoais duráveis — isso já é feito por
+        # salvar_memoria autônomo durante a conversa; isto é o
+        # CONTEÚDO discutido) — pedido explícito do usuário depois de
+        # perguntar sobre um assunto de uma chamada anterior (uma
+        # placa de vídeo) numa chamada nova e o ALFRED não lembrar de
+        # nada, porque self.transcricao_conversa nunca sobrevivia ao
+        # fim do GeminiLiveWorker. Roda pra QUALQUER encerramento (não
+        # só falha), em asyncio.to_thread (é uma chamada de rede, não
+        # pode travar o encerramento visível da chamada). A checagem
+        # de "vale a pena" (conversa curta demais) e a geração do
+        # título+resumo já ficam dentro de
+        # memoria_obsidian.consolidacao.salvar_resumo_conversa — nunca
+        # levanta exceção, mas o try/except aqui existe mesmo assim
+        # por segurança, já que isto roda perto do fim de executar()
+        # e uma falha aqui não pode impedir o resto do encerramento.
+        try:
+            await asyncio.to_thread(
+                memoria_obsidian.consolidacao.salvar_resumo_conversa,
+                self.transcricao_conversa,
+            )
+
+        except Exception as erro:
+            print(f"[MEMORIA] Falha ao salvar o resumo da conversa: {erro}")
 
         # Guardará a sessão ativa do Gemini Live.
         self.sessao = None
@@ -1818,6 +2263,199 @@ class GeminiLiveWorker(QThread):
         # o callback já registrado por main.py, não precisa
         # receber nada de novo aqui.
         ativacao_voz.retomar()
+
+    # Wrapper de ao_status passado pro cérebro reserva em
+    # _conduzir_reserva_temporaria — além de repassar pra
+    # self.status_recebido.emit (mesmo efeito de sempre: rótulo de
+    # status + log de atividade), também rastreia self.reserva_falando
+    # (True só durante "Respondendo...", que é exatamente quando
+    # fala.falar() está tocando) — usado pelas checagens de
+    # self.alfred_falando em enviar_microfone/_laco_reproducao. Nunca
+    # usado no fluxo original (pós-chamada) porque lá não existe mais
+    # sessão do Gemini nem fila_saida ativas pra proteger.
+    def _status_reserva(self, texto):
+        self.reserva_falando = texto == "Respondendo..."
+        self.status_recebido.emit(texto)
+
+    # Assume a conversa TEMPORARIAMENTE, no MEIO de uma chamada do
+    # Gemini ainda ativa — diferente do bloco em executar() acima
+    # (que só roda depois da sessão já ter terminado por completo).
+    # Disparado por vigiar_resposta_lenta quando o Gemini deve uma
+    # resposta ao turno atual por mais de LIMITE_RESPOSTA_GEMINI_SEGUNDOS.
+    # self.ativo e self.sessao continuam de pé o tempo todo —
+    # enviar_microfone continua mandando áudio pro Gemini (agora
+    # também espelhado pra self._fila_bloco_reserva, ver o callback
+    # lá) e receber_audio continua escutando por uma resposta nova,
+    # que devolve o controle sozinha (ver o bloco "O Gemini voltou..."
+    # em receber_audio) sem precisar de nada daqui.
+    #
+    # audio_primeiro_turno (bytes WAV, opcional): o áudio do turno
+    # atual, já montado a partir do buffer circular pelo chamador
+    # (vigiar_resposta_lenta) — o usuário já falou isso enquanto
+    # esperava o Gemini responder, então o reserva não precisa (e não
+    # deveria) pedir pra repetir. Só vale pra primeira escuta do laço
+    # (ver assumir()/escuta.ouvir); turnos seguintes ouvem ao vivo.
+    #
+    # Nunca lança exceção: qualquer falha aqui não deve derrubar a
+    # chamada, que continua tentando o Gemini normalmente.
+    async def _conduzir_reserva_temporaria(self, audio_primeiro_turno=None):
+        self.reserva_ativa = True
+        self._fila_bloco_reserva = queue.Queue(maxsize=LIMITE_FILA_MICROFONE)
+        self._indice_transcricao_ao_assumir_reserva = len(
+            self.transcricao_conversa
+        )
+
+        historico_inicial = list(self.transcricao_conversa)
+
+        def ao_turno_concluido(role, texto):
+            self.transcricao_conversa.append(
+                {"role": role, "content": texto}
+            )
+
+        try:
+            await asyncio.to_thread(
+                cerebro_reserva.assumir,
+                PACOTES_REGISTRADOS,
+                lambda: self.reserva_ativa and self.ativo,
+                self._status_reserva,
+                historico_inicial=historico_inicial,
+                fila_bloco_externa=self._fila_bloco_reserva,
+                ao_turno_concluido=ao_turno_concluido,
+                audio_primeiro_turno=audio_primeiro_turno,
+            )
+
+        except Exception as erro:
+            print(f"[RESERVA] O modo reserva temporário falhou: {erro}")
+
+        finally:
+            self.reserva_ativa = False
+            self.reserva_falando = False
+            self._fila_bloco_reserva = None
+
+            # BUG REAL encontrado testando: se assumir() terminar
+            # cedo por qualquer motivo que NÃO seja "o Gemini voltou a
+            # responder" (ex: escuta.ouvir() falhou e assumir() já
+            # retorna sozinho, sem que deve_continuar() jamais tenha
+            # virado False por fora), nada teria empurrado
+            # self.timestamp_mic_reaberto pra frente — e
+            # vigiar_resposta_lenta dispararia este método de novo já
+            # no próximo tick (1s), sem nenhum espaçamento, martelando
+            # a API do reserva enquanto o problema persistir. Atualizar
+            # aqui, incondicionalmente, dá uma janela cheia de
+            # LIMITE_RESPOSTA_GEMINI_SEGUNDOS antes da próxima
+            # tentativa — redundante (inofensivo) no caso normal em
+            # que o Gemini já respondeu de verdade (receber_audio já
+            # devolveu o controle antes disto rodar), necessário no
+            # caso em que não respondeu.
+            self.timestamp_mic_reaberto = time.monotonic()
+
+    # Vigia dedicada (tick de INTERVALO_VIGIA_RESPOSTA_SEGUNDOS, mais
+    # rápido que INTERVALO_VIGILANCIA_SEGUNDOS de propósito — ver o
+    # comentário na constante) pro atraso de resposta POR TURNO —
+    # substitui o antigo gatilho de silêncio da conexão inteira
+    # (20s, checado a cada 5s), trocado por pedido explícito do
+    # usuário depois de medir ao vivo que era lento demais e que a
+    # volta ao Gemini tinha um bug de falso positivo (corrigido nesta
+    # mesma sessão — ver _devolver_controle_ao_gemini).
+    async def vigiar_resposta_lenta(self):
+        ja_avisou_indisponivel = False
+
+        while self.ativo:
+            await asyncio.sleep(INTERVALO_VIGIA_RESPOSTA_SEGUNDOS)
+
+            if not self.ativo:
+                break
+
+            agora = time.monotonic()
+
+            # Início real da espera por resposta: não é só "quando o
+            # microfone reabriu" (self.timestamp_mic_reaberto), e sim
+            # o mais recente entre isso e a última vez que o usuário
+            # foi de fato ouvido falando (self.timestamp_ultima_atividade_voz_usuario).
+            # BUG REAL relatado pelo usuário: sem isto, uma frase mais
+            # longa que LIMITE_RESPOSTA_GEMINI_SEGUNDOS disparava o
+            # cérebro reserva NO MEIO da própria fala — o Gemini nunca
+            # esteve "devendo resposta", a pessoa é que ainda não
+            # tinha terminado de perguntar. max() aqui nunca anda pra
+            # trás: enquanto o usuário fala, cada bloco acima do
+            # limiar empurra este instante pra frente; quando ele para
+            # de falar, o instante para de avançar e os 5s passam a
+            # contar dali.
+            inicio_espera_resposta = max(
+                self.timestamp_mic_reaberto,
+                self.timestamp_ultima_atividade_voz_usuario,
+            )
+
+            # Turno pendente = a espera por resposta (ver acima) já
+            # passa de LIMITE_RESPOSTA_GEMINI_SEGUNDOS, o ALFRED não
+            # está falando agora, o reserva não está já ativo, e
+            # nenhuma geração REAL (não só uma transcrição de entrada)
+            # aconteceu desde então.
+            turno_pendente = (
+                not self.alfred_falando
+                and not self.reserva_ativa
+                and agora - inicio_espera_resposta
+                > LIMITE_RESPOSTA_GEMINI_SEGUNDOS
+                and self.timestamp_ultima_geracao_gemini
+                < inicio_espera_resposta
+            )
+
+            if not turno_pendente:
+                ja_avisou_indisponivel = False
+                continue
+
+            if not cerebro_reserva.esta_disponivel():
+                if not ja_avisou_indisponivel:
+                    print(
+                        "[RESERVA] O Gemini está devendo resposta a "
+                        "este turno há "
+                        f"{int(agora - inicio_espera_resposta)}s, "
+                        f"mas {cerebro_reserva.motivo_indisponivel()} "
+                        "— seguindo sem assumir, só tentando o Gemini."
+                    )
+
+                    ja_avisou_indisponivel = True
+
+                continue
+
+            # Fatia do buffer circular que corresponde exatamente ao
+            # turno atual (desde que o microfone reabriu até agora) —
+            # é a fala que o usuário JÁ fez, que o reserva vai usar em
+            # vez de pedir pra repetir. Vazio (ex: usuário ainda nem
+            # começou a falar) cai de volta pra escuta ao vivo dentro
+            # de assumir(), sem nenhum erro.
+            blocos = [
+                bloco
+                for instante, bloco in self._buffer_circular_mic
+                if instante >= self.timestamp_mic_reaberto
+            ]
+
+            audio_primeiro_turno = (
+                cerebro_reserva.escuta.montar_wav(blocos)
+                if blocos
+                else None
+            )
+
+            print(
+                "[RESERVA] O Gemini está devendo resposta a este "
+                f"turno há {int(agora - inicio_espera_resposta)}s "
+                "— o cérebro reserva vai processar o que já foi "
+                "falado (a chamada continua ativa, e o Gemini "
+                "continua sendo tentado em paralelo)."
+            )
+
+            tarefa_reserva = asyncio.create_task(
+                self._conduzir_reserva_temporaria(
+                    audio_primeiro_turno=audio_primeiro_turno
+                ),
+                name="RESERVA_TEMPORARIA",
+            )
+
+            self.tarefas_chamada.append(tarefa_reserva)
+
+            tarefa_reserva.add_done_callback(
+                self._ao_finalizar_tarefa_reserva
+            )
 
     # Confere periodicamente os estados que NUNCA deveriam ficar
     # presos e, se encontrar um, diz exatamente qual — no console e
@@ -1872,6 +2510,7 @@ class GeminiLiveWorker(QThread):
                     )
 
                     self.alfred_falando = False
+                    self.timestamp_mic_reaberto = time.monotonic()
                     desde_falando = None
             else:
                 desde_falando = None
@@ -1924,6 +2563,46 @@ class GeminiLiveWorker(QThread):
                 ja_avisou_reproducao = False
 
             fila_saida_anterior = fila_atual
+
+            # [DIAGNÓSTICO DE CONGELAMENTO] Ver DEBUG_TIMING_CONGELAMENTO.
+            # Reporta há quanto tempo NADA chegou de sessao.receive()
+            # (nem resposta.data, nem tool_call, nem qualquer outra
+            # mensagem) — se esse número ficar crescendo sem parar
+            # durante um "travamento", o WebSocket realmente ficou
+            # mudo (problema de rede/servidor); se ficar baixo mesmo
+            # com a chamada aparentemente travada, o problema está em
+            # outro lugar (processamento do lado de cá, não a
+            # recepção em si).
+            if DEBUG_TIMING_CONGELAMENTO:
+                if self._debug_envio_contagem_desde_tick:
+                    envio_medio = (
+                        self._debug_envio_soma_desde_tick
+                        / self._debug_envio_contagem_desde_tick
+                    )
+                else:
+                    envio_medio = 0.0
+
+                print(
+                    "[TIMING-CONGELAMENTO] "
+                    f"t={agora - self._debug_inicio_chamada:.0f}s "
+                    "tempo desde a última resposta recebida do "
+                    "Gemini (qualquer tipo) = "
+                    f"{agora - self._debug_timestamp_ultima_resposta_qualquer:.1f}s "
+                    "| nível máximo de microfone captado neste "
+                    "intervalo = "
+                    f"{self._debug_nivel_mic_maximo_desde_tick:.2f} "
+                    "(0.00-1.00 — acima de ~0.15 costuma ser fala de "
+                    "verdade, não só ruído de fundo) | envio pra "
+                    "sessão neste intervalo: máximo="
+                    f"{self._debug_envio_max_desde_tick * 1000:.0f}ms, "
+                    f"médio={envio_medio * 1000:.0f}ms "
+                    f"(amostras={self._debug_envio_contagem_desde_tick})"
+                )
+
+                self._debug_nivel_mic_maximo_desde_tick = 0.0
+                self._debug_envio_max_desde_tick = 0.0
+                self._debug_envio_soma_desde_tick = 0.0
+                self._debug_envio_contagem_desde_tick = 0
 
             # [DIAGNÓSTICO DE ATRASO EM CONVERSAS LONGAS] Amostra
             # contínua, a cada tick deste mesmo laço (já roda a cada
@@ -1983,7 +2662,13 @@ class GeminiLiveWorker(QThread):
                 return
 
             # 5. Alguma das tarefas da chamada terminou enquanto a
-            # chamada ainda deveria estar rodando.
+            # chamada ainda deveria estar rodando. RESERVA_TEMPORARIA
+            # (disparada por vigiar_resposta_lenta, tarefa própria —
+            # ver logo abaixo) tem seu próprio done-callback que a
+            # remove desta lista assim que termina — nunca aparece
+            # aqui como "morreu sozinha", porque terminar sozinha
+            # (quando o Gemini volta) é o comportamento normal dela,
+            # não uma falha.
             for tarefa in self.tarefas_chamada:
                 if tarefa.done() and not tarefa.cancelled():
                     self._reportar_travamento(
@@ -2088,6 +2773,23 @@ class GeminiLiveWorker(QThread):
             # sempre em fila_microfone.get(). Ver vigiar_travamento().
             self.timestamp_ultimo_bloco_microfone = time.monotonic()
 
+            # [DIAGNÓSTICO DE CONGELAMENTO] Calculado ANTES de qualquer
+            # return antecipado, de propósito — quero saber se havia
+            # alguém falando de verdade mesmo nos casos em que o bloco
+            # seria descartado por self.alfred_falando (ver
+            # DEBUG_TIMING_CONGELAMENTO no topo do arquivo). Mesmo
+            # cálculo já usado por calcular_nivel_audio, só que aplicado
+            # à entrada em vez da saída.
+            if DEBUG_TIMING_CONGELAMENTO:
+                nivel_mic = self.calcular_nivel_audio(
+                    bytes(indata)
+                )
+
+                self._debug_nivel_mic_maximo_desde_tick = max(
+                    self._debug_nivel_mic_maximo_desde_tick,
+                    nivel_mic,
+                )
+
             if not self.ativo:
                 return
 
@@ -2098,7 +2800,13 @@ class GeminiLiveWorker(QThread):
             # propósito, pra permitir interrupção (ver
             # self.interrupcao_habilitada em __init__ e
             # docs/INTEGRATION.md, seção "Interrupção de fala").
-            if self.alfred_falando and not self.interrupcao_habilitada:
+            # self.reserva_falando é a mesma ideia, pro cérebro reserva
+            # (ver _conduzir_reserva_temporaria) — sem isso, o Gemini
+            # (ou o próprio reserva, na próxima escuta) ouviria a voz
+            # SAPI/Mistral do reserva como se fosse o usuário falando.
+            if (
+                self.alfred_falando or self.reserva_falando
+            ) and not self.interrupcao_habilitada:
                 return
 
             if status:
@@ -2121,8 +2829,10 @@ class GeminiLiveWorker(QThread):
                     return
 
                 # Mesma exceção do check acima: com interrupcao_habilitada,
-                # não bloqueia por causa de alfred_falando.
-                if self.alfred_falando and not self.interrupcao_habilitada:
+                # não bloqueia por causa de alfred_falando/reserva_falando.
+                if (
+                    self.alfred_falando or self.reserva_falando
+                ) and not self.interrupcao_habilitada:
                     return
 
                 try:
@@ -2132,6 +2842,62 @@ class GeminiLiveWorker(QThread):
 
                 except asyncio.QueueFull:
                     pass
+
+                # Espelha o MESMO bloco (já elegível — passou pelas
+                # checagens acima) pra fila do cérebro reserva, quando
+                # ele estiver conduzindo a conversa (ver
+                # _conduzir_reserva_temporaria) — nunca abre um segundo
+                # stream de microfone, só reaproveita a captura que já
+                # existe. queue.Queue comum (thread-safe nativamente),
+                # não asyncio.Queue — pode ser escrita direto daqui,
+                # sem precisar de call_soon_threadsafe de novo (este
+                # código já roda dentro do callback agendado). Fila
+                # cheia descarta o bloco mais novo, mesma convenção de
+                # fila_microfone acima.
+                if self.reserva_ativa and self._fila_bloco_reserva is not None:
+                    try:
+                        self._fila_bloco_reserva.put_nowait(
+                            audio_bytes
+                        )
+
+                    except queue.Full:
+                        pass
+
+                # Alimenta o buffer circular (sempre, não só quando o
+                # reserva está ativo — ver LIMITE_BUFFER_CIRCULAR_MIC_SEGUNDOS
+                # e vigiar_resposta_lenta) e poda o que já envelheceu.
+                # deque comum, mesmo raciocínio de thread-safety do
+                # comentário acima — escrito direto daqui, dentro do
+                # callback já agendado no loop.
+                agora_buffer = time.monotonic()
+
+                # Marca atividade de voz real (ver LIMIAR_ATIVIDADE_VOZ_USUARIO
+                # e vigiar_resposta_lenta) — deliberadamente feito aqui,
+                # não a cada bloco dentro do callback do sounddevice,
+                # já que este trecho só roda pra blocos já elegíveis
+                # (passou pelas checagens de alfred_falando/reserva_falando
+                # acima) e já está fora da thread de áudio em tempo real.
+                if (
+                    self.calcular_nivel_audio(audio_bytes)
+                    > LIMIAR_ATIVIDADE_VOZ_USUARIO
+                ):
+                    self.timestamp_ultima_atividade_voz_usuario = (
+                        agora_buffer
+                    )
+
+                self._buffer_circular_mic.append(
+                    (agora_buffer, audio_bytes)
+                )
+
+                limite_buffer = (
+                    agora_buffer - LIMITE_BUFFER_CIRCULAR_MIC_SEGUNDOS
+                )
+
+                while (
+                    self._buffer_circular_mic
+                    and self._buffer_circular_mic[0][0] < limite_buffer
+                ):
+                    self._buffer_circular_mic.popleft()
 
             loop.call_soon_threadsafe(
                 adicionar_audio
@@ -2168,12 +2934,15 @@ class GeminiLiveWorker(QThread):
                     audio_bytes = await fila_microfone.get()
 
                     # O bloco pode ter entrado na fila poucos milissegundos
-                    # antes de o assistente começar a falar.
+                    # antes de o assistente (ou o cérebro reserva) começar a
+                    # falar.
                     # Fazemos uma segunda verificação para garantir que o
                     # usuário nunca interrompa o assistente durante a resposta
                     # — a menos que interrupcao_habilitada esteja ligado
                     # (mesma exceção dos dois checks acima).
-                    if self.alfred_falando and not self.interrupcao_habilitada:
+                    if (
+                        self.alfred_falando or self.reserva_falando
+                    ) and not self.interrupcao_habilitada:
                         continue
 
                     # Envia o bloco de áudio atual para o Gemini Live.
@@ -2237,6 +3006,35 @@ class GeminiLiveWorker(QThread):
             # Percorre continuamente as respostas enviadas pela sessão.
             async for resposta in sessao.receive():
                 recebeu_algo = True
+
+                # [DIAGNÓSTICO DE CONGELAMENTO] Marca QUALQUER mensagem
+                # recebida, mesmo uma sem resposta.data/tool_call — ver
+                # DEBUG_TIMING_CONGELAMENTO no topo do arquivo.
+                if DEBUG_TIMING_CONGELAMENTO:
+                    self._debug_timestamp_ultima_resposta_qualquer = (
+                        time.monotonic()
+                    )
+
+                # Marca QUALQUER mensagem recebida — só usado sob
+                # DEBUG_TIMING_CONGELAMENTO hoje. O gatilho real do
+                # cérebro reserva (vigiar_resposta_lenta) usa
+                # self.timestamp_ultima_geracao_gemini, atualizado só
+                # em resposta.data/resposta.tool_call logo abaixo —
+                # nunca aqui, de propósito (ver o comentário perto de
+                # _devolver_controle_ao_gemini pro porquê).
+                self.timestamp_ultima_resposta_gemini = time.monotonic()
+
+                # BUG REAL relatado pelo usuário: "O Gemini voltou" NÃO
+                # pode ser detectado em QUALQUER mensagem — uma
+                # resposta.server_content.input_transcription (o Gemini
+                # só transcrevendo o que o usuário falou) chega mesmo
+                # com a geração de resposta ainda travada, e disparava
+                # a volta pro Gemini instantaneamente, sem o reserva
+                # sequer ter tido tempo de responder — os dois ficavam
+                # mudos. A devolução de controle agora só acontece nos
+                # dois pontos abaixo (resposta.data e resposta.tool_call),
+                # que são prova real de que o Gemini voltou a GERAR
+                # alguma coisa, não só a ouvir.
 
                 if not self.ativo:
                     break
@@ -2303,79 +3101,103 @@ class GeminiLiveWorker(QThread):
                     )
 
                     self.alfred_falando = False
+                    self.timestamp_mic_reaberto = time.monotonic()
 
                 # Quando chega o primeiro bloco de resposta, bloqueia
                 # imediatamente o microfone antes mesmo da reprodução.
                 # Também elimina qualquer áudio antigo que tenha sido
                 # capturado pouco antes do início da resposta.
                 if resposta.data:
-                    # Atividade real: o ALFRED está falando. Ver
-                    # verificar_inatividade() e
-                    # self.timestamp_ultima_atividade.
-                    self.timestamp_ultima_atividade = time.monotonic()
+                    # Prova real de que o Gemini gerou resposta (não só
+                    # ouviu) — usado por vigiar_resposta_lenta pra
+                    # saber que este turno já foi respondido, e (se o
+                    # reserva estava ativo) devolve o controle a ele.
+                    self.timestamp_ultima_geracao_gemini = time.monotonic()
 
-                    # [DIAGNÓSTICO DE MICROFONE] Marca só na transição
-                    # False -> True (início real do silêncio), não a
-                    # cada bloco. Ver DEBUG_TIMING_MICROFONE.
-                    if DEBUG_TIMING_MICROFONE and not self.alfred_falando:
-                        self._debug_inicio_mudo = time.perf_counter()
-                        print(
-                            "[TIMING-MIC] Microfone silenciado "
-                            "(receber_audio: chegou áudio novo)."
-                        )
+                    if self.reserva_ativa:
+                        await self._devolver_controle_ao_gemini()
 
-                    # [DIAGNÓSTICO DE ATRASO EM CONVERSAS LONGAS] Só na
-                    # transição False->True (início real de um NOVO
-                    # turno, mesmo ponto de DEBUG_TIMING_MICROFONE
-                    # acima) — mede a fila RESIDUAL de turnos
-                    # anteriores (que numa chamada saudável já deveria
-                    # estar zerada a esta altura) e o tempo desde o
-                    # último bloco de microfone enviado. Lido ANTES do
-                    # fila_saida.put() logo abaixo, de propósito: o
-                    # tamanho aqui é só o que sobrou de turnos
-                    # passados, sem contar o bloco que está prestes a
-                    # entrar agora.
-                    if DEBUG_TIMING_FILA_SAIDA and not self.alfred_falando:
-                        self._debug_numero_turno += 1
-                        backlog_residual = fila_saida.qsize()
-                        agora_diag = time.monotonic()
+                    # Descarta este bloco (e todos os outros do MESMO
+                    # turno, até o turn_complete abaixo zerar a flag) —
+                    # ver self.suprimir_audio_pos_reserva em __init__ e
+                    # o comentário em _devolver_controle_ao_gemini.
+                    # Nenhum dos efeitos colaterais de "o ALFRED está
+                    # falando" roda aqui de propósito: como nada é
+                    # realmente reproduzido, não há eco pra proteger, e
+                    # setar alfred_falando=True sem nunca chamar
+                    # fila_saida.put deixaria o microfone bloqueado até
+                    # vigiar_travamento forçar a liberação 60s depois
+                    # (tarefa_liberar_microfone só é reagendada em
+                    # _laco_reproducao, quando um bloco É de fato
+                    # tocado).
+                    if not self.suprimir_audio_pos_reserva:
+                        # Atividade real: o ALFRED está falando. Ver
+                        # verificar_inatividade() e
+                        # self.timestamp_ultima_atividade.
+                        self.timestamp_ultima_atividade = time.monotonic()
 
-                        if self._debug_timestamp_ultimo_envio_mic is not None:
-                            latencia_texto = (
-                                f"{agora_diag - self._debug_timestamp_ultimo_envio_mic:.3f}s"
-                            )
-                        else:
-                            latencia_texto = (
-                                "desconhecida (nenhum bloco de "
-                                "microfone enviado ainda)"
+                        # [DIAGNÓSTICO DE MICROFONE] Marca só na transição
+                        # False -> True (início real do silêncio), não a
+                        # cada bloco. Ver DEBUG_TIMING_MICROFONE.
+                        if DEBUG_TIMING_MICROFONE and not self.alfred_falando:
+                            self._debug_inicio_mudo = time.perf_counter()
+                            print(
+                                "[TIMING-MIC] Microfone silenciado "
+                                "(receber_audio: chegou áudio novo)."
                             )
 
-                        print(
-                            f"[TIMING-FILA] Turno {self._debug_numero_turno}: "
-                            f"fila residual ao iniciar = "
-                            f"{backlog_residual} blocos "
-                            f"(~{backlog_residual * BLOCO / TAXA_SAIDA:.2f}s), "
-                            "latência desde o último bloco de "
-                            f"microfone enviado = {latencia_texto}"
+                        # [DIAGNÓSTICO DE ATRASO EM CONVERSAS LONGAS] Só na
+                        # transição False->True (início real de um NOVO
+                        # turno, mesmo ponto de DEBUG_TIMING_MICROFONE
+                        # acima) — mede a fila RESIDUAL de turnos
+                        # anteriores (que numa chamada saudável já deveria
+                        # estar zerada a esta altura) e o tempo desde o
+                        # último bloco de microfone enviado. Lido ANTES do
+                        # fila_saida.put() logo abaixo, de propósito: o
+                        # tamanho aqui é só o que sobrou de turnos
+                        # passados, sem contar o bloco que está prestes a
+                        # entrar agora.
+                        if DEBUG_TIMING_FILA_SAIDA and not self.alfred_falando:
+                            self._debug_numero_turno += 1
+                            backlog_residual = fila_saida.qsize()
+                            agora_diag = time.monotonic()
+
+                            if self._debug_timestamp_ultimo_envio_mic is not None:
+                                latencia_texto = (
+                                    f"{agora_diag - self._debug_timestamp_ultimo_envio_mic:.3f}s"
+                                )
+                            else:
+                                latencia_texto = (
+                                    "desconhecida (nenhum bloco de "
+                                    "microfone enviado ainda)"
+                                )
+
+                            print(
+                                f"[TIMING-FILA] Turno {self._debug_numero_turno}: "
+                                f"fila residual ao iniciar = "
+                                f"{backlog_residual} blocos "
+                                f"(~{backlog_residual * BLOCO / TAXA_SAIDA:.2f}s), "
+                                "latência desde o último bloco de "
+                                f"microfone enviado = {latencia_texto}"
+                            )
+
+                        self.alfred_falando = True
+
+                        if self.tarefa_liberar_microfone:
+                            self.tarefa_liberar_microfone.cancel()
+
+                        self.limpar_fila_microfone(
+                            fila_microfone
                         )
 
-                    self.alfred_falando = True
+                        if DEBUG_TIMING_FILA_SAIDA:
+                            self._debug_fila_timestamps.append(
+                                time.monotonic()
+                            )
 
-                    if self.tarefa_liberar_microfone:
-                        self.tarefa_liberar_microfone.cancel()
-
-                    self.limpar_fila_microfone(
-                        fila_microfone
-                    )
-
-                    if DEBUG_TIMING_FILA_SAIDA:
-                        self._debug_fila_timestamps.append(
-                            time.monotonic()
+                        await fila_saida.put(
+                            resposta.data
                         )
-
-                    await fila_saida.put(
-                        resposta.data
-                    )
 
                 # Quando o Gemini solicita uma ferramenta, cria uma
                 # asyncio.Task própria pra ela e continua o loop na
@@ -2392,6 +3214,14 @@ class GeminiLiveWorker(QThread):
                 # de lista, instantânea, não um "esperar uma vaga" que
                 # bloquearia o loop de novo.
                 if resposta.tool_call:
+                    # Mesma prova de retomada real de resposta.data
+                    # acima — uma chamada de função também é geração
+                    # de verdade, não só transcrição de entrada.
+                    self.timestamp_ultima_geracao_gemini = time.monotonic()
+
+                    if self.reserva_ativa:
+                        await self._devolver_controle_ao_gemini()
+
                     # Atividade real: uma chamada de função está
                     # sendo processada. Ver verificar_inatividade().
                     self.timestamp_ultima_atividade = time.monotonic()
@@ -2437,7 +3267,16 @@ class GeminiLiveWorker(QThread):
                 # o turno termina — evita mandar fragmentos soltos.
                 conteudo = resposta.server_content
 
-                if conteudo and conteudo.output_transcription:
+                # Ignora a transcrição de texto do MESMO turno
+                # descartado em áudio acima (self.suprimir_audio_pos_reserva)
+                # — sem isto, a resposta atrasada não tocaria em voz,
+                # mas ainda apareceria duplicada na janela de chat e no
+                # histórico salvo em self.transcricao_conversa.
+                if (
+                    conteudo
+                    and conteudo.output_transcription
+                    and not self.suprimir_audio_pos_reserva
+                ):
                     texto_transcrito = (
                         conteudo.output_transcription.text
                     )
@@ -2447,16 +3286,83 @@ class GeminiLiveWorker(QThread):
                             texto_transcrito
                         )
 
-                if (
-                    conteudo
-                    and conteudo.turn_complete
-                    and self._buffer_transcricao_atual
-                ):
-                    obter_sinalizador().resposta_texto_recebida.emit(
-                        self._buffer_transcricao_atual
+                # Simétrico ao de cima, mas da fala do USUÁRIO — não
+                # tem janela de chat esperando isso em tempo real, só
+                # acumula até o turno fechar (ver self.transcricao_conversa
+                # logo abaixo).
+                if conteudo and conteudo.input_transcription:
+                    texto_usuario_transcrito = (
+                        conteudo.input_transcription.text
                     )
 
-                    self._buffer_transcricao_atual = ""
+                    if texto_usuario_transcrito:
+                        self._buffer_transcricao_usuario += (
+                            texto_usuario_transcrito
+                        )
+
+                if conteudo and conteudo.turn_complete:
+                    # Este turno (descartado ou não) terminou — a
+                    # partir do próximo, tocar normalmente de novo.
+                    self.suprimir_audio_pos_reserva = False
+
+                    if self._buffer_transcricao_atual:
+                        obter_sinalizador().resposta_texto_recebida.emit(
+                            self._buffer_transcricao_atual
+                        )
+
+                    # Monta self.transcricao_conversa — usuário
+                    # primeiro (perguntou), depois o ALFRED (respondeu),
+                    # mesma ordem lógica de uma troca normal. É o
+                    # contexto que o cérebro reserva recebe ao assumir
+                    # no meio da chamada (ver
+                    # _conduzir_reserva_temporaria) e que fica
+                    # disponível pra resumir de volta quando o Gemini
+                    # retoma (ver _anunciar_retomada_gemini).
+                    if self._buffer_transcricao_usuario:
+                        self.transcricao_conversa.append(
+                            {
+                                "role": "user",
+                                "content": self._buffer_transcricao_usuario,
+                            }
+                        )
+
+                        self._buffer_transcricao_usuario = ""
+
+                    if self._buffer_transcricao_atual:
+                        self.transcricao_conversa.append(
+                            {
+                                "role": "assistant",
+                                "content": self._buffer_transcricao_atual,
+                            }
+                        )
+
+                        self._buffer_transcricao_atual = ""
+
+                    # Podado no mesmo limite do cérebro reserva, pra
+                    # nunca crescer sem limite numa chamada longa —
+                    # ajusta o índice marcador (ver
+                    # _indice_transcricao_ao_assumir_reserva) pelo
+                    # mesmo tanto removido, pra continuar apontando
+                    # pro mesmo ponto lógico depois do corte.
+                    limite_transcricao = (
+                        cerebro_reserva.config.MAXIMO_MENSAGENS_HISTORICO
+                    )
+
+                    excesso = (
+                        len(self.transcricao_conversa)
+                        - limite_transcricao
+                    )
+
+                    if excesso > 0:
+                        self.transcricao_conversa = (
+                            self.transcricao_conversa[excesso:]
+                        )
+
+                        self._indice_transcricao_ao_assumir_reserva = max(
+                            0,
+                            self._indice_transcricao_ao_assumir_reserva
+                            - excesso,
+                        )
 
             # Ver o comentário de recebeu_algo no topo deste while.
             if self.ativo and not recebeu_algo:
@@ -2654,6 +3560,29 @@ class GeminiLiveWorker(QThread):
             print(
                 "[FUNÇÃO] Exceção não tratada numa tarefa de função: "
                 f"{erro!r}"
+            )
+
+    # Mesmo padrão de _ao_finalizar_tarefa_funcao, agora pra
+    # RESERVA_TEMPORARIA (ver vigiar_travamento/
+    # _conduzir_reserva_temporaria). Remove a tarefa de
+    # self.tarefas_chamada assim que ela termina — terminar sozinha é
+    # o comportamento NORMAL dela (o Gemini voltou a responder), então
+    # ela precisa sumir dessa lista antes que o item 5 de
+    # vigiar_travamento a veja como "tarefa morreu sozinha" e encerre
+    # a chamada por engano.
+    def _ao_finalizar_tarefa_reserva(self, tarefa):
+        if tarefa in self.tarefas_chamada:
+            self.tarefas_chamada.remove(tarefa)
+
+        if tarefa.cancelled():
+            return
+
+        erro = tarefa.exception()
+
+        if erro is not None:
+            print(
+                "[RESERVA] Exceção não tratada na tarefa do modo "
+                f"reserva temporário: {erro!r}"
             )
 
     # Roda processar_chamada_de_funcao em duas fases, pra permitir que
@@ -4094,6 +5023,16 @@ class GeminiLiveWorker(QThread):
             while self.ativo:
                 audio_bytes = await fila_saida.get()
 
+                # Evita o áudio do Gemini tocar por cima da fala do
+                # cérebro reserva (ver _conduzir_reserva_temporaria) no
+                # raro caso de o Gemini voltar a responder bem no meio
+                # de uma frase do reserva — o bloco só fica esperando
+                # aqui (fila_saida já aguenta isso, é o mesmo mecanismo
+                # que já existe pra absorver rajadas de áudio), nunca é
+                # descartado.
+                while self.reserva_falando and self.ativo:
+                    await asyncio.sleep(0.05)
+
                 # [DIAGNÓSTICO DE ATRASO EM CONVERSAS LONGAS] popleft()
                 # porque _debug_fila_timestamps é preenchido em ordem
                 # FIFO por receber_audio (append), na mesma ordem que
@@ -4263,6 +5202,7 @@ class GeminiLiveWorker(QThread):
             )
 
             self.alfred_falando = False
+            self.timestamp_mic_reaberto = time.monotonic()
 
             # [DIAGNÓSTICO DE MICROFONE] Ver DEBUG_TIMING_MICROFONE.
             if DEBUG_TIMING_MICROFONE and self._debug_inicio_mudo:

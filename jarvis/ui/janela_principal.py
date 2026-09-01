@@ -475,6 +475,23 @@ class MainWindow(QMainWindow):
 
         # Se já existe worker, solicita o encerramento.
         else:
+            # [DIAGNÓSTICO DE CONGELAMENTO — ver DEBUG_TIMING_CONGELAMENTO
+            # em jarvis/gemini/cliente_live.py] self.live_worker só é
+            # zerado (ver chamada_finalizada) quando o sinal
+            # chamada_encerrada dispara, e esse sinal só dispara quando
+            # GeminiLiveWorker.executar() retorna por completo — se a
+            # limpeza de uma chamada anterior estiver travada/demorando,
+            # este clique não inicia uma chamada nova nenhuma, só chama
+            # parar() de novo (inofensivo, mas também sem efeito
+            # visível). Este print confirma exatamente esse cenário
+            # quando ele acontece.
+            print(
+                "[TIMING-CONGELAMENTO] alternar_chamada(): "
+                "self.live_worker ainda não é None — este clique NÃO "
+                "inicia uma chamada nova, só chama parar() de novo "
+                "(a chamada anterior ainda não terminou de encerrar)."
+            )
+
             self.encerrar_chamada()
 
     # Prepara a interface e inicia a thread do Gemini Live.
@@ -587,6 +604,16 @@ class MainWindow(QMainWindow):
 
     # Restaura a interface quando a chamada termina.
     def chamada_finalizada(self):
+        # [DIAGNÓSTICO DE CONGELAMENTO] Ver o print em alternar_chamada.
+        # Este é o momento em que self.live_worker finalmente volta a
+        # ser None — cruzar com o horário do "[TIMING-CONGELAMENTO]
+        # Encerramento concluído em..." no console pra confirmar que é
+        # exatamente a limpeza de executar() que atrasa isto.
+        print(
+            "[TIMING-CONGELAMENTO] chamada_finalizada(): "
+            "self.live_worker voltando a ser None agora."
+        )
+
         # Remove a referência da thread encerrada.
         self.live_worker = None
 

@@ -66,6 +66,24 @@ CRUZAMENTO_SEGUNDA_OPINIAO = (
     "imagem você mesmo."
 )
 
+# Retomada de controle: você ficou temporariamente indisponível e o
+# cérebro reserva (outra IA) conduziu a conversa em seu lugar por um
+# tempo — usado por _anunciar_retomada_gemini em
+# jarvis/gemini/cliente_live.py, quando você volta a responder no
+# meio de uma chamada. Deliberadamente NÃO pede pra repetir isso em
+# voz alta (diferente de ANUNCIO_ESPONTANEO): o usuário já ouviu essa
+# parte da conversa de verdade, através do reserva — só o contexto
+# precisa chegar até você, em silêncio, pra continuar naturalmente.
+RETOMADA_CEREBRO_RESERVA = (
+    "[SISTEMA] Você ficou temporariamente sem responder, e outra IA "
+    "(o modo reserva) conduziu a conversa com o usuário nesse "
+    "meio-tempo. Aqui está o que foi dito enquanto você estava fora, "
+    "pra você continuar a conversa sabendo o que já aconteceu: "
+    "{resumo} A partir de agora você está de volta — não anuncie "
+    "que esteve indisponível nem repita o que já foi dito, apenas "
+    "continue a conversa naturalmente a partir daqui."
+)
+
 # Análise pontual de uma captura de tela ou câmera — UNIFICADO: antes
 # existiam duas cópias quase idênticas em enviar_tela_para_gemini e
 # enviar_camera_para_gemini, diferindo só na palavra "tela"/"câmera".
@@ -173,6 +191,29 @@ CONSOLIDACAO_RESUMO_ARQUIVO = (
     "nada valer a pena preservar, responda apenas: (nada a "
     "preservar)\n\n"
     "{blocos}"
+)
+
+# Resumo de UMA conversa por voz inteira (não notas antigas — a
+# conversa de uma chamada que acabou), pra virar uma memória
+# pesquisável numa chamada futura ("como estava aquela conversa
+# sobre..."). Usado por consolidacao.salvar_resumo_conversa, chamado
+# de jarvis/gemini/cliente_live.py no fim de executar(). Formato de
+# resposta fixo (TÍTULO/RESUMO) pra poder ser separado por código sem
+# ambiguidade — nunca confiar no modelo pra devolver JSON aqui, texto
+# simples com um marcador é mais robusto contra pequenas variações.
+CONSOLIDACAO_RESUMO_CONVERSA = (
+    "Abaixo está a transcrição de uma conversa por voz entre um "
+    "usuário e um assistente pessoal.\n\n"
+    "Gere um TÍTULO curto (poucas palavras, específico ao assunto "
+    "principal da conversa) e um RESUMO objetivo do que foi "
+    "discutido — fatos, decisões, opiniões, qualquer coisa que "
+    "ajude a retomar essa conversa numa próxima vez. Não invente "
+    "nada que não esteja na transcrição.\n\n"
+    "Responda EXATAMENTE neste formato, nada além disso:\n"
+    "TÍTULO: <título aqui>\n"
+    "RESUMO:\n"
+    "<resumo aqui>\n\n"
+    "Transcrição:\n{transcricao}"
 )
 
 

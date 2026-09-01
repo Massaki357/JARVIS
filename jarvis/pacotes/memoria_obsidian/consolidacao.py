@@ -14,6 +14,7 @@
 # gravado com sucesso em disco. Se a geração do resumo falhar por
 # qualquer motivo, nada é apagado. É a regra mais importante daqui.
 import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta
@@ -22,7 +23,7 @@ from datetime import datetime, timedelta
 # em jarvis/nucleo/prompts/, seção MEMORIA_OBSIDIAN.
 from jarvis.nucleo import prompts
 
-from . import config, notas
+from . import config, escritor, notas
 
 # Evita duas varreduras simultâneas (ex: o app abrindo duas vezes
 # rápido, ou uma varredura manual durante a automática).
@@ -174,33 +175,22 @@ def _nome_resumo(momento=None):
     return f"resumo-{momento.year}-Q{trimestre}.md"
 
 
-# Pede ao Gemini um resumo condensado das notas arquivadas. Chamada de
-# texto simples, sem voz e sem interface — nada a ver com a sessão
-# Live. Devolve (sucesso, texto).
-def _gerar_resumo(notas_arquivadas):
-    # A chave é a mesma do resto do app; lida direto do ambiente
-    # (config.py já chamou load_dotenv) para este pacote não depender
-    # de jarvis/nucleo/config.py.
+# Uma chamada de texto simples ao Gemini (sem voz, sem sessão Live),
+# com retentativa em espera crescente — extraído de _gerar_resumo pra
+# ser reaproveitado por salvar_resumo_conversa, mais abaixo, sem
+# duplicar a lógica de retentativa. Devolve (sucesso, texto).
+#
+# Erros temporários (503 de modelo sobrecarregado, 429 de limite)
+# aconteceram de verdade no primeiro teste real desta função, e sem
+# retentativa eles significavam simplesmente pular a operação. Como
+# isto sempre roda numa thread de fundo, sem ninguém esperando ao
+# vivo, esperar alguns segundos não custa nada.
+def _chamar_modelo_texto(pedido):
     chave = (os.getenv("GEMINI_API_KEY") or "").strip()
 
     if not chave:
         return False, "GEMINI_API_KEY não configurada."
 
-    blocos = []
-
-    for nota in notas_arquivadas:
-        blocos.append(f"### {nota['titulo']}\n{nota['corpo']}")
-
-    pedido = prompts.CONSOLIDACAO_RESUMO_ARQUIVO.format(
-        blocos="\n\n".join(blocos)
-    )
-
-    # Tenta mais de uma vez com espera crescente. Erros temporários
-    # (503 de modelo sobrecarregado, 429 de limite) aconteceram de
-    # verdade no primeiro teste real desta função, e sem retentativa
-    # eles significavam simplesmente pular a consolidação da semana.
-    # Como isto roda numa thread de fundo, sem ninguém esperando,
-    # esperar alguns segundos não custa nada.
     ultimo_erro = ""
 
     for tentativa in range(config.TENTATIVAS_CONSOLIDACAO):
@@ -224,10 +214,10 @@ def _gerar_resumo(notas_arquivadas):
             if texto:
                 return True, texto
 
-            ultimo_erro = "O modelo devolveu um resumo vazio."
+            ultimo_erro = "O modelo devolveu uma resposta vazia."
 
         except Exception as erro:
-            ultimo_erro = f"Falha ao gerar o resumo: {erro}"
+            ultimo_erro = f"Falha ao chamar o modelo: {erro}"
 
             print(
                 f"[MEMORIA] Tentativa {tentativa + 1} de "
@@ -236,6 +226,99 @@ def _gerar_resumo(notas_arquivadas):
             )
 
     return False, ultimo_erro
+
+
+# Pede ao Gemini um resumo condensado das notas arquivadas. Devolve
+# (sucesso, texto).
+def _gerar_resumo(notas_arquivadas):
+    blocos = []
+
+    for nota in notas_arquivadas:
+        blocos.append(f"### {nota['titulo']}\n{nota['corpo']}")
+
+    pedido = prompts.CONSOLIDACAO_RESUMO_ARQUIVO.format(
+        blocos="\n\n".join(blocos)
+    )
+
+    return _chamar_modelo_texto(pedido)
+
+
+# Mínimo de turnos (user+assistant, um cada) na transcrição pra valer
+# a pena gerar e salvar um resumo de conversa — evita poluir o vault
+# com chamadas triviais/vazias.
+MINIMO_MENSAGENS_RESUMO_CONVERSA = 4
+
+
+# Gera um título + resumo de uma conversa (lista de {"role", "content"}
+# — mesmo formato de jarvis.gemini.cliente_live.py:self.transcricao_conversa)
+# e salva como uma memória pesquisável, chamada no fim de uma chamada
+# do Gemini — pra "como estava aquela conversa sobre X" numa chamada
+# futura encontrar alguma coisa via buscar_memorias_relacionadas.
+# Reaproveita escritor.salvar_memoria (mesma deduplicação, link
+# automático e escrita atômica de qualquer outra memória — nada novo
+# precisou ser inventado aqui pra gravar). Nunca levanta exceção.
+# Devolve (sucesso, mensagem).
+def salvar_resumo_conversa(transcricao):
+    if not config.configurado():
+        return False, "A pasta do vault não está configurada."
+
+    transcricao = list(transcricao or [])
+
+    if len(transcricao) < MINIMO_MENSAGENS_RESUMO_CONVERSA:
+        return False, "Conversa curta demais pra valer a pena resumir."
+
+    texto_transcricao = "\n".join(
+        f"{'Usuário' if turno.get('role') == 'user' else 'Assistente'}: "
+        f"{turno.get('content', '')}"
+        for turno in transcricao
+    )
+
+    pedido = prompts.CONSOLIDACAO_RESUMO_CONVERSA.format(
+        transcricao=texto_transcricao
+    )
+
+    sucesso, resposta = _chamar_modelo_texto(pedido)
+
+    if not sucesso:
+        print(f"[MEMORIA] Não consegui resumir a conversa: {resposta}")
+        return False, resposta
+
+    # Separa TÍTULO/RESUMO da resposta — formato fixo pedido no
+    # prompt, mas nunca confia cegamente nele: cai num título
+    # genérico com data se o modelo fugir do formato, em vez de
+    # descartar o resumo inteiro por causa disso.
+    titulo = None
+    linhas_resumo = []
+    capturando_resumo = False
+
+    for linha in resposta.splitlines():
+        # T[IÍ]TULO em vez de "TÍTULO" literal: o modelo às vezes
+        # devolve sem o acento mesmo quando o prompt pede com acento
+        # — visto ao vivo escrevendo este teste. re.match ancora no
+        # início da linha (equivalente ao startswith de antes).
+        if re.match(r"T[IÍ]TULO\s*:", linha.strip(), re.IGNORECASE):
+            titulo = linha.split(":", 1)[1].strip()
+
+        elif re.match(r"RESUMO\s*:", linha.strip(), re.IGNORECASE):
+            capturando_resumo = True
+            resto = linha.split(":", 1)[1].strip()
+
+            if resto:
+                linhas_resumo.append(resto)
+
+        elif capturando_resumo:
+            linhas_resumo.append(linha)
+
+    resumo = "\n".join(linhas_resumo).strip() or resposta.strip()
+
+    if not titulo:
+        titulo = f"Conversa de {notas.agora()[:16].replace('T', ' ')}"
+
+    resultado = escritor.salvar_memoria(titulo, resumo)
+
+    print(f"[MEMORIA] {resultado}")
+
+    return True, resultado
 
 
 # Consolida a pasta arquivo/ quando ela acumular notas suficientes.

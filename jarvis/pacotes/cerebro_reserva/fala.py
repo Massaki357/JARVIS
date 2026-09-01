@@ -1,23 +1,28 @@
 # Falar: transforma o texto da resposta em voz.
 #
-# Por padrão usa a voz do próprio Windows (SAPI), não uma API:
+# Três provedores, cada um verificado pelo mesmo teste objetivo —
+# sintetizar uma frase em português e transcrevê-la de volta com o
+# Whisper — já que não dá pra julgar áudio lendo código, só confirmar
+# que a voz realmente pronuncia português (não só que a chamada
+# respondeu 200):
 #
-#   SAPI local (voz Maria pt-BR)  0,10s   sem rede, sem cota
-#   Mistral voxtral-mini-tts      2,0s    consome cota, precisa de rede
+#   edge-tts (voz neural Microsoft)  ~1,6s   grátis, sem conta, precisa de rede
+#   SAPI local (voz Maria pt-BR)     0,10s   sem rede, sem cota
+#   Mistral voxtral-mini-tts         2,0s    consome cota, precisa de rede
 #
-# As duas foram verificadas pelo mesmo teste objetivo — sintetizar
-# uma frase em português e transcrevê-la de volta com o Whisper — e
-# as duas voltaram idênticas (100%). Como não dá para julgar áudio
-# lendo código, essa ida e volta é a forma de confirmar que a voz
-# realmente pronuncia português, e não só que a chamada respondeu 200.
-#
-# A local é o padrão por um motivo que importa aqui especificamente:
-# este pacote existe para quando o Gemini falha, e uma das causas
-# possíveis é a rede. Uma voz que depende de rede escolheria
-# justamente a hora errada para falhar junto.
+# Os três bateram 100% no teste de transcrição — mas ouvindo de
+# verdade, o usuário achou a Mistral com sotaque ruim em português, e
+# pediu uma voz melhor que o SAPI. edge-tts (config.PROVEDOR_VOZ_PREFERIDO,
+# padrão "edge") é o resultado: voz neural, muito mais natural que o
+# SAPI, e sem o custo/sotaque que tirou a Mistral da posição principal.
+# SAPI continua em segundo por ser a opção mais resiliente (não
+# depende de rede, e uma das causas do Gemini falhar é justamente a
+# rede estar instável) — Mistral fica como último recurso.
+import asyncio
 import base64
 import threading
 
+import edge_tts
 import requests
 
 from . import config
@@ -56,6 +61,11 @@ def _obter_voz_sapi():
             voz.Voice = token
             break
 
+    # Acelera a fala (ver VELOCIDADE_VOZ_LOCAL) — pedido explícito do
+    # usuário: a voz padrão do Windows soa lenta demais, e no modo
+    # reserva uma resposta rápida importa mais que soar perfeita.
+    voz.Rate = config.VELOCIDADE_VOZ_LOCAL
+
     _voz_sapi = voz
 
     return _voz_sapi
@@ -73,6 +83,37 @@ def _falar_local(texto):
 
     except Exception as erro:
         return False, f"Voz local indisponível: {erro}"
+
+
+# Gera o áudio via edge-tts (assíncrono por natureza — biblioteca
+# baseada em WebSocket) e reaproveita _reproduzir_mp3 pra tocar,
+# exatamente como a Mistral já faz — os dois entregam MP3, só a forma
+# de obter os bytes muda. asyncio.run() é seguro aqui porque falar()
+# sempre roda numa thread comum (via asyncio.to_thread, do lado de
+# cliente_live.py), nunca dentro de um loop assíncrono já em
+# andamento — não há loop pra conflitar.
+async def _sintetizar_edge(texto):
+    comunicador = edge_tts.Communicate(texto, config.VOZ_EDGE)
+    pedacos = []
+
+    async for pedaco in comunicador.stream():
+        if pedaco["type"] == "audio":
+            pedacos.append(pedaco["data"])
+
+    return b"".join(pedacos)
+
+
+def _falar_edge(texto):
+    try:
+        audio_bytes = asyncio.run(_sintetizar_edge(texto))
+
+    except Exception as erro:
+        return False, f"Voz neural por rede indisponível: {erro}"
+
+    if not audio_bytes:
+        return False, "Voz neural por rede não retornou áudio."
+
+    return _reproduzir_mp3(audio_bytes)
 
 
 def _falar_mistral(texto):
@@ -170,30 +211,40 @@ def _reproduzir_mp3(audio_bytes):
                 pass
 
 
+_PROVEDORES_VOZ = {
+    "edge": _falar_edge,
+    "local": _falar_local,
+    "mistral": _falar_mistral,
+}
+
+# Ordem usada quando o preferido (config.PROVEDOR_VOZ_PREFERIDO) falha
+# — os outros dois nesta ordem fixa, pulando o que já foi tentado.
+_ORDEM_PADRAO_VOZ = ("edge", "local", "mistral")
+
+
 # Fala o texto. Devolve (sucesso, mensagem_de_erro) e nunca levanta
-# exceção. Se a voz preferida falhar, tenta a outra antes de desistir
-# — ficar mudo é a pior falha possível para um assistente de voz.
+# exceção. Tenta o provedor preferido primeiro (config.PROVEDOR_VOZ_PREFERIDO)
+# e, se falhar, os outros dois na ordem fixa acima — ficar mudo é a
+# pior falha possível para um assistente de voz.
 def falar(texto):
     texto = (texto or "").strip()
 
     if not texto:
         return False, "Nada para falar."
 
-    if config.USAR_VOZ_LOCAL:
-        sucesso, erro = _falar_local(texto)
+    preferido = config.PROVEDOR_VOZ_PREFERIDO
+    ordem = [preferido] + [
+        nome for nome in _ORDEM_PADRAO_VOZ if nome != preferido
+    ]
+
+    erros = []
+
+    for nome in ordem:
+        sucesso, erro = _PROVEDORES_VOZ[nome](texto)
 
         if sucesso:
             return True, ""
 
-        sucesso, erro_rede = _falar_mistral(texto)
+        erros.append(erro)
 
-        return sucesso, ("" if sucesso else f"{erro} / {erro_rede}")
-
-    sucesso, erro = _falar_mistral(texto)
-
-    if sucesso:
-        return True, ""
-
-    sucesso, erro_local = _falar_local(texto)
-
-    return sucesso, ("" if sucesso else f"{erro} / {erro_local}")
+    return False, " / ".join(erros)

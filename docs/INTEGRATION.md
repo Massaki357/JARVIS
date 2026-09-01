@@ -1043,6 +1043,112 @@ A troca é silenciosa por decisão explícita do usuário — a instrução de s
 do modo reserva proíbe mencionar falha, troca de sistema ou qual modelo está
 respondendo.
 
+### Modo "hot standby" — assume NO MEIO de uma chamada ainda ativa
+
+O wiring acima (seção anterior) só roda **depois** que `executar()` já
+terminou por completo — cobre o caso de a sessão do Gemini ter morrido de
+vez. Existe um segundo caso, distinto: o Gemini fica **mudo** (nenhuma
+mensagem de qualquer tipo, nem áudio nem `tool_call`) por tempo demais
+**enquanto a sessão continua nominalmente viva** — confirmado ao vivo contra
+o `gemini-3.1-flash-live-preview`, silêncios reais de 15-30s+ mesmo com o
+usuário falando ativamente (nível de microfone medido, não suposto) e o
+**envio** pra sessão continuando saudável o tempo todo. Nenhum vigia baseado
+em "algo travou/deu erro" pega esse caso, porque nada trava — o Gemini só não
+responde.
+
+Pra esse caso, `cerebro_reserva.assumir()` é chamado **sem** encerrar a
+chamada nem esperar `executar()` terminar — via
+`GeminiLiveWorker._conduzir_reserva_temporaria()`, disparado por uma tarefa
+dedicada, `vigiar_resposta_lenta()` (tick de `INTERVALO_VIGIA_RESPOSTA_SEGUNDOS`,
+1s — mais rápido que os 5s de `INTERVALO_VIGILANCIA_SEGUNDOS` dos outros
+vigias, de propósito). O gatilho é **por turno**, não por silêncio da conexão
+inteira — trocado depois que o usuário testou o gatilho original (20s de
+silêncio total, checado a cada 5s) e reportou dois problemas reais: lento
+demais, e quando finalmente disparava não sobrava tempo do reserva responder
+antes do Gemini "voltar" (às vezes só com uma transcrição de entrada — ver
+`_devolver_controle_ao_gemini` mais abaixo). O gatilho atual: `not
+self.alfred_falando and not self.reserva_ativa and agora -
+self.timestamp_mic_reaberto > LIMITE_RESPOSTA_GEMINI_SEGUNDOS` (5s) `and
+self.timestamp_ultima_geracao_gemini < self.timestamp_mic_reaberto` (nenhuma
+geração real desde que o microfone reabriu).
+
+Uma corrida "pura" (as duas IAs processando o mesmo turno ao vivo) não é
+viável: o reserva só liga quando o atraso já foi percebido, e a essa altura a
+fala do usuário já aconteceu — ele não vai repetir. Por isso
+`self._buffer_circular_mic` (um `collections.deque` de `(timestamp,
+bloco)`, alimentado por `enviar_microfone` o tempo todo, podado a cada bloco
+novo pra guardar só os últimos `LIMITE_BUFFER_CIRCULAR_MIC_SEGUNDOS`, 30s)
+existe pra **primar** a primeira escuta do reserva com o áudio que o usuário
+JÁ falou: `vigiar_resposta_lenta` fatia o buffer entre `self.timestamp_mic_reaberto`
+e agora, monta um WAV com `cerebro_reserva.escuta.montar_wav()` (pública, não
+mais `_montar_wav` — reaproveitada daqui) e passa como `audio_primeiro_turno`.
+
+Pontos que isso exige, além dos cinco da seção anterior (que continuam
+existindo e inalterados):
+
+- **`assumir()` ganhou quatro parâmetros opcionais**, todos com default
+  preservando o comportamento antigo: `historico_inicial` (lista de
+  `{"role", "content"}` — o transcript da conversa até aqui, pra não começar
+  do zero), `fila_bloco_externa` (repassado direto pra `escuta.ouvir()`),
+  `ao_turno_concluido(role, texto)` (callback chamado a cada fala do usuário
+  e cada resposta, pra quem chamou manter seu próprio transcript em dia) e
+  `audio_primeiro_turno` (bytes WAV já gravados — usado só na primeira
+  chamada de `escuta.ouvir()` do laço; turnos seguintes voltam a ouvir ao
+  vivo normalmente, mesmo que o Gemini continue mudo).
+- **Nunca abre um segundo microfone.** `escuta.gravar_fala()` ganhou o mesmo
+  `fila_bloco_externa` opcional — quando fornecida (um `queue.Queue` comum,
+  não `asyncio.Queue`), lê blocos de lá em vez de abrir seu próprio
+  `sd.RawInputStream`. O callback de `enviar_microfone` espelha (`put_nowait`,
+  descarta se cheia) cada bloco elegível também nessa fila quando
+  `self.reserva_ativa` — o Gemini continua recebendo áudio normalmente ao
+  mesmo tempo.
+- **`self.reserva_falando`** (True só durante `"Respondendo..."`, via
+  `_status_reserva` — o wrapper de `ao_status` passado em vez de
+  `self.status_recebido.emit` direto) entra nas MESMAS três checagens de
+  `self.alfred_falando` em `enviar_microfone`, com a mesma exceção de
+  `interrupcao_habilitada`, e `_laco_reproducao` espera
+  (`while self.reserva_falando: await asyncio.sleep(0.05)`) antes de escrever
+  cada bloco no dispositivo de saída — evita o Gemini "ouvir" a própria voz do
+  reserva, e evita o áudio do Gemini tocar por cima dela se ele voltar bem no
+  meio de uma frase.
+- **`self.transcricao_conversa`** (lista de `{"role", "content"}`, podada no
+  mesmo `cerebro_reserva.config.MAXIMO_MENSAGENS_HISTORICO`) é montada em
+  `receber_audio` a partir de `input_audio_transcription` (usuário) e
+  `output_audio_transcription` (ALFRED, já existia) — o `LiveConnectConfig`
+  precisa dos dois campos. É o que vira `historico_inicial` quando o reserva
+  assume, e o que registra o que o reserva discutiu (via
+  `ao_turno_concluido`) enquanto ele conduz.
+- **Devolução de controle exige geração REAL, não qualquer mensagem.** Bug
+  real relatado pelo usuário: a primeira versão devolvia o controle em
+  QUALQUER mensagem recebida — mas `resposta.server_content.input_transcription`
+  (o Gemini só transcrevendo o que o usuário falou) chega mesmo com a geração
+  ainda travada, e isso desligava `self.reserva_ativa` instantaneamente, antes
+  do reserva sequer conseguir responder — os dois lados ficavam mudos.
+  Corrigido: `_devolver_controle_ao_gemini()` só é chamado nos dois pontos que
+  são prova real de geração (`resposta.data`, `resposta.tool_call`), nunca no
+  topo do laço onde qualquer `server_content` já passava. Esses mesmos dois
+  pontos também atualizam `self.timestamp_ultima_geracao_gemini`, usado pelo
+  gatilho de `vigiar_resposta_lenta` acima. `_devolver_controle_ao_gemini`
+  então chama `_anunciar_retomada_gemini()`, que resume (via
+  `send_client_content`, `prompts.RETOMADA_CEREBRO_RESERVA`) só os turnos
+  adicionados a `self.transcricao_conversa` **depois** que o reserva assumiu
+  — nunca a conversa inteira.
+- **A tarefa em si** (`asyncio.create_task(self._conduzir_reserva_temporaria(),
+  name="RESERVA_TEMPORARIA")`) é anexada a `self.tarefas_chamada` — a MESMA
+  lista que `executar()` cancela ao encerrar a chamada — com seu próprio
+  done-callback (`_ao_finalizar_tarefa_reserva`) que a remove de lá assim que
+  termina. Necessário: terminar sozinha é o comportamento NORMAL dela (o
+  Gemini voltou), e o vigia de "alguma tarefa da chamada morreu sozinha" (item
+  5 de `vigiar_travamento`) trataria isso como falha se ela continuasse na
+  lista.
+- **Cooldown implícito contra loop de retentativa**: `_conduzir_reserva_temporaria`
+  atualiza `self.timestamp_mic_reaberto` no próprio `finally`,
+  incondicionalmente — sem isso, se `assumir()` terminasse cedo por qualquer
+  motivo que não fosse "o Gemini voltou" (ex: uma falha em `escuta.ouvir()`),
+  nada teria empurrado esse timestamp pra frente, e o próximo tick de
+  `vigiar_resposta_lenta` (1s!) dispararia o reserva de novo imediatamente,
+  sem nenhum espaçamento. Bug real encontrado testando, não hipotético.
+
 ## memoria_obsidian (substitui a memória em JSON)
 
 `jarvis/pacotes/memoria_obsidian/` guarda a memória do jarvis como notas `.md`
@@ -1077,6 +1183,32 @@ memoria_obsidian.iniciar()   # dispara a varredura em thread de fundo
 `iniciar()` é idempotente e não bloqueia: só arquiva/consolida se já fizer mais
 de `INTERVALO_VARREDURA_DIAS` desde a última vez (registrado em
 `dados/memoria_obsidian_controle.json`).
+
+### Resumo de conversa entre chamadas
+
+`salvar_memoria` (autônomo, ver `## MEMÓRIA` em `gemini_live_sistema.md`) guarda
+fatos pessoais duráveis do usuário — não o CONTEÚDO de uma conversa inteira.
+Pedido explícito do usuário depois de perguntar, numa chamada nova, sobre um
+assunto discutido na chamada anterior (uma placa de vídeo) e o ALFRED não
+lembrar de nada — `self.transcricao_conversa` nunca sobrevivia ao fim do
+`GeminiLiveWorker`.
+
+`consolidacao.salvar_resumo_conversa(transcricao)` fecha essa lacuna: reaproveita
+a mesma técnica de `_gerar_resumo` (extraída pra `_chamar_modelo_texto`, chamada
+direta `genai.Client(...).models.generate_content(model=config.MODELO_CONSOLIDACAO,
+...)`, texto simples, sem sessão Live) com um prompt novo
+(`prompts.CONSOLIDACAO_RESUMO_CONVERSA`) pedindo um TÍTULO curto + um RESUMO num
+formato fixo, parseado por regex tolerante a acento (`T[IÍ]TULO\s*:`/`RESUMO\s*:`
+— o modelo às vezes devolve sem o acento, confirmado testando) — cai num título
+genérico com data se o modelo fugir do formato, em vez de descartar o resumo.
+Salva via `escritor.salvar_memoria(titulo, resumo)`, a MESMA função usada por
+qualquer memória — nada novo precisou ser inventado pra gravar.
+
+Chamado de `jarvis/gemini/cliente_live.py`, no fim de `executar()`, logo antes
+de `self.sessao = None`, em `asyncio.to_thread` (é uma chamada de rede) — pra
+QUALQUER encerramento de chamada, não só falha. A checagem de "vale a pena"
+(`MINIMO_MENSAGENS_RESUMO_CONVERSA`, 4 — evita salvar chamadas triviais/vazias)
+fica dentro da própria função, junto de `config.configurado()`.
 
 ### O ciclo de vida de uma nota
 
