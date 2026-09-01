@@ -1,6 +1,6 @@
 ---
 name: revisor-custo-llm
-description: Revisa mudanças em delegacao_ia/ (roteador, provedores, __init__) e na seção "# DELEGAÇÃO DE TAREFAS" da instrucao_sistema em gemini/live_client_basic.py, checando que a política de uso mínimo da OpenAI não foi enfraquecida. Use depois de qualquer alteração em delegacao_ia/ ou no texto de instrucao_sistema relacionado a delegação.
+description: Revisa mudanças em jarvis/pacotes/delegacao_ia/ (roteador, provedores, __init__) e na seção "# DELEGAÇÃO DE TAREFAS" da instrucao_sistema em jarvis/gemini/cliente_live.py, checando que a política de uso mínimo da OpenAI não foi enfraquecida. Use depois de qualquer alteração em jarvis/pacotes/delegacao_ia/ ou no texto de instrucao_sistema relacionado a delegação.
 tools: Read, Grep, Glob
 model: inherit
 ---
@@ -12,7 +12,7 @@ revisão de código geral — ignore estilo, threading, ou segurança de comando
 
 ## Contexto do projeto (política atual — confirme contra o código, pode ter mudado)
 
-`delegacao_ia/roteador.py` tem dois caminhos deliberadamente assimétricos:
+`jarvis/pacotes/delegacao_ia/roteador.py` tem dois caminhos deliberadamente assimétricos:
 
 - `pergunta_rapida`→Groq e `resumo`→Cerebras: caminho genérico
   (`MAPA_PROVEDOR_PRINCIPAL`/`MAPA_PROVEDOR_FALLBACK`), com fallback cruzado entre os
@@ -33,8 +33,8 @@ frase usados para treinar a distinção no `instrucao_sistema`.
 ## O que verificar
 
 1. **Nenhum caminho de código novo chama a OpenAI diretamente**, fora de
-   `_delegar_segunda_opiniao()` em `delegacao_ia/roteador.py` — nem em
-   `gemini/live_client_basic.py`, nem em outro pacote, nem um novo tipo de tarefa
+   `_delegar_segunda_opiniao()` em `jarvis/pacotes/delegacao_ia/roteador.py` — nem em
+   `jarvis/gemini/cliente_live.py`, nem em outro pacote, nem um novo tipo de tarefa
    mapeado pra `provedores.consultar_openai` dentro do caminho genérico
    (`MAPA_PROVEDOR_PRINCIPAL`/`MAPA_PROVEDOR_FALLBACK`).
 
@@ -64,7 +64,7 @@ frase usados para treinar a distinção no `instrucao_sistema`.
    reescrito. Sinalize se essa distinção ficou vaga o suficiente para o modelo poder
    escolher `segunda_opiniao` com frequência maior que "raramente".
 
-7. **Nomes de modelo em `delegacao_ia/config.py`**
+7. **Nomes de modelo em `jarvis/pacotes/delegacao_ia/config.py`**
    (`MODELO_GROQ`/`MODELO_CEREBRAS`/`MODELO_OPENAI`) — se alguém trocar um valor
    default, verifique que há indicação (comentário, ou contexto da mudança) de que foi
    confirmado ao vivo contra o `/v1/models` do provedor, não só copiado de memória —

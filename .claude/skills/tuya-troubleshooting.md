@@ -6,7 +6,7 @@ description: Problemas reais já enfrentados e resolvidos (ou identificados) ao 
 # Troubleshooting Tuya (casa_inteligente)
 
 Estes são problemas **reais**, confirmados durante o desenvolvimento de
-`casa_inteligente/`, não hipóteses. Se um sintoma parecido aparecer de novo, comece por
+`jarvis/pacotes/casa_inteligente/`, não hipóteses. Se um sintoma parecido aparecer de novo, comece por
 aqui antes de assumir que é um bug de código — a causa quase sempre foi configuração da
 conta/projeto na Tuya IoT Platform, não a lógica em `tuya_client.py`/
 `dispositivos_tuya.py`.
@@ -14,7 +14,7 @@ conta/projeto na Tuya IoT Platform, não a lógica em `tuya_client.py`/
 **Regra geral do projeto**: nunca adivinhe endpoint, Data Center, DP code ou nome de
 key da API Tuya. Confirme ao vivo (painel da IoT Platform, debug de dispositivo, ou
 documentação oficial) e deixe o comentário no código citando onde foi confirmado — é
-assim que `casa_inteligente/config.py` já documenta `TUYA_API_ENDPOINT` e
+assim que `jarvis/pacotes/casa_inteligente/config.py` já documenta `TUYA_API_ENDPOINT` e
 `DP_CODE_SWITCH_PADRAO`.
 
 ## 1. App "KaBuM Smart" não aparece na lista de apps linkáveis

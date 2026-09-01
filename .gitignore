@@ -1,24 +1,28 @@
 .env
-__pycache__
-venv
+__pycache__/
+*.pyc
+venv/
+
+# dados/ guarda o estado que o app gera nesta máquina. As pastas e os
+# arquivos abaixo são recriados sozinhos quando faltam (ver
+# jarvis/caminhos.py), então nunca são versionados:
 
 # admin_terminal: log local de comandos administrativos e a pasta de
-# troca de arquivos (pedido/resultado) com o processo elevado — dados
-# locais da máquina, nunca versionados.
-admin_terminal/comandos_admin.log
-admin_terminal/_fila/
+# troca de arquivos (pedido/resultado) com o processo elevado.
+dados/logs/comandos_admin.log
+dados/admin_fila/
 
 # abrir_app_local: cache técnico nome->AppID, específico de cada
 # máquina (AppIDs mudam conforme o que está instalado).
-abrir_app_local/apps_conhecidos.json
+dados/apps_conhecidos.json
 
 # discord_jarvis: cache técnico nome->contato e nome->canal do
 # Discord — específico da conta/servidor do usuário, nunca
 # versionado (e contém IDs reais de pessoas).
-discord_jarvis/contatos_conhecidos.json
-discord_jarvis/canais_conhecidos.json
+dados/discord_contatos.json
+dados/discord_canais.json
 
-# config.json: preferência local de cada máquina (hoje só
-# interrupcao) — não existir é o padrão válido (ver
-# config/carregador.py), então nunca versionar um valor específico
-# de alguém.
+# Continuam versionados, como já eram antes desta reorganização:
+#   dados/memoria.json                 (memória conversacional)
+#   dados/logs/comandos_remotos.log    (log do rede_jarvis)
+#   config.json                        (preferência local da máquina)

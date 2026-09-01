@@ -1,27 +1,28 @@
 ---
 name: novo-pacote-jarvis
-description: Passo a passo para criar um novo pacote de tools isolado no projeto jarvis, seguindo o contrato obter_function_declarations()/despachar() documentado em INTEGRATION.md.
+description: Passo a passo para criar um novo pacote de tools isolado no projeto jarvis, seguindo o contrato obter_function_declarations()/despachar() documentado em docs/INTEGRATION.md.
 ---
 
 # Criar um novo pacote de tools isolado
 
 Use este passo a passo sempre que uma nova capacidade for adicionada ao jarvis por voz
 (ex: um novo provedor de LLM, uma nova integração de hardware, um novo canal de
-comunicação). O objetivo é que `gemini/live_client_basic.py` — um arquivo `_basic`,
-temporário — nunca ganhe lógica de negócio nova, só os três pontos de contato do
+comunicação). O objetivo é que `jarvis/gemini/cliente_live.py` — um dos três arquivos
+temporários vindos do curso — nunca ganhe lógica de negócio nova, só os três pontos de contato do
 contrato padrão.
 
-Antes de começar, releia `INTEGRATION.md` — ele é a fonte da verdade sobre o contrato e
+Antes de começar, releia `docs/INTEGRATION.md` — ele é a fonte da verdade sobre o contrato e
 pode ter mudado desde a última vez que você criou um pacote.
 
 ## 1. Estrutura do pacote
 
-Crie uma pasta nova na raiz do projeto (irmã de `rede_jarvis/`, `casa_inteligente/`,
-`delegacao_ia/`), nunca dentro de `gemini/`, `ui/` ou outro módulo existente. Dentro
+Crie uma pasta nova dentro de `jarvis/pacotes/` (irmã de `rede_jarvis/`,
+`casa_inteligente/`, `delegacao_ia/`), nunca dentro de `jarvis/gemini/`,
+`jarvis/ui/` ou `jarvis/servicos/`. Dentro
 dela, no mínimo:
 
 - `config.py` — carrega `.env` via `load_dotenv()` próprio (não reaproveite
-  `core/config.py` — cada pacote é decoupled de propósito, pra poder ser copiado pra
+  `jarvis/nucleo/config.py` — cada pacote é decoupled de propósito, pra poder ser copiado pra
   outro projeto como está). Nenhuma credencial hardcoded, sempre `os.getenv(...)`.
 - O(s) módulo(s) com a lógica de negócio em si (ex: um `cliente.py` fino pro SDK/API
   externa, mais um módulo com as funções de ação).
@@ -77,7 +78,7 @@ wiring extra):
   `instrucao_sistema` mais simples de manter.
 - `despachar()` **nunca lança exceção** para o chamador — capture erros internamente e
   retorne uma string em português explicando o que aconteceu (mesma convenção de
-  `mailer/email_sender.py`, `memory_manager.py`, `casa_inteligente/tuya_client.py`). O
+  `jarvis/servicos/email/remetente.py`, `gerenciador.py`, `jarvis/pacotes/casa_inteligente/tuya_client.py`). O
   retorno vira fala do Jarvis.
 - `despachar()` retorna `None` — não lança `KeyError`/etc — quando `nome_funcao` não é
   reconhecido, para o loop de despacho genérico poder tentar o próximo pacote.
@@ -85,16 +86,16 @@ wiring extra):
   arquivo/rede a partir de uma entrada externa), ela **precisa passar por uma
   whitelist** definida no `config.py` do próprio pacote — nunca aceitar
   comando/caminho/nome arbitrário vindo de fora. Ver `tuya-troubleshooting.md` não se
-  aplica aqui; a referência é `rede_jarvis/config.py` (`WHITELIST_APPS`,
+  aplica aqui; a referência é `jarvis/pacotes/rede_jarvis/config.py` (`WHITELIST_APPS`,
   `PASTAS_PERMITIDAS_BUSCA`).
 
-## 3. Wiring no cliente (`gemini/live_client_basic.py`)
+## 3. Wiring no cliente (`jarvis/gemini/cliente_live.py`)
 
 Exatamente três pontos de contato — nada além disso deve mudar neste arquivo:
 
 1. **Import**, junto dos outros imports de pacote:
    ```python
-   import nome_do_pacote
+   from jarvis.pacotes import nome_do_pacote
    ```
 2. **Uma linha em `PACOTES_REGISTRADOS`**:
    ```python
@@ -114,15 +115,15 @@ Exatamente três pontos de contato — nada além disso deve mudar neste arquivo
 
 Se o pacote precisar de **wiring extra** (callbacks de sessão, inicialização em
 background, uma ponte pra GUI thread) — como `rede_jarvis` precisa — documente o
-wiring extra em `INTEGRATION.md` na seção "Wiring extra por pacote" (com o trecho de
+wiring extra em `docs/INTEGRATION.md` na seção "Wiring extra por pacote" (com o trecho de
 código pronto pra copiar), e implemente só o mínimo necessário no `__init__` do
-worker. Consulte a seção de `rede_jarvis` em INTEGRATION.md como modelo antes de
+worker. Consulte a seção de `rede_jarvis` em docs/INTEGRATION.md como modelo antes de
 inventar um mecanismo novo — a maioria dos casos (ação HTTP pontual, sem estado)
 não precisa de wiring extra nenhum.
 
 ## 4. Atualize a documentação (não é opcional)
 
-- **`INTEGRATION.md`**: adicione o pacote novo ao trecho "pronto para copiar" (import +
+- **`docs/INTEGRATION.md`**: adicione o pacote novo ao trecho "pronto para copiar" (import +
   `PACOTES_REGISTRADOS`) e, se houver wiring extra, uma subseção nova em "Wiring extra
   por pacote".
 - **`CLAUDE.md`**: adicione um item na lista de "Supporting modules" (seção
@@ -132,9 +133,9 @@ não precisa de wiring extra nenhum.
 
 ## 5. Antes de considerar terminado
 
-- Compile os arquivos novos (`python -m py_compile`) e o `live_client_basic.py`
+- Compile os arquivos novos (`python -m py_compile`) e o `cliente_live.py`
   editado.
-- Rode o app (`python main_basic.py`), confirme que não crasha na inicialização e que
+- Rode o app (`python main.py`), confirme que não crasha na inicialização e que
   `PACOTES_REGISTRADOS` carrega sem erro.
 - Teste a tool nova por voz (ou via chamada direta a `despachar()` num script de teste)
   contra a API/serviço real — nunca declare uma integração externa como "funcionando"

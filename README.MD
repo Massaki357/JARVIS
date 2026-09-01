@@ -1,3 +1,62 @@
+# ALFRED
+
+Assistente de voz para Windows (PySide6 + Gemini Live API).
+
+## Como rodar
+
+```powershell
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+playwright install chromium   # uma única vez, para o controle de navegador
+python main.py
+```
+
+## Estrutura do projeto
+
+```
+main.py                  ponto de entrada da aplicação
+config.json              preferências locais desta máquina (ex: interrupção de fala)
+.env                     chaves e credenciais (nunca versionado)
+requirements.txt
+docs/INTEGRATION.md      como religar os pacotes em outro cliente Gemini Live
+
+dados/                   TUDO que o app gera enquanto roda
+  memoria.json             memória conversacional
+  apps_conhecidos.json     cache do abrir_app_local
+  discord_contatos.json    cache do discord_jarvis
+  discord_canais.json      cache do discord_jarvis
+  admin_fila/              troca de arquivos com o processo elevado
+  logs/                    comandos_admin.log, comandos_remotos.log
+
+jarvis/                  todo o código da aplicação
+  caminhos.py              único lugar que sabe onde ficam a raiz e dados/
+  nucleo/                  config.py, preferencias.py, sinalizador.py
+  gemini/cliente_live.py   o worker da sessão Live (coração do app)
+  ui/                      janela_principal, janela_chat,
+                           janela_envio_arquivo, janela_camera
+  servicos/                infra compartilhada
+    visao/                   captura_tela, captura_camera, monitor_continuo
+    email/                   remetente (SMTP), leitor (IMAP)
+    memoria/                 gerenciador da memória persistente
+  pacotes/                 uma pasta por integração/ferramenta
+    abrir_app_local/  admin_terminal/  ativacao_voz/  camera_preview/
+    casa_inteligente/ chat_jarvis/     configuracoes/ delegacao_ia/
+    discord_jarvis/   explorador_windows/
+    identificacao_planta/   identificacao_visual/
+    navegador_jarvis/ rede_jarvis/
+```
+
+Regra que mantém isso organizado: **código fica em `jarvis/`, estado
+gerado fica em `dados/`**. Nenhum pacote grava arquivo dentro da própria
+pasta — quem precisa de um caminho importa de `jarvis/caminhos.py`.
+
+Cada pasta em `jarvis/pacotes/` é isolada e expõe o mesmo par de funções
+(`obter_function_declarations()` / `despachar()`) descrito em
+`docs/INTEGRATION.md`. Adicionar uma ferramenta nova é criar uma pasta
+ali e acrescentar uma linha em `PACOTES_REGISTRADOS`.
+
+---
+
 Crie um arquivo .env e coloque as seguintes API KEYs:
 
 ```
@@ -54,7 +113,7 @@ máquina publica em um tópico e todas as inscritas nele recebem.
 
 Todas as máquinas usam o MESMO broker (MQTT_HOST/PORT/USERNAME/PASSWORD) e o MESMO
 TOKEN_REDE_JARVIS — só NOME_MAQUINA muda em cada uma. Toda a lógica fica isolada em
-`rede_jarvis/`.
+`jarvis/pacotes/rede_jarvis/`.
 
 Você também pode perguntar pro ALFRED "quais máquinas estão online?" — cada máquina
 avisa quando conecta e o próprio broker avisa automaticamente as outras se ela cair
@@ -108,7 +167,7 @@ pip install -r requirements.txt
 ```
 
 Para o jarvis conseguir controlar o navegador por voz (abrir sites, buscar e tocar
-música no YouTube, pausar/retomar — ver `navegador_jarvis/`), rode também, uma única
+música no YouTube, pausar/retomar — ver `jarvis/pacotes/navegador_jarvis/`), rode também, uma única
 vez, depois do `pip install`:
 ```
 playwright install chromium

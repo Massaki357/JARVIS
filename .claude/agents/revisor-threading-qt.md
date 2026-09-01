@@ -1,6 +1,6 @@
 ---
 name: revisor-threading-qt
-description: Revisa mudanças em código que envolve GeminiLiveWorker (QThread), Signals/Slots, ou qualquer chamada a widgets/classes Qt fora da thread principal da GUI. Use depois de editar gemini/live_client_basic.py, ui/main_window_basic.py, ou qualquer código de pacote que precise "falar" com a UI ou usar QFileDialog/QObject a partir de uma thread de fundo.
+description: Revisa mudanças em código que envolve GeminiLiveWorker (QThread), Signals/Slots, ou qualquer chamada a widgets/classes Qt fora da thread principal da GUI. Use depois de editar jarvis/gemini/cliente_live.py, jarvis/ui/janela_principal.py, ou qualquer código de pacote que precise "falar" com a UI ou usar QFileDialog/QObject a partir de uma thread de fundo.
 tools: Read, Grep, Glob
 model: inherit
 ---
@@ -11,8 +11,8 @@ coisa fora do escopo abaixo.
 
 ## Contexto do projeto
 
-`GeminiLiveWorker` (`gemini/live_client_basic.py`) é um `QThread` que roda seu próprio
-loop `asyncio` numa thread separada da GUI. `MainWindow` (`ui/main_window_basic.py`) é
+`GeminiLiveWorker` (`jarvis/gemini/cliente_live.py`) é um `QThread` que roda seu próprio
+loop `asyncio` numa thread separada da GUI. `MainWindow` (`jarvis/ui/janela_principal.py`) é
 a `QMainWindow` que roda na thread principal do Qt. A única forma sancionada de o
 worker se comunicar de volta com a GUI é via `Signal`/`.emit(...)`, conectados uma vez
 em `MainWindow` (`status_recebido`, `erro_recebido`, `chamada_encerrada`,
@@ -21,7 +21,7 @@ em `MainWindow` (`status_recebido`, `erro_recebido`, `chamada_encerrada`,
 
 O único caso já existente no projeto de uma classe Qt não-Signal precisando rodar na
 GUI thread a partir de uma chamada originada em background é
-`rede_jarvis/transferencia_arquivos.py`'s `QFileDialog`: resolvido com uma ponte
+`jarvis/pacotes/rede_jarvis/transferencia_arquivos.py`'s `QFileDialog`: resolvido com uma ponte
 dedicada (`_PonteSalvarArquivo`, um `QObject` com um `Signal` de conexão em fila,
 instanciado uma vez na thread da GUI via `preparar_ponte_gui()` chamado do `__init__`
 do worker). Esse é o padrão de referência para qualquer necessidade parecida no futuro
