@@ -22,6 +22,12 @@ from jarvis.ui.janela_principal import MainWindow
 # "Tela de configurações".
 from jarvis.nucleo.sinalizador import obter_sinalizador
 
+# Prioridade do processo, opcional, lida do config.json — ver
+# jarvis/nucleo/preferencias.py. Só tem efeito quando há disputa por
+# CPU (ex: um jogo em tela cheia rodando junto); não faz o app
+# consumir mais recurso nenhum.
+from jarvis.nucleo.preferencias import aplicar_prioridade
+
 # Pacote isolado com a ativação por voz (palavra-chave) — ver
 # jarvis/pacotes/ativacao_voz/detector.py. iniciar() é chamado uma única vez aqui,
 # depois que a janela principal existe; pausar()/retomar() (chamados
@@ -173,6 +179,10 @@ def main():
     # [CURSO] Cria a aplicação Qt.
     # [CURSO] sys.argv permite que o Qt receba argumentos
     # [CURSO] passados pela linha de comando, quando existirem.
+    # Antes de qualquer coisa: se config.json pedir, eleva a
+    # prioridade do processo (ver o docstring de aplicar_prioridade).
+    aplicar_prioridade()
+
     app = QApplication(sys.argv)
 
     # [CURSO] Cria uma instância da janela principal.

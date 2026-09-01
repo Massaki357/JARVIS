@@ -11,6 +11,7 @@
 import jarvis.pacotes.admin_terminal.config as admin_terminal_config
 import jarvis.pacotes.ativacao_voz.config as ativacao_voz_config
 import jarvis.pacotes.casa_inteligente.config as casa_inteligente_config
+import jarvis.pacotes.cerebro_reserva.config as cerebro_reserva_config
 import jarvis.pacotes.delegacao_ia.config as delegacao_ia_config
 import jarvis.pacotes.identificacao_planta.config as identificacao_planta_config
 import jarvis.pacotes.identificacao_visual.config as identificacao_visual_config
@@ -27,5 +28,9 @@ PACOTES_COM_CONFIG = [
     ("Identificação de Plantas (Pl@ntNet)", identificacao_planta_config),
     ("Segunda Opinião Visual (Mistral)", identificacao_visual_config),
     ("Ativação por Voz (Vosk, 100% local)", ativacao_voz_config),
+    (
+        "Cérebro Reserva (assume quando o Gemini falha)",
+        cerebro_reserva_config,
+    ),
     ("Navegador (Playwright)", navegador_jarvis_config),
 ]

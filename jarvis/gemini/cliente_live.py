@@ -2,6 +2,9 @@
 # Neste arquivo, ele coordena microfone, recebimento de áudio,
 # reprodução da resposta e chamadas de funções do Gemini Live.
 import asyncio
+# concurrent.futures fornece o ThreadPoolExecutor exclusivo da
+# reprodução de áudio — ver reproduzir_audio.
+import concurrent.futures
 # time é utilizado para controlar intervalos e medir o tempo
 # entre chamadas de funções visuais.
 import time
@@ -172,6 +175,12 @@ from jarvis.pacotes import navegador_jarvis
 # retomar() são chamados diretamente aqui, ao redor do ciclo de vida
 # do microfone desta própria chamada (ver executar()).
 from jarvis.pacotes import ativacao_voz
+
+# Pacote isolado que assume a conversa por voz quando a sessão do
+# Gemini falha — ver jarvis/pacotes/cerebro_reserva/__init__.py. Não é
+# um pacote de tools (não entra em PACOTES_REGISTRADOS): é chamado
+# direto no fim de executar(), mesmo padrão de ativacao_voz.
+from jarvis.pacotes import cerebro_reserva
 
 # Sinalizador genérico (ver jarvis/nucleo/sinalizador.py) — aqui
 # usado só pra ENTREGAR a transcrição da resposta falada do Gemini
@@ -361,6 +370,41 @@ LIMITE_RESPOSTA_IMEDIATA_SEGUNDOS = 5
 # _enviar_para_sessao/monitorar_conexao/self.conexao_travada.
 TIMEOUT_ENVIO_SESSAO_SEGUNDOS = 10
 
+# Folga do buffer de saída de áudio. "high" é o padrão do próprio
+# sounddevice e o que o app já usava sem dizer — explicitado aqui pra
+# ficar claro que é uma escolha, e pra poder ser aumentado se a fala
+# picotar. Medido nesta máquina: "low" dá 128ms de buffer (3 blocos de
+# folga), "high" dá 213ms (5 blocos). Aumentar isso NÃO consome CPU
+# nem memória de forma perceptível — só atrasa em milissegundos o
+# começo da fala em troca de tolerar mais engasgo do sistema.
+LATENCIA_SAIDA = "high"
+
+# Tempo limite para ESCREVER um único bloco de áudio no dispositivo
+# de saída. Um bloco tem BLOCO/TAXA_SAIDA = ~43ms, então 10s é ~230x
+# o normal — só estoura se o dispositivo parar de consumir de vez
+# (caso real: um jogo em tela cheia assumindo a placa de som em modo
+# exclusivo). Sem isso, saida.write() fica preso para sempre dentro
+# do asyncio.to_thread, sem lançar exceção nenhuma: a reprodução
+# morre calada, o jarvis continua "respondendo" mas nada mais é
+# ouvido, e fila_saida (que é ilimitada) só cresce.
+TIMEOUT_ESCRITA_AUDIO_SEGUNDOS = 10
+
+# De quanto em quanto tempo vigiar_travamento() confere os estados
+# que nunca deveriam ficar presos, e por quanto tempo cada um pode
+# ficar assim antes de ser reportado. Ver vigiar_travamento().
+INTERVALO_VIGILANCIA_SEGUNDOS = 5.0
+LIMITE_FALANDO_PRESO_SEGUNDOS = 60.0
+LIMITE_FUNCAO_VISUAL_PRESA_SEGUNDOS = 120.0
+LIMITE_FILA_SAIDA_PARADA = 200
+
+# Por quanto tempo o microfone pode ficar SEM entregar um único bloco
+# antes de ser considerado morto. O callback do sounddevice é chamado
+# a cada BLOCO/TAXA_ENTRADA = ~64ms enquanto o stream estiver vivo,
+# independente de haver silêncio ou fala (áudio bruto: silêncio é só
+# zeros), então 10s equivale a ~156 blocos perdidos — não acontece
+# num stream saudável.
+LIMITE_MICROFONE_MUDO_SEGUNDOS = 10.0
+
 
 # Classe principal responsável pela sessão em tempo real com o Gemini.
 # Como herda de QThread, roda separadamente da interface gráfica.
@@ -446,6 +490,33 @@ class GeminiLiveWorker(QThread):
 
         # Impede duas análises visuais simultâneas.
         self.executando_funcao_visual = False
+
+        # Quando o último bloco de áudio terminou de ser escrito no
+        # dispositivo de saída, e as tarefas simultâneas da chamada —
+        # os dois usados só por vigiar_travamento().
+        self.timestamp_ultima_reproducao = 0.0
+
+        # Quando o callback do sounddevice entregou o último bloco de
+        # microfone. 0.0 = o stream ainda não começou (vigiar_travamento
+        # ignora esse caso, pra não acusar nada durante a abertura).
+        self.timestamp_ultimo_bloco_microfone = 0.0
+
+        # True quando a chamada terminou por FALHA (conexão travada,
+        # tarefa morta, microfone morto) e não porque o usuário mandou
+        # encerrar. Só nesse caso o cérebro reserva assume, no fim de
+        # executar().
+        self.encerrou_por_falha = False
+
+        # Quantas vezes a fala foi cortada por interrupção nesta
+        # chamada — ver o tratamento de server_content.interrupted em
+        # receber_audio. Só faz sentido com interrupcao_habilitada.
+        self.interrupcoes_na_chamada = 0
+
+        # True enquanto o cérebro reserva está conduzindo a conversa.
+        # parar() zera isto também, senão encerrar a chamada não teria
+        # efeito nenhum depois da troca.
+        self.reserva_ativa = False
+        self.tarefas_chamada = []
         self.ultima_funcao_visual = None
         self.tempo_ultima_funcao_visual = 0.0
 
@@ -2088,7 +2159,8 @@ class GeminiLiveWorker(QThread):
                             sessao,
                             fila_microfone,
                         ),
-                    )
+                    ),
+                    name="MICROFONE",
                 ),
 
                 asyncio.create_task(
@@ -2099,7 +2171,8 @@ class GeminiLiveWorker(QThread):
                             fila_saida,
                             fila_microfone,
                         ),
-                    )
+                    ),
+                    name="RECEPÇÃO",
                 ),
 
                 asyncio.create_task(
@@ -2109,23 +2182,38 @@ class GeminiLiveWorker(QThread):
                             fila_saida,
                             fila_microfone,
                         ),
-                    )
+                    ),
+                    name="REPRODUÇÃO",
                 ),
 
                 asyncio.create_task(
                     self._tarefa_supervisionada(
                         "INATIVIDADE",
                         self.verificar_inatividade(),
-                    )
+                    ),
+                    name="INATIVIDADE",
                 ),
 
                 asyncio.create_task(
                     self._tarefa_supervisionada(
                         "CONEXÃO",
                         self.monitorar_conexao(),
-                    )
+                    ),
+                    name="CONEXÃO",
+                ),
+
+                asyncio.create_task(
+                    self._tarefa_supervisionada(
+                        "VIGIA",
+                        self.vigiar_travamento(fila_saida),
+                    ),
+                    name="VIGIA",
                 ),
             ]
+
+            # vigiar_travamento() consulta esta lista para detectar
+            # uma tarefa que morreu enquanto a chamada seguia ativa.
+            self.tarefas_chamada = tarefas
 
             # Mantém a sessão viva até que parar() altere self.ativo.
             while self.ativo:
@@ -2165,14 +2253,198 @@ class GeminiLiveWorker(QThread):
                 return_exceptions=True,
             )
 
+            self.tarefas_chamada = []
+
         # Guardará a sessão ativa do Gemini Live.
         self.sessao = None
+
+        # A chamada morreu por falha, não por pedido do usuário: o
+        # cérebro reserva assume a conversa a partir daqui, em
+        # silêncio (sem anunciar a troca — decisão explícita do
+        # usuário). Só quando ELE terminar é que a chamada acaba de
+        # fato, por isso este bloco fica antes de ativacao_voz.retomar()
+        # e, consequentemente, antes de run() emitir chamada_encerrada.
+        #
+        # assumir() é síncrona e bloqueante (grava microfone, chama
+        # APIs, fala), então vai pra uma thread — nunca direto no event
+        # loop, mesma regra de todo o resto deste arquivo.
+        if self.encerrou_por_falha and cerebro_reserva.esta_disponivel():
+            self.reserva_ativa = True
+
+            try:
+                await asyncio.to_thread(
+                    cerebro_reserva.assumir,
+                    PACOTES_REGISTRADOS,
+                    lambda: self.reserva_ativa,
+                    self.status_recebido.emit,
+                )
+
+            except Exception as erro:
+                print(f"[RESERVA] O modo reserva falhou: {erro}")
+
+            finally:
+                self.reserva_ativa = False
+
+        elif self.encerrou_por_falha:
+            print(f"[RESERVA] {cerebro_reserva.motivo_indisponivel()}")
 
         # A chamada terminou de verdade — volta a escutar a palavra-
         # chave de ativação (ver jarvis/pacotes/ativacao_voz/detector.py). Reaproveita
         # o callback já registrado por main.py, não precisa
         # receber nada de novo aqui.
         ativacao_voz.retomar()
+
+    # Confere periodicamente os estados que NUNCA deveriam ficar
+    # presos e, se encontrar um, diz exatamente qual — no console e
+    # na interface.
+    #
+    # Existe porque o app não tinha visibilidade nenhuma: em três
+    # relatos seguidos de "travou no status X, tive que reiniciar"
+    # não havia uma única linha de log dizendo o que tinha parado.
+    # Cada checagem aqui é de um estado IMPOSSÍVEL em operação
+    # normal, não de "está parado" (ficar parado é normal: ninguém
+    # falando é o caso comum), então isto não gera alarme falso.
+    #
+    # Onde é seguro, também desfaz o estado preso em vez de só
+    # reclamar — é sempre melhor que a chamada volte a funcionar do
+    # que ficar travada esperando o usuário reiniciar o app.
+    async def vigiar_travamento(self, fila_saida):
+        desde_falando = None
+        desde_funcao_visual = None
+        fila_saida_anterior = 0
+
+        # A reprodução travada continua travada nos ciclos seguintes;
+        # sem isto o mesmo aviso sairia a cada
+        # INTERVALO_VIGILANCIA_SEGUNDOS e entupiria o log de
+        # atividade. Volta a False quando a reprodução se recupera,
+        # então um segundo episódio é avisado de novo.
+        ja_avisou_reproducao = False
+
+        while self.ativo:
+            await asyncio.sleep(INTERVALO_VIGILANCIA_SEGUNDOS)
+
+            if not self.ativo:
+                break
+
+            agora = time.monotonic()
+
+            # 1. alfred_falando preso: liberar_microfone_apos_fala
+            # zera essa flag 0.8s depois do último bloco de áudio.
+            # Ficar minutos em True significa que aquela tarefa se
+            # perdeu — e, no modo padrão (sem interrupção), isso
+            # deixa o microfone mudo para sempre.
+            if self.alfred_falando:
+                desde_falando = desde_falando or agora
+
+                if (
+                    agora - desde_falando
+                    > LIMITE_FALANDO_PRESO_SEGUNDOS
+                ):
+                    self._reportar_travamento(
+                        "o jarvis ficou marcado como 'falando' por "
+                        f"{int(agora - desde_falando)}s seguidos — "
+                        "o microfone foi reaberto à força."
+                    )
+
+                    self.alfred_falando = False
+                    desde_falando = None
+            else:
+                desde_falando = None
+
+            # 2. Mutex de função visual preso: processar_funcao_visual
+            # o libera num finally, então isso só acontece se algo
+            # muito atípico ocorrer — mas, preso, bloqueia TODA
+            # análise de tela/câmera pelo resto da chamada.
+            if self.executando_funcao_visual:
+                desde_funcao_visual = desde_funcao_visual or agora
+
+                if (
+                    agora - desde_funcao_visual
+                    > LIMITE_FUNCAO_VISUAL_PRESA_SEGUNDOS
+                ):
+                    self._reportar_travamento(
+                        "uma análise visual ficou marcada como em "
+                        f"andamento por {int(agora - desde_funcao_visual)}s "
+                        "— foi liberada à força."
+                    )
+
+                    self.executando_funcao_visual = False
+                    desde_funcao_visual = None
+            else:
+                desde_funcao_visual = None
+
+            # 3. Fila de reprodução crescendo sem sair nada: o
+            # dispositivo de saída parou de consumir. fila_saida é
+            # ilimitada, então isso não estoura sozinho — cresce em
+            # silêncio enquanto o usuário não ouve mais nada.
+            fila_atual = fila_saida.qsize()
+
+            reproducao_parada = (
+                fila_atual > LIMITE_FILA_SAIDA_PARADA
+                and fila_atual >= fila_saida_anterior
+                and agora - self.timestamp_ultima_reproducao
+                > INTERVALO_VIGILANCIA_SEGUNDOS * 2
+            )
+
+            if reproducao_parada and not ja_avisou_reproducao:
+                self._reportar_travamento(
+                    f"a reprodução de áudio parou com {fila_atual} "
+                    "blocos acumulados na fila — o dispositivo de "
+                    "saída não está mais consumindo áudio."
+                )
+
+                ja_avisou_reproducao = True
+
+            elif not reproducao_parada:
+                ja_avisou_reproducao = False
+
+            fila_saida_anterior = fila_atual
+
+            # 4. Microfone parou de entregar blocos: o stream de
+            # entrada morreu sem lançar exceção. A chamada continua
+            # com toda a aparência de funcionando, mas o jarvis nunca
+            # mais ouve nada. Encerrar é melhor que ficar assim — a
+            # próxima chamada reabre o stream já no dispositivo
+            # atual, sem precisar reiniciar o app.
+            if (
+                self.timestamp_ultimo_bloco_microfone
+                and agora - self.timestamp_ultimo_bloco_microfone
+                > LIMITE_MICROFONE_MUDO_SEGUNDOS
+            ):
+                self._reportar_travamento(
+                    "o microfone parou de entregar áudio há "
+                    f"{int(agora - self.timestamp_ultimo_bloco_microfone)}s "
+                    "(o dispositivo de entrada provavelmente mudou ou "
+                    "foi reiniciado durante a chamada). A chamada foi "
+                    "encerrada — inicie outra para reabrir o microfone."
+                )
+
+                self.encerrou_por_falha = True
+                self.ativo = False
+                return
+
+            # 5. Alguma das tarefas da chamada terminou enquanto a
+            # chamada ainda deveria estar rodando.
+            for tarefa in self.tarefas_chamada:
+                if tarefa.done() and not tarefa.cancelled():
+                    self._reportar_travamento(
+                        f"a tarefa '{tarefa.get_name()}' terminou "
+                        "sozinha enquanto a chamada ainda estava "
+                        "ativa."
+                    )
+
+                    self.encerrou_por_falha = True
+                    self.ativo = False
+                    return
+
+    # Console + interface, para o usuário não precisar estar olhando
+    # um terminal para descobrir o que travou.
+    def _reportar_travamento(self, descricao):
+        print(f"[VIGIA] Travamento detectado: {descricao}")
+
+        self.erro_recebido.emit(
+            f"Problema detectado na chamada: {descricao}"
+        )
 
     # Envolve UMA das tarefas simultâneas da chamada (microfone,
     # recepção, reprodução, inatividade, conexão) para que ela nunca
@@ -2205,6 +2477,11 @@ class GeminiLiveWorker(QThread):
             await corrotina
 
         except Exception as erro:
+            # str(TimeoutError()) é vazio — sem isto a interface
+            # mostraria "porque 'REPRODUÇÃO' falhou: " e nada mais,
+            # justamente no caso do dispositivo de áudio travado.
+            detalhe = str(erro) or type(erro).__name__
+
             print(
                 f"[{nome}] A tarefa terminou com um erro inesperado: "
                 f"{erro!r} — encerrando a chamada em vez de deixá-la "
@@ -2213,9 +2490,10 @@ class GeminiLiveWorker(QThread):
 
             self.erro_recebido.emit(
                 f"A chamada foi encerrada porque '{nome}' falhou: "
-                f"{erro}"
+                f"{detalhe}"
             )
 
+            self.encerrou_por_falha = True
             self.ativo = False
 
     # Captura o microfone continuamente e envia os blocos
@@ -2237,6 +2515,20 @@ class GeminiLiveWorker(QThread):
             time_info,
             status,
         ):
+            # Sinal de VIDA do stream de entrada, marcado antes de
+            # qualquer return antecipado de propósito: o que importa
+            # aqui é que o dispositivo continua entregando blocos,
+            # não se o áudio vai ser aproveitado. Sem isso não havia
+            # como distinguir "ninguém está falando" (normal) de "o
+            # microfone morreu" — que é justamente o travamento que
+            # não levanta exceção nenhuma: se o dispositivo padrão
+            # muda ou reenumera no meio da chamada (um jogo assumindo
+            # o áudio, um headset USB reconectando), o sounddevice
+            # simplesmente PARA de chamar este callback, o stream
+            # continua "aberto", e enviar_microfone fica preso pra
+            # sempre em fila_microfone.get(). Ver vigiar_travamento().
+            self.timestamp_ultimo_bloco_microfone = time.monotonic()
+
             if not self.ativo:
                 return
 
@@ -2307,6 +2599,11 @@ class GeminiLiveWorker(QThread):
                 channels=CANAIS,
                 callback=callback,
             ):
+                # Marca o início: a partir daqui o stream deve
+                # entregar blocos continuamente (ver o callback e
+                # vigiar_travamento).
+                self.timestamp_ultimo_bloco_microfone = time.monotonic()
+
                 # Mantém a sessão viva até que parar() altere self.ativo.
                 while self.ativo:
                     audio_bytes = await fila_microfone.get()
@@ -2342,6 +2639,7 @@ class GeminiLiveWorker(QThread):
                 f"Não foi possível abrir o microfone: {erro}"
             )
 
+            self.encerrou_por_falha = True
             self.ativo = False
 
     # Recebe as respostas da sessão Gemini.
@@ -2353,8 +2651,20 @@ class GeminiLiveWorker(QThread):
         fila_microfone,
     ):
         while self.ativo:
+            # Marca se este ciclo de receive() entregou alguma coisa.
+            # Se receive() terminar SEM entregar nada, a sessão do
+            # lado do servidor acabou: sem esta guarda, o while de
+            # fora chamaria receive() de novo na hora, num laço
+            # quente que queima CPU sem nunca mais processar resposta
+            # nenhuma — travamento sem exceção nenhuma pra ninguém
+            # perceber (e, num PC já ocupado com um jogo, ainda mais
+            # visível).
+            recebeu_algo = False
+
             # Percorre continuamente as respostas enviadas pela sessão.
             async for resposta in sessao.receive():
+                recebeu_algo = True
+
                 if not self.ativo:
                     break
 
@@ -2382,8 +2692,30 @@ class GeminiLiveWorker(QThread):
                         self.tarefa_liberar_microfone.cancel()
                         self.tarefa_liberar_microfone = None
 
+                    # Quantas vezes a fala foi cortada por interrupção
+                    # nesta chamada, e quantos blocos de áudio foram
+                    # jogados fora. Registrado porque uma interrupção
+                    # FALSA (o microfone captando estalo de teclado,
+                    # respiração, ou o vazamento do próprio fone de
+                    # haste) é indistinguível de um travamento do
+                    # ponto de vista de quem ouve: a frase para no
+                    # meio e não volta, sem consumir CPU nenhum. Se
+                    # este contador subir sozinho enquanto o jarvis
+                    # fala e o usuário está calado, o culpado é a
+                    # interrupção — e a correção é config.json,
+                    # "interrupcao": false, não mexer em código.
+                    self.interrupcoes_na_chamada += 1
+                    descartados = fila_saida.qsize()
+
                     self.limpar_fila_saida(
                         fila_saida
+                    )
+
+                    print(
+                        "[INTERRUPÇÃO] O servidor sinalizou que o "
+                        "usuário falou por cima — fala cortada "
+                        f"(nº {self.interrupcoes_na_chamada} nesta "
+                        f"chamada, {descartados} blocos descartados)."
                     )
 
                     self.alfred_falando = False
@@ -2501,6 +2833,22 @@ class GeminiLiveWorker(QThread):
                     )
 
                     self._buffer_transcricao_atual = ""
+
+            # Ver o comentário de recebeu_algo no topo deste while.
+            if self.ativo and not recebeu_algo:
+                print(
+                    "[RECEPÇÃO] A sessão do Gemini encerrou o fluxo "
+                    "de respostas — encerrando a chamada em vez de "
+                    "reabrir receive() num laço vazio."
+                )
+
+                self.erro_recebido.emit(
+                    "A conexão com o Gemini foi encerrada pelo "
+                    "servidor. A chamada foi finalizada."
+                )
+
+                self.encerrou_por_falha = True
+                self.ativo = False
 
     # Retorna (caminho, capturou_novo, pergunta_ambiguidade) pra
     # anexar/enviar uma captura visual — print OU foto. Usada por
@@ -3786,6 +4134,7 @@ class GeminiLiveWorker(QThread):
                     "encerrando a chamada automaticamente."
                 )
 
+                self.encerrou_por_falha = True
                 self.ativo = False
                 break
 
@@ -3971,12 +4320,63 @@ class GeminiLiveWorker(QThread):
         fila_saida,
         fila_microfone,
     ):
+        # Thread EXCLUSIVA da reprodução, criada só pra esta chamada.
+        #
+        # BUG REAL relatado pelo usuário ("trava enquanto fala, mas o
+        # PC está tranquilo, CPU/RAM/GPU baixos"): a escrita de cada
+        # bloco de áudio ia pro pool padrão do asyncio.to_thread — o
+        # MESMO pool usado pelas outras 36 chamadas bloqueantes deste
+        # arquivo (tools, capturas de câmera, comandos admin, envio de
+        # email...). O pool tem min(32, núcleos+4) workers; quando
+        # enchia, o bloco de áudio entrava na FILA e simplesmente
+        # esperava. Medido nesta máquina (24 núcleos, 28 workers): com
+        # o pool ocupado, um bloco esperou 1,69s pela vez dele — o
+        # equivalente a 40 blocos, ou seja, a fala parando no meio.
+        # E o CPU aparece ocioso o tempo todo, porque os workers estão
+        # PARADOS esperando I/O, não calculando: exatamente o que o
+        # gerenciador de tarefas mostrava.
+        #
+        # Com um executor próprio de um worker só, a reprodução nunca
+        # mais disputa vez com nada. É literalmente dar folga pro
+        # áudio — o oposto de precisar de mais RAM ou GPU.
+        executor_audio = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="jarvis-audio",
+        )
+
+        laco = asyncio.get_running_loop()
+
+        try:
+            await self._laco_reproducao(
+                fila_saida,
+                fila_microfone,
+                laco,
+                executor_audio,
+            )
+
+        finally:
+            # cancel_futures + wait=False: se a escrita estiver presa
+            # no dispositivo, encerrar a chamada não pode ficar
+            # esperando por ela.
+            executor_audio.shutdown(
+                wait=False,
+                cancel_futures=True,
+            )
+
+    async def _laco_reproducao(
+        self,
+        fila_saida,
+        fila_microfone,
+        laco,
+        executor_audio,
+    ):
         # Abre o dispositivo de saída de áudio no formato PCM.
         with sd.RawOutputStream(
             samplerate=TAXA_SAIDA,
             blocksize=BLOCO,
             dtype="int16",
             channels=CANAIS,
+            latency=LATENCIA_SAIDA,
         ) as saida:
             # Mantém a sessão viva até que parar() altere self.ativo.
             while self.ativo:
@@ -4009,10 +4409,25 @@ class GeminiLiveWorker(QThread):
                 # Reproduz o bloco em uma thread auxiliar.
                 # Isso evita que drivers de áudio mais lentos bloqueiem
                 # o loop que recebe os próximos blocos do Gemini.
-                await asyncio.to_thread(
-                    saida.write,
-                    audio_bytes,
+                # wait_for por fora do to_thread: se o dispositivo
+                # de saída travar (jogo em tela cheia tomando a placa
+                # de som, driver perdido), isso desiste em vez de
+                # ficar preso pra sempre — o supervisor da tarefa
+                # encerra a chamada com erro visível. Ver
+                # TIMEOUT_ESCRITA_AUDIO_SEGUNDOS.
+                # run_in_executor com o executor EXCLUSIVO, nunca
+                # asyncio.to_thread (que usaria o pool compartilhado —
+                # ver o comentário em reproduzir_audio).
+                await asyncio.wait_for(
+                    laco.run_in_executor(
+                        executor_audio,
+                        saida.write,
+                        audio_bytes,
+                    ),
+                    timeout=TIMEOUT_ESCRITA_AUDIO_SEGUNDOS,
                 )
+
+                self.timestamp_ultima_reproducao = time.monotonic()
 
                 # Não adicionar asyncio.sleep aqui.
                 # Uma pausa por bloco deixa a voz picotando.
@@ -4320,6 +4735,11 @@ class GeminiLiveWorker(QThread):
     # Encerra o loop principal da sessão e zera o nível de áudio.
     def parar(self):
         self.ativo = False
+
+        # Sem isto, o botão de encerrar não teria efeito nenhum
+        # enquanto o cérebro reserva estivesse conduzindo a conversa
+        # (ele roda depois que self.ativo já é False, ver executar()).
+        self.reserva_ativa = False
 
         self.nivel_audio.emit(
             0.0

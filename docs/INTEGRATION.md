@@ -931,6 +931,85 @@ sozinha se a página/navegador cair (usuário fechou a janela na mão, processo
 travou): antes de cada ação, `_obter_pagina_async()` confere `pagina.is_closed()` e
 reabre do zero se precisar, sem erro nenhum surgindo por causa disso sozinho.
 
+## Cérebro reserva (assume quando o Gemini falha)
+
+`jarvis/pacotes/cerebro_reserva/` conduz a conversa por voz quando a sessão
+Live morre. **Não é um pacote de tools** (`obter_function_declarations()`
+devolve `[]`, `despachar()` devolve `None`, não entra em
+`PACOTES_REGISTRADOS`) — mesmo caso de `ativacao_voz` e `explorador_windows`.
+
+Um turno seu é: `escuta.ouvir()` (microfone → WAV → Groq Whisper) →
+`cerebro.responder()` (Mistral, com ferramentas) → `fala.falar()` (voz SAPI do
+Windows). Medido de ponta a ponta: **3,0s por turno** quando usa ferramenta,
+~1,9s em conversa simples.
+
+**Ele herda as ferramentas sozinho.** `esquema.py` converte as
+`FunctionDeclaration` que cada pacote já expõe (formato Gemini) para o formato
+de `tools` da API estilo OpenAI. Ou seja: um pacote novo que entre em
+`PACOTES_REGISTRADOS` passa a funcionar no modo reserva **sem tocar em nada
+deste pacote**. As descrições originais são reaproveitadas na íntegra, nunca
+reescritas — as regras de segurança delas ("nunca escolha sozinho", "pergunte
+antes") ficam entre 68% e 95% do texto, então uma segunda cópia resumida
+perderia exatamente as salvaguardas.
+
+As tools **nativas** (memória, print, foto, encerrar) são a exceção: elas são
+declaradas dentro de `executar()`, como variável local, e não dá para
+reaproveitá-las de fora. As poucas que fazem sentido estão redeclaradas em
+`ferramentas_locais.py`, chamando os mesmos serviços de `jarvis/servicos/`.
+`preparar_email`/`confirmar_envio_email` ficaram **de fora de propósito**: o
+envio de email é uma confirmação em duas etapas garantida por código, com o
+rascunho pendente guardado no worker, e recriar isso aqui seria um segundo
+caminho capaz de disparar um envio.
+
+### Wiring no cliente
+
+Cinco pontos de contato em `jarvis/gemini/cliente_live.py`:
+
+```python
+# 1. Import (junto dos outros imports de pacote)
+from jarvis.pacotes import cerebro_reserva
+
+# 2. Estado, no __init__ do worker
+self.encerrou_por_falha = False
+self.reserva_ativa = False
+
+# 3. Em CADA ponto que encerra a chamada por FALHA (não por pedido do
+#    usuário), antes do self.ativo = False:
+self.encerrou_por_falha = True
+
+# 4. parar() precisa encerrar o modo reserva também, senão o botão de
+#    encerrar não tem efeito depois da troca:
+def parar(self):
+    self.ativo = False
+    self.reserva_ativa = False
+
+# 5. No fim de executar(), ANTES de ativacao_voz.retomar() — assim a
+#    chamada só termina de verdade (e só aí run() emite
+#    chamada_encerrada) depois que o modo reserva acabar:
+if self.encerrou_por_falha and cerebro_reserva.esta_disponivel():
+    self.reserva_ativa = True
+
+    try:
+        await asyncio.to_thread(
+            cerebro_reserva.assumir,
+            PACOTES_REGISTRADOS,
+            lambda: self.reserva_ativa,
+            self.status_recebido.emit,
+        )
+
+    finally:
+        self.reserva_ativa = False
+```
+
+`assumir()` é síncrona e bloqueante (grava microfone, chama APIs, fala), por
+isso vai em `asyncio.to_thread`. `PACOTES_REGISTRADOS` é passado **por
+parâmetro**: o pacote nunca importa `cliente_live.py`, que seria import
+circular.
+
+A troca é silenciosa por decisão explícita do usuário — a instrução de sistema
+do modo reserva proíbe mencionar falha, troca de sistema ou qual modelo está
+respondendo.
+
 ## Checklist para religar tudo em um cliente novo
 
 1. Copie o trecho da seção "Trecho pronto para copiar" (imports,

@@ -26,6 +26,11 @@ from PySide6.QtWidgets import (
 # Essa classe cuida do áudio, da visão e da comunicação em tempo real.
 from jarvis.gemini.cliente_live import GeminiLiveWorker
 
+# Console de diagnóstico exibido ao lado do registro de atividade —
+# toda a lógica (captura de sys.stdout/sys.stderr, ponte de thread,
+# limite de linhas) mora no próprio módulo.
+from jarvis.ui.painel_console import PainelConsole
+
 
 # QSS é a linguagem de estilos do Qt.
 # Ela possui sintaxe parecida com CSS e define cores,
@@ -120,6 +125,8 @@ QTextEdit#registro {
     font-family: "Consolas";
     font-size: 10px;
 }
+
+
 """
 
 
@@ -139,16 +146,19 @@ class MainWindow(QMainWindow):
             "ALFRED"
         )
 
-        # Define o menor tamanho permitido para a janela.
+        # Define o menor tamanho permitido para a janela. Mais largo
+        # do que era antes porque agora existem DUAS colunas embaixo
+        # (registro de atividade e console), e espremer as duas em
+        # 560px deixaria as duas ilegíveis.
         self.setMinimumSize(
-            560,
+            900,
             460,
         )
 
         # Define o tamanho inicial da janela.
         self.resize(
-            640,
-            520,
+            1040,
+            560,
         )
 
         # Remove a referência da thread encerrada.
@@ -161,6 +171,17 @@ class MainWindow(QMainWindow):
 
         # Cria e organiza todos os componentes visuais.
         self._criar_interface()
+
+        # A partir daqui, tudo que o app imprimir (de qualquer thread
+        # ou pacote) também aparece no console da direita, em tempo
+        # real. O terminal continua recebendo tudo igual.
+        self.painel_console.capturar_saida_padrao()
+
+        self.painel_console.acrescentar(
+            "Console pronto. Interrupções de fala, avisos e erros "
+            "aparecem aqui.",
+            "info",
+        )
 
     # Monta a interface completa da janela.
     def _criar_interface(self):
@@ -351,14 +372,44 @@ class MainWindow(QMainWindow):
             8
         )
 
-        # Adiciona um componente ao layout vertical.
-        layout.addWidget(
+        # Coluna da esquerda: o registro de atividade, como sempre foi.
+        coluna_registro = QVBoxLayout()
+        coluna_registro.setContentsMargins(0, 0, 0, 0)
+        coluna_registro.setSpacing(6)
+
+        coluna_registro.addWidget(
             registro_titulo
         )
 
-        # Adiciona um componente ao layout vertical.
-        layout.addWidget(
+        coluna_registro.addWidget(
             self.log_box,
+            1,
+        )
+
+        # Coluna da direita: o console de diagnóstico. Ele duplica
+        # sys.stdout/sys.stderr, então mostra em tempo real tudo que
+        # antes só aparecia no terminal — interrupções de fala,
+        # avisos do vigia, falhas de conexão e tracebacks. Toda a
+        # lógica mora em jarvis/ui/painel_console.py; aqui só é
+        # instanciado e posicionado.
+        self.painel_console = PainelConsole()
+
+        # Os dois lado a lado, com o mesmo peso.
+        area_inferior = QHBoxLayout()
+        area_inferior.setSpacing(12)
+
+        area_inferior.addLayout(
+            coluna_registro,
+            1,
+        )
+
+        area_inferior.addWidget(
+            self.painel_console,
+            1,
+        )
+
+        layout.addLayout(
+            area_inferior,
             1,
         )
 
@@ -506,6 +557,15 @@ class MainWindow(QMainWindow):
             f"Erro: {erro}"
         )
 
+        # E também no console, em vermelho. Os erros vindos do worker
+        # chegam por Signal (erro_recebido) e não passam por print,
+        # então sem esta linha eles não apareceriam ali — justamente
+        # as mensagens mais importantes do painel.
+        self.painel_console.acrescentar(
+            f"ERRO: {erro}",
+            "erro",
+        )
+
     # Restaura a interface quando a chamada termina.
     def chamada_finalizada(self):
         # Remove a referência da thread encerrada.
@@ -590,6 +650,11 @@ class MainWindow(QMainWindow):
             self.live_worker.wait(
                 3000
             )
+
+        # Devolve sys.stdout/sys.stderr ao que eram. Sem isto, um
+        # print de despedida de qualquer thread ainda tentaria escrever
+        # num widget já destruído.
+        self.painel_console.restaurar_saida_padrao()
 
         # Autoriza o fechamento da janela.
         event.accept()
