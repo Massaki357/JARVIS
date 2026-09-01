@@ -138,10 +138,19 @@ TIMEOUT_RESPOSTA_COMANDO = 15
 TIMEOUT_CONSULTA_SERVICE_ACCOUNT = 15
 
 # Log local simples (texto, sem banco de dados) de comandos remotos
-# recebidos e executados.
+# recebidos e executados. Nunca girado em vários arquivos nem apagado
+# por completo — só aparado (mantém a metade mais recente) quando
+# passa de LIMITE_TAMANHO_LOG_BYTES, pra nunca crescer sem limite —
+# ver jarvis/pacotes/rede_jarvis/mqtt_listener.py:_registrar_log.
 ARQUIVO_LOG = (
     garantir_pasta(PASTA_LOGS) / "comandos_remotos.log"
 )
+
+# Tamanho máximo, em bytes, antes de _registrar_log aparar o log —
+# mesmo valor e mesma técnica de jarvis/pacotes/admin_terminal/config.py
+# (pacotes isolados, cada um com sua própria cópia da constante, por
+# convenção do projeto).
+LIMITE_TAMANHO_LOG_BYTES = 5 * 1024 * 1024
 
 
 # Descreve as variáveis de .env deste pacote pra tela de

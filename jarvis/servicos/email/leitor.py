@@ -61,6 +61,49 @@ PASTA_DOWNLOADS_EMAIL = Path(
 )
 
 
+# Descreve as variáveis de .env que ESTE módulo lê via os.getenv(...)
+# acima, pra tela de configurações — mesmo contrato de
+# jarvis/servicos/email/remetente.py (ver o comentário lá pro porquê
+# EMAIL_REMETENTE/EMAIL_SENHA_APP aparecem duplicadas nas duas
+# seções: cada módulo realmente lê as duas, de forma independente).
+def config_schema():
+    return [
+        {
+            "nome": "EMAIL_IMAP_HOST",
+            "rotulo": "Servidor IMAP (padrão: imap.gmail.com)",
+            "sensivel": False,
+            "obrigatoria": False,
+        },
+        {
+            "nome": "EMAIL_IMAP_PORT",
+            "rotulo": "Porta IMAP (padrão: 993)",
+            "sensivel": False,
+            "obrigatoria": False,
+        },
+        {
+            "nome": "EMAIL_REMETENTE",
+            "rotulo": "Endereço de email remetente (usado também para enviar emails)",
+            "sensivel": False,
+            "obrigatoria": True,
+        },
+        {
+            "nome": "EMAIL_SENHA_APP",
+            "rotulo": "Senha de aplicativo (nunca a senha normal da conta)",
+            "sensivel": True,
+            "obrigatoria": True,
+        },
+        {
+            "nome": "PASTA_DOWNLOADS_EMAIL",
+            "rotulo": (
+                "Pasta onde anexos baixados são salvos "
+                "(padrão: Downloads/JarvisEmail)"
+            ),
+            "sensivel": False,
+            "obrigatoria": False,
+        },
+    ]
+
+
 # Padroniza um texto para facilitar comparações aproximadas (mesmo
 # approach já usado em gerenciador.py e
 # jarvis/pacotes/casa_inteligente/dispositivos_tuya.py): minúsculas, sem acento,

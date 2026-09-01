@@ -6,8 +6,11 @@ from . import selecao
 #
 # Este pacote não expõe nenhuma tool de voz própria — não faz
 # sentido o usuário pedir "descubra o arquivo selecionado" como um
-# fim em si; é sempre um passo interno de outra tool (enviar_email
-# com usar_arquivo_selecionado=true). Por isso
+# fim em si; é sempre um passo interno de outra tool (preparar_email
+# com usar_arquivo_selecionado=true). obter_arquivo_selecionado()
+# cobre dois casos: uma janela do Explorer em primeiro plano (padrão
+# original) e, na falta dela, a própria Área de Trabalho (ver
+# selecao.py/desktop.py). Por isso
 # obter_function_declarations() retorna lista vazia e despachar()
 # nunca reconhece nada — o pacote segue o contrato pra ficar
 # consistente com o resto do projeto, mas obter_arquivo_selecionado()

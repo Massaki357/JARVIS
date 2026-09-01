@@ -160,9 +160,34 @@ def _limpar_arquivos_fila():
             pass
 
 
-# Log local, texto simples, append-only — nunca apagado
-# automaticamente pelo jarvis (só cresce; rotação/limpeza é manual,
-# por decisão do usuário, se um dia for necessária).
+# Mantém o log sob um teto simples de tamanho: se já passou de
+# config.LIMITE_TAMANHO_LOG_BYTES, descarta a metade mais antiga das
+# linhas e regrava só a metade mais recente. Chamado antes de cada
+# escrita (registrar_log, abaixo) — o stat() é barato o bastante pra
+# rodar em toda escrita sem custo perceptível. Nunca lança exceção: um
+# log que não pôde ser aparado continua sendo usado do jeito que está,
+# só cresce um pouco mais até a próxima tentativa.
+def _aparar_log_se_necessario():
+    try:
+        if config.ARQUIVO_LOG.stat().st_size <= config.LIMITE_TAMANHO_LOG_BYTES:
+            return
+
+        with open(config.ARQUIVO_LOG, "r", encoding="utf-8", errors="replace") as arquivo:
+            linhas = arquivo.readlines()
+
+        linhas_mantidas = linhas[len(linhas) // 2:]
+
+        with open(config.ARQUIVO_LOG, "w", encoding="utf-8") as arquivo:
+            arquivo.writelines(linhas_mantidas)
+
+    except OSError as erro:
+        print(f"[admin_terminal] Falha ao aparar o log: {erro}")
+
+
+# Log local, texto simples, append-only. Nunca girado em vários
+# arquivos nem apagado por completo — só aparado (ver
+# _aparar_log_se_necessario) quando passa de
+# config.LIMITE_TAMANHO_LOG_BYTES, pra nunca crescer sem limite.
 def registrar_log(comando, automatico, sucesso, resumo):
     linha = (
         f"{datetime.now().isoformat(timespec='seconds')} | "
@@ -171,6 +196,8 @@ def registrar_log(comando, automatico, sucesso, resumo):
         f"{comando} | "
         f"{(resumo or '').replace(chr(10), ' ').replace(chr(13), '')[:300]}\n"
     )
+
+    _aparar_log_se_necessario()
 
     try:
         with open(config.ARQUIVO_LOG, "a", encoding="utf-8") as arquivo:

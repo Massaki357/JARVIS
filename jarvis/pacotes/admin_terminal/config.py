@@ -63,9 +63,17 @@ PASTA_PACOTE = Path(__file__).resolve().parent
 PASTA_FILA = garantir_pasta(PASTA_DADOS) / "admin_fila"
 
 # Log local, texto simples, de todo comando administrativo executado
-# (automático ou confirmado). Nunca apagado automaticamente pelo
-# jarvis — ver jarvis/pacotes/admin_terminal/executor.py:registrar_log.
+# (automático ou confirmado). Nunca girado em vários arquivos nem
+# apagado por completo — só aparado (mantém a metade mais recente)
+# quando passa de LIMITE_TAMANHO_LOG_BYTES, pra nunca crescer sem
+# limite — ver jarvis/pacotes/admin_terminal/executor.py:registrar_log.
 ARQUIVO_LOG = garantir_pasta(PASTA_LOGS) / "comandos_admin.log"
+
+# Tamanho máximo, em bytes, antes de registrar_log aparar o log (ver
+# executor.py:_aparar_log_se_necessario). 5 MB é folgado pra um log de
+# texto simples de uma linha por comando — na prática, milhares de
+# execuções antes de aparar pela primeira vez.
+LIMITE_TAMANHO_LOG_BYTES = 5 * 1024 * 1024
 
 # Lista editável de padrões de comando aprovados para execução
 # automática (sem confirmação) — ver jarvis/pacotes/admin_terminal/whitelist.py.

@@ -11,6 +11,8 @@ import re
 import subprocess
 import unicodedata
 
+from . import config
+
 # Tempo limite, em segundos, para o Get-StartApps responder.
 TIMEOUT_SEGUNDOS = 20
 
@@ -77,7 +79,7 @@ def _normalizar(texto):
 # Windows (Get-StartApps), cada um como {"nome", "app_id"}. Nunca
 # lança exceção — retorna lista vazia se o PowerShell falhar ou a
 # saída vier em formato inesperado, por qualquer motivo.
-def listar_apps_instalados():
+def _listar_apps_via_powershell():
     try:
         resultado = subprocess.run(
             [
@@ -145,6 +147,54 @@ def listar_apps_instalados():
                 }
             )
 
+    return apps
+
+
+# Varre (de forma RASA — a pasta em si e um nível de subpastas, sem
+# recursão funda) as pastas extras configuradas em
+# config.pastas_extras() procurando .exe. Não passa pelo
+# Get-StartApps, então cobre programas portáteis que nunca aparecem
+# na busca do menu Iniciar — mas continua restrito a essas pastas
+# explicitamente cadastradas, nunca varre o disco inteiro. Cada .exe
+# encontrado vira um "app" no mesmo formato de
+# _listar_apps_via_powershell ({"nome", "app_id"}), com app_id já
+# sendo o caminho absoluto do arquivo — executor.abrir() já sabe
+# abrir isso direto (via os.startfile), sem nenhuma mudança lá.
+def _escanear_pastas_extras():
+    apps = []
+
+    for pasta in config.pastas_extras():
+        if not pasta.is_dir():
+            continue
+
+        try:
+            candidatos = (
+                list(pasta.glob("*.exe"))
+                + list(pasta.glob("*/*.exe"))
+            )
+
+        except OSError:
+            continue
+
+        for exe in candidatos:
+            apps.append(
+                {
+                    "nome": exe.stem,
+                    "app_id": str(exe),
+                }
+            )
+
+    return apps
+
+
+# Combina os apps do Get-StartApps com os encontrados nas pastas
+# extras configuradas (config.pastas_extras()) — a lógica de busca
+# aproximada e o cache continuam trabalhando sobre esta lista
+# combinada sem nenhuma mudança, só a fonte de dados fica mais ampla.
+# Nunca lança exceção.
+def listar_apps_instalados():
+    apps = _listar_apps_via_powershell()
+    apps.extend(_escanear_pastas_extras())
     return apps
 
 

@@ -2,6 +2,9 @@
 # Neste arquivo, ele coordena microfone, recebimento de áudio,
 # reprodução da resposta e chamadas de funções do Gemini Live.
 import asyncio
+# contextlib.asynccontextmanager monta _mutex_funcao_visual() — ver
+# essa função, logo depois de processar_funcao_visual.
+import contextlib
 # concurrent.futures fornece o ThreadPoolExecutor exclusivo da
 # reprodução de áudio — ver reproduzir_audio.
 import concurrent.futures
@@ -14,6 +17,10 @@ import os
 # winsound toca um beep local, sem depender do Gemini, assim que a
 # chamada conecta — ver FREQUENCIA_BEEP_CHAMADA_INICIADA logo abaixo.
 import winsound
+# collections.deque guarda, sob DEBUG_TIMING_FILA_SAIDA, o instante em
+# que cada bloco de áudio de resposta entrou em fila_saida — usado só
+# pra medir o atraso fila->reprodução (ver _debug_fila_timestamps).
+import collections
 
 # Lê config.json (raiz do projeto) e diz se o usuário pode interromper
 # a fala do jarvis falando por cima — ver jarvis/nucleo/preferencias.py e
@@ -77,9 +84,10 @@ from jarvis.servicos.email.remetente import enviar_email
 from jarvis.servicos.email.leitor import ler_emails, baixar_anexo
 
 # Descobre o arquivo selecionado na janela do Explorer em primeiro
-# plano — usado pelo fluxo "envie este arquivo que eu selecionei" de
-# enviar_email. Não expõe nenhuma tool de voz própria (por isso não
-# entra em PACOTES_REGISTRADOS — ver docs/INTEGRATION.md, seção
+# plano — e, na falta dela, na própria Área de Trabalho — usado pelo
+# fluxo "envie este arquivo que eu selecionei" de preparar_email. Não
+# expõe nenhuma tool de voz própria (por isso não entra em
+# PACOTES_REGISTRADOS — ver docs/INTEGRATION.md, seção
 # "explorador_windows"), é chamado diretamente igual
 # capturar_camera_bytes().
 from jarvis.pacotes import explorador_windows
@@ -161,6 +169,19 @@ from jarvis.pacotes import discord_jarvis
 # frame, sem janela) e tirar_foto_camera (salva um único frame).
 from jarvis.pacotes import camera_preview
 
+# Pacote isolado que fecha um app já aberto NESTA máquina, pelo
+# nome, resolvendo contra processos que já estão rodando de verdade
+# (via psutil) — ver jarvis/pacotes/fechar_app/__init__.py. Tenta
+# fechamento gracioso (WM_CLOSE) antes de forçar, e nunca fecha
+# processos protegidos do sistema nem o próprio ALFRED.
+from jarvis.pacotes import fechar_app
+
+# Pacote isolado que cria um arquivo de texto simples por pedido de
+# voz, só dentro de pastas explicitamente permitidas — ver
+# jarvis/pacotes/criar_arquivo/__init__.py. Nunca sobrescreve um
+# arquivo existente e nunca escreve fora da lista permitida.
+from jarvis.pacotes import criar_arquivo
+
 # Pacote isolado com controle real de navegador via Playwright (abrir
 # site, buscar e tocar música no YouTube, pausar/retomar) — ver
 # jarvis/pacotes/navegador_jarvis/__init__.py. Diferente de abrir_app_local (que só
@@ -227,6 +248,8 @@ PACOTES_REGISTRADOS = [
     camera_preview,
     navegador_jarvis,
     memoria_obsidian,
+    fechar_app,
+    criar_arquivo,
 ]
 
 
@@ -272,6 +295,29 @@ DEBUG_TIMING_DISPATCH = False
 # e quanto tempo levou), dá pra ver se o microfone fica mudo por mais
 # tempo do que a própria tool + a fala de resposta explicam.
 DEBUG_TIMING_MICROFONE = False
+
+# [DIAGNÓSTICO DE ATRASO EM CONVERSAS LONGAS] Liga logs temporários no
+# console (mesma convenção de DEBUG_TIMING_DISPATCH/DEBUG_TIMING_MICROFONE
+# — desligado por padrão, só ligar pontualmente pra investigar, nunca
+# deixar True em uso normal). Investiga o relato de que, em conversas
+# longas, o ALFRED para de responder por um tempo e depois "volta"
+# respondendo a algo que o usuário falou bem antes — como se as
+# respostas estivessem enfileiradas tocando com atraso crescente, não
+# travadas de vez. Mede três coisas, sem mudar nenhum comportamento
+# real: (1) o tamanho de fila_saida amostrado a cada
+# INTERVALO_VIGILANCIA_SEGUNDOS (curva de crescimento durante toda a
+# chamada, não só se cruzou LIMITE_FILA_SAIDA_PARADA — ver
+# vigiar_travamento); (2) o atraso entre um bloco de resposta entrar em
+# fila_saida (receber_audio) e ser efetivamente tocado
+# (_laco_reproducao), via _debug_fila_timestamps; (3) quanto tempo cada
+# resposta leva pra começar a gerar áudio depois do último bloco de
+# microfone realmente enviado ao Gemini, e a fila RESIDUAL (que já
+# deveria estar zerada) no início de cada turno — ver
+# _debug_timestamp_ultimo_envio_mic/_debug_numero_turno em receber_audio.
+# LIGADO agora, de propósito, pra esta investigação — voltar pra False
+# depois de coletar os dados da chamada de reprodução, mesma disciplina
+# das outras duas DEBUG_TIMING_*.
+DEBUG_TIMING_FILA_SAIDA = True
 
 # Intervalo mínimo, em segundos, entre chamadas visuais repetidas.
 # Isso evita capturas duplicadas para o mesmo pedido.
@@ -477,6 +523,32 @@ class GeminiLiveWorker(QThread):
         # em que o microfone ficou mudo pela última vez — só usado sob
         # DEBUG_TIMING_MICROFONE, ver constante no topo do arquivo.
         self._debug_inicio_mudo = None
+
+        # [DIAGNÓSTICO DE ATRASO EM CONVERSAS LONGAS] Só usado sob
+        # DEBUG_TIMING_FILA_SAIDA, ver constante no topo do arquivo.
+        # _debug_fila_timestamps guarda, na mesma ordem FIFO de
+        # fila_saida, o instante (time.monotonic()) em que cada bloco
+        # foi colocado na fila — _laco_reproducao usa popleft() ao
+        # tirar cada bloco pra calcular o atraso fila->reprodução.
+        # Também precisa ser esvaziado junto de fila_saida sempre que
+        # ela for descartada fora do fluxo normal (ver
+        # limpar_fila_saida em receber_audio), senão os dois ficam
+        # dessincronizados e o atraso medido depois fica sem sentido.
+        self._debug_fila_timestamps = collections.deque()
+        self._debug_atraso_max_desde_tick = 0.0
+        self._debug_atraso_soma_desde_tick = 0.0
+        self._debug_atraso_contagem_desde_tick = 0
+        # Contador de turnos (uma resposta completa do ALFRED) e
+        # instante do último bloco de MICROFONE realmente enviado ao
+        # Gemini (não só capturado) — usados pra medir quanto tempo
+        # cada resposta leva pra começar a gerar áudio depois que o
+        # usuário parou de falar, e se isso cresce com o número de
+        # turnos acumulados na sessão. Ver receber_audio/enviar_microfone.
+        self._debug_numero_turno = 0
+        self._debug_timestamp_ultimo_envio_mic = None
+        # Instante em que esta chamada começou, só pra exibir "t=Ns
+        # desde o início" nos logs de diagnóstico acima.
+        self._debug_inicio_chamada = time.monotonic()
         # Referência para a tarefa que libera o microfone após a fala.
         self.tarefa_liberar_microfone = None
         # Referência para a tarefa que encerra a chamada após a despedida.
@@ -1853,6 +1925,40 @@ class GeminiLiveWorker(QThread):
 
             fila_saida_anterior = fila_atual
 
+            # [DIAGNÓSTICO DE ATRASO EM CONVERSAS LONGAS] Amostra
+            # contínua, a cada tick deste mesmo laço (já roda a cada
+            # INTERVALO_VIGILANCIA_SEGUNDOS) — dá a curva de
+            # crescimento de fila_saida ao longo de TODA a chamada,
+            # não só se cruzou LIMITE_FILA_SAIDA_PARADA como o alarme
+            # acima. Também reporta e zera o atraso
+            # fila->reprodução acumulado desde o tick anterior (ver
+            # _laco_reproducao) — reportar tudo por bloco aqui inundaria
+            # o painel de console (BLOCO/TAXA_SAIDA ≈ 43ms por bloco,
+            # ~23/s), por isso só o máximo/média por janela de
+            # INTERVALO_VIGILANCIA_SEGUNDOS.
+            if DEBUG_TIMING_FILA_SAIDA:
+                if self._debug_atraso_contagem_desde_tick:
+                    atraso_medio = (
+                        self._debug_atraso_soma_desde_tick
+                        / self._debug_atraso_contagem_desde_tick
+                    )
+                else:
+                    atraso_medio = 0.0
+
+                print(
+                    "[TIMING-FILA] "
+                    f"t={agora - self._debug_inicio_chamada:.0f}s "
+                    f"fila_saida={fila_atual} blocos "
+                    f"(~{fila_atual * BLOCO / TAXA_SAIDA:.2f}s) "
+                    f"atraso_max={self._debug_atraso_max_desde_tick * 1000:.0f}ms "
+                    f"atraso_medio={atraso_medio * 1000:.0f}ms "
+                    f"(amostras={self._debug_atraso_contagem_desde_tick})"
+                )
+
+                self._debug_atraso_max_desde_tick = 0.0
+                self._debug_atraso_soma_desde_tick = 0.0
+                self._debug_atraso_contagem_desde_tick = 0
+
             # 4. Microfone parou de entregar blocos: o stream de
             # entrada morreu sem lançar exceção. A chamada continua
             # com toda a aparência de funcionando, mas o jarvis nunca
@@ -2082,6 +2188,20 @@ class GeminiLiveWorker(QThread):
                         )
                     )
 
+                    # [DIAGNÓSTICO DE ATRASO EM CONVERSAS LONGAS] Marca
+                    # o último bloco de microfone REALMENTE enviado —
+                    # proxy do "fim da fala do usuário" (a Live API não
+                    # expõe um evento explícito de fim de atividade pro
+                    # cliente no modo de VAD automático usado aqui; o
+                    # próximo bloco só deixa de ser enviado quando
+                    # alfred_falando vira True, então este é o instante
+                    # mais próximo disso que dá pra medir sem inventar
+                    # nada). Ver DEBUG_TIMING_FILA_SAIDA/receber_audio.
+                    if DEBUG_TIMING_FILA_SAIDA:
+                        self._debug_timestamp_ultimo_envio_mic = (
+                            time.monotonic()
+                        )
+
         except Exception as erro:
             print(
                 f"[MICROFONE] Não foi possível abrir ou usar o "
@@ -2164,6 +2284,17 @@ class GeminiLiveWorker(QThread):
                         fila_saida
                     )
 
+                    # [DIAGNÓSTICO DE ATRASO EM CONVERSAS LONGAS]
+                    # fila_saida foi descartada fora do fluxo normal
+                    # (get() em _laco_reproducao) — sem isto,
+                    # _debug_fila_timestamps ficaria com marcações
+                    # órfãs, sem correspondência real na fila, e o
+                    # atraso medido depois desta interrupção viria
+                    # errado (popleft() traria um instante de um bloco
+                    # que nunca vai ser tocado).
+                    if DEBUG_TIMING_FILA_SAIDA:
+                        self._debug_fila_timestamps.clear()
+
                     print(
                         "[INTERRUPÇÃO] O servidor sinalizou que o "
                         "usuário falou por cima — fala cortada "
@@ -2193,6 +2324,41 @@ class GeminiLiveWorker(QThread):
                             "(receber_audio: chegou áudio novo)."
                         )
 
+                    # [DIAGNÓSTICO DE ATRASO EM CONVERSAS LONGAS] Só na
+                    # transição False->True (início real de um NOVO
+                    # turno, mesmo ponto de DEBUG_TIMING_MICROFONE
+                    # acima) — mede a fila RESIDUAL de turnos
+                    # anteriores (que numa chamada saudável já deveria
+                    # estar zerada a esta altura) e o tempo desde o
+                    # último bloco de microfone enviado. Lido ANTES do
+                    # fila_saida.put() logo abaixo, de propósito: o
+                    # tamanho aqui é só o que sobrou de turnos
+                    # passados, sem contar o bloco que está prestes a
+                    # entrar agora.
+                    if DEBUG_TIMING_FILA_SAIDA and not self.alfred_falando:
+                        self._debug_numero_turno += 1
+                        backlog_residual = fila_saida.qsize()
+                        agora_diag = time.monotonic()
+
+                        if self._debug_timestamp_ultimo_envio_mic is not None:
+                            latencia_texto = (
+                                f"{agora_diag - self._debug_timestamp_ultimo_envio_mic:.3f}s"
+                            )
+                        else:
+                            latencia_texto = (
+                                "desconhecida (nenhum bloco de "
+                                "microfone enviado ainda)"
+                            )
+
+                        print(
+                            f"[TIMING-FILA] Turno {self._debug_numero_turno}: "
+                            f"fila residual ao iniciar = "
+                            f"{backlog_residual} blocos "
+                            f"(~{backlog_residual * BLOCO / TAXA_SAIDA:.2f}s), "
+                            "latência desde o último bloco de "
+                            f"microfone enviado = {latencia_texto}"
+                        )
+
                     self.alfred_falando = True
 
                     if self.tarefa_liberar_microfone:
@@ -2201,6 +2367,11 @@ class GeminiLiveWorker(QThread):
                     self.limpar_fila_microfone(
                         fila_microfone
                     )
+
+                    if DEBUG_TIMING_FILA_SAIDA:
+                        self._debug_fila_timestamps.append(
+                            time.monotonic()
+                        )
 
                     await fila_saida.put(
                         resposta.data
@@ -2355,32 +2526,45 @@ class GeminiLiveWorker(QThread):
                 "tipo_captura preenchido.",
             )
 
-        if tipo_captura == "foto":
-            # Mesma captura já usada por analisar_camera/
-            # tirar_foto_camera (reaproveitada, não duplicada). Em
-            # asyncio.to_thread — ver o comentário de correção em
-            # enviar_camera_para_gemini, mais abaixo neste arquivo,
-            # pra o porquê.
-            imagem_bytes = await asyncio.to_thread(
-                capturar_camera_bytes
-            )
+        # MUTEX REAL FALTANDO, corrigido aqui — ver
+        # _mutex_funcao_visual. Sem isso, "envie uma foto"/"envie um
+        # print" disparado perto de outra tool visual (voz ou botão)
+        # podia disputar o mesmo handle da webcam.
+        async with self._mutex_funcao_visual() as mutex_livre:
+            if not mutex_livre:
+                return (
+                    None,
+                    False,
+                    "Já existe uma captura de tela/câmera em "
+                    "andamento — tente de novo em instantes.",
+                )
 
-            caminho_salvo = await asyncio.to_thread(
-                salvar_foto_bytes,
-                imagem_bytes,
-            )
-        else:
-            # Mesma captura já usada por analisar_tela/salvar_print_tela
-            # (reaproveitada, não duplicada). Em asyncio.to_thread —
-            # mesmo motivo do capturar_camera_bytes acima.
-            imagem_bytes = await asyncio.to_thread(
-                capturar_monitor_do_cursor_bytes
-            )
+            if tipo_captura == "foto":
+                # Mesma captura já usada por analisar_camera/
+                # tirar_foto_camera (reaproveitada, não duplicada). Em
+                # asyncio.to_thread — ver o comentário de correção em
+                # enviar_camera_para_gemini, mais abaixo neste arquivo,
+                # pra o porquê.
+                imagem_bytes = await asyncio.to_thread(
+                    capturar_camera_bytes
+                )
 
-            caminho_salvo = await asyncio.to_thread(
-                salvar_print_bytes,
-                imagem_bytes,
-            )
+                caminho_salvo = await asyncio.to_thread(
+                    salvar_foto_bytes,
+                    imagem_bytes,
+                )
+            else:
+                # Mesma captura já usada por analisar_tela/salvar_print_tela
+                # (reaproveitada, não duplicada). Em asyncio.to_thread —
+                # mesmo motivo do capturar_camera_bytes acima.
+                imagem_bytes = await asyncio.to_thread(
+                    capturar_monitor_do_cursor_bytes
+                )
+
+                caminho_salvo = await asyncio.to_thread(
+                    salvar_print_bytes,
+                    imagem_bytes,
+                )
 
         self.ultima_captura_caminho = caminho_salvo
         self.ultima_captura_timestamp = time.monotonic()
@@ -2741,6 +2925,18 @@ class GeminiLiveWorker(QThread):
             if DEBUG_TIMING_DISPATCH:
                 inicio_chamada = time.perf_counter()
 
+            # Tenta despachar para cada pacote registrado antes das
+            # tools nativas (ver PACOTES_REGISTRADOS). despachar()
+            # retorna None quando o pacote não reconhece o nome da
+            # função — nesse caso tenta o próximo, e se nenhum
+            # reconhecer cai nas tools nativas abaixo. Declarado aqui
+            # (antes do bloco de identificar_planta/
+            # consultar_segunda_opiniao_visual logo abaixo) pra esse
+            # bloco poder preenchê-lo diretamente com uma mensagem de
+            # "câmera ocupada" e pular o laço de despacho por completo
+            # nesse caso — ver o comentário do mutex logo abaixo.
+            resultado_pacote = None
+
             # Exceção ao despacho genérico, compartilhada por
             # identificar_planta e consultar_segunda_opiniao_visual:
             # nenhuma das duas tem uma imagem como parâmetro vindo do
@@ -2753,17 +2949,29 @@ class GeminiLiveWorker(QThread):
                 "identificar_planta",
                 "consultar_segunda_opiniao_visual",
             ):
-                self.status_recebido.emit(
-                    "Capturando imagem da câmera para identificar a "
-                    "planta..."
-                    if nome == "identificar_planta"
-                    else "Capturando imagem da câmera para a segunda "
-                    "opinião visual..."
-                )
+                # MUTEX REAL FALTANDO, corrigido aqui — ver
+                # _mutex_funcao_visual. Se ocupado, preenche
+                # resultado_pacote diretamente (pulando o despacho pro
+                # pacote, mais abaixo, que ficaria sem imagem_bytes).
+                async with self._mutex_funcao_visual() as mutex_livre:
+                    if not mutex_livre:
+                        resultado_pacote = (
+                            "Já existe uma captura de tela/câmera em "
+                            "andamento — tente de novo em instantes."
+                        )
 
-                args["imagem_bytes"] = await asyncio.to_thread(
-                    capturar_camera_bytes
-                )
+                    else:
+                        self.status_recebido.emit(
+                            "Capturando imagem da câmera para identificar a "
+                            "planta..."
+                            if nome == "identificar_planta"
+                            else "Capturando imagem da câmera para a segunda "
+                            "opinião visual..."
+                        )
+
+                        args["imagem_bytes"] = await asyncio.to_thread(
+                            capturar_camera_bytes
+                        )
 
             # Mesma ideia acima, mas só pra dar visibilidade — não
             # captura nada. BUG/FALTA DE UX real reportada pelo
@@ -2796,40 +3004,42 @@ class GeminiLiveWorker(QThread):
                     "administrativo..."
                 )
 
-            # Tenta despachar para cada pacote registrado antes das
-            # tools nativas (ver PACOTES_REGISTRADOS). despachar()
-            # retorna None quando o pacote não reconhece o nome da
-            # função — nesse caso tenta o próximo, e se nenhum
-            # reconhecer cai nas tools nativas abaixo.
-            resultado_pacote = None
+            # Vira False quando o bloco de identificar_planta/
+            # consultar_segunda_opiniao_visual acima já preencheu
+            # resultado_pacote com "câmera ocupada" (mutex
+            # indisponível) — nesse caso não há imagem_bytes em args,
+            # e tentar despachar mesmo assim quebraria o pacote, então
+            # todo o laço de despacho (e seu log de tempo) é pulado.
+            despachar_para_pacotes = resultado_pacote is None
 
             # [DIAGNÓSTICO DE TRAVAMENTO] Ver DEBUG_TIMING_DISPATCH.
-            if DEBUG_TIMING_DISPATCH:
+            if despachar_para_pacotes and DEBUG_TIMING_DISPATCH:
                 inicio_despacho_pacotes = time.perf_counter()
                 tempos_por_pacote = []
 
-            for pacote in PACOTES_REGISTRADOS:
-                if DEBUG_TIMING_DISPATCH:
-                    inicio_pacote = time.perf_counter()
+            if despachar_para_pacotes:
+                for pacote in PACOTES_REGISTRADOS:
+                    if DEBUG_TIMING_DISPATCH:
+                        inicio_pacote = time.perf_counter()
 
-                resultado_pacote = await asyncio.to_thread(
-                    pacote.despachar,
-                    nome,
-                    args,
-                )
-
-                if DEBUG_TIMING_DISPATCH:
-                    tempos_por_pacote.append(
-                        (
-                            pacote.__name__,
-                            (time.perf_counter() - inicio_pacote) * 1000,
-                        )
+                    resultado_pacote = await asyncio.to_thread(
+                        pacote.despachar,
+                        nome,
+                        args,
                     )
 
-                if resultado_pacote is not None:
-                    break
+                    if DEBUG_TIMING_DISPATCH:
+                        tempos_por_pacote.append(
+                            (
+                                pacote.__name__,
+                                (time.perf_counter() - inicio_pacote) * 1000,
+                            )
+                        )
 
-            if DEBUG_TIMING_DISPATCH:
+                    if resultado_pacote is not None:
+                        break
+
+            if despachar_para_pacotes and DEBUG_TIMING_DISPATCH:
                 duracao_despacho_ms = (
                     time.perf_counter() - inicio_despacho_pacotes
                 ) * 1000
@@ -2893,61 +3103,86 @@ class GeminiLiveWorker(QThread):
                 )
 
             elif nome == "salvar_print_tela":
-                self.status_recebido.emit(
-                    "Salvando print da tela..."
-                )
+                # MUTEX REAL FALTANDO, corrigido aqui — ver
+                # _mutex_funcao_visual.
+                async with self._mutex_funcao_visual() as mutex_livre:
+                    if not mutex_livre:
+                        resultado = (
+                            "Já existe uma captura de tela/câmera em "
+                            "andamento — tente de novo em instantes."
+                        )
 
-                # Mesma captura já usada por analisar_tela
-                # (reaproveitada, não duplicada). Em asyncio.to_thread —
-                # ver o comentário de correção em enviar_camera_para_gemini,
-                # mais abaixo neste arquivo.
-                imagem_bytes = await asyncio.to_thread(
-                    capturar_monitor_do_cursor_bytes
-                )
+                    else:
+                        self.status_recebido.emit(
+                            "Salvando print da tela..."
+                        )
 
-                # Gravar em disco é I/O bloqueante, por isso roda em
-                # uma thread separada para não travar o loop assíncrono.
-                caminho_salvo = await asyncio.to_thread(
-                    salvar_print_bytes,
-                    imagem_bytes,
-                )
+                        # Mesma captura já usada por analisar_tela
+                        # (reaproveitada, não duplicada). Em
+                        # asyncio.to_thread — ver o comentário de
+                        # correção em enviar_camera_para_gemini, mais
+                        # abaixo neste arquivo.
+                        imagem_bytes = await asyncio.to_thread(
+                            capturar_monitor_do_cursor_bytes
+                        )
 
-                # Atualiza a referência de "última captura" — usada por
-                # enviar_captura_email/enviar_captura_discord_dm/
-                # enviar_captura_remoto quando o pedido seguinte for só
-                # "envie este print"/"envie isso", sem precisar
-                # capturar de novo.
-                self.ultima_captura_caminho = caminho_salvo
-                self.ultima_captura_timestamp = time.monotonic()
+                        # Gravar em disco é I/O bloqueante, por isso
+                        # roda em uma thread separada para não travar
+                        # o loop assíncrono.
+                        caminho_salvo = await asyncio.to_thread(
+                            salvar_print_bytes,
+                            imagem_bytes,
+                        )
 
-                resultado = f"Print da tela salvo em: {caminho_salvo}"
+                        # Atualiza a referência de "última captura" —
+                        # usada por enviar_captura_email/
+                        # enviar_captura_discord_dm/enviar_captura_remoto
+                        # quando o pedido seguinte for só "envie este
+                        # print"/"envie isso", sem precisar capturar de
+                        # novo.
+                        self.ultima_captura_caminho = caminho_salvo
+                        self.ultima_captura_timestamp = time.monotonic()
+
+                        resultado = f"Print da tela salvo em: {caminho_salvo}"
 
             elif nome == "tirar_foto_camera":
-                self.status_recebido.emit(
-                    "Tirando foto da câmera..."
-                )
+                # MUTEX REAL FALTANDO, corrigido aqui — ver
+                # _mutex_funcao_visual.
+                async with self._mutex_funcao_visual() as mutex_livre:
+                    if not mutex_livre:
+                        resultado = (
+                            "Já existe uma captura de tela/câmera em "
+                            "andamento — tente de novo em instantes."
+                        )
 
-                # Mesma captura já usada por analisar_camera
-                # (reaproveitada, não duplicada). Em asyncio.to_thread —
-                # ver o comentário de correção em enviar_camera_para_gemini,
-                # mais abaixo neste arquivo.
-                imagem_bytes = await asyncio.to_thread(
-                    capturar_camera_bytes
-                )
+                    else:
+                        self.status_recebido.emit(
+                            "Tirando foto da câmera..."
+                        )
 
-                # Gravar em disco é I/O bloqueante, por isso roda em
-                # uma thread separada para não travar o loop assíncrono.
-                caminho_salvo = await asyncio.to_thread(
-                    salvar_foto_bytes,
-                    imagem_bytes,
-                )
+                        # Mesma captura já usada por analisar_camera
+                        # (reaproveitada, não duplicada). Em
+                        # asyncio.to_thread — ver o comentário de
+                        # correção em enviar_camera_para_gemini, mais
+                        # abaixo neste arquivo.
+                        imagem_bytes = await asyncio.to_thread(
+                            capturar_camera_bytes
+                        )
 
-                # Mesma referência compartilhada de "última captura"
-                # que salvar_print_tela atualiza acima.
-                self.ultima_captura_caminho = caminho_salvo
-                self.ultima_captura_timestamp = time.monotonic()
+                        # Gravar em disco é I/O bloqueante, por isso
+                        # roda em uma thread separada para não travar
+                        # o loop assíncrono.
+                        caminho_salvo = await asyncio.to_thread(
+                            salvar_foto_bytes,
+                            imagem_bytes,
+                        )
 
-                resultado = f"Foto salva em: {caminho_salvo}"
+                        # Mesma referência compartilhada de "última
+                        # captura" que salvar_print_tela atualiza acima.
+                        self.ultima_captura_caminho = caminho_salvo
+                        self.ultima_captura_timestamp = time.monotonic()
+
+                        resultado = f"Foto salva em: {caminho_salvo}"
 
             elif nome == "iniciar_visualizacao_continua":
                 resultado = await self.iniciar_visualizacao_continua()
@@ -2983,7 +3218,8 @@ class GeminiLiveWorker(QThread):
 
                 if usar_arquivo_selecionado:
                     self.status_recebido.emit(
-                        "Procurando arquivo selecionado no Explorer..."
+                        "Procurando arquivo selecionado no Explorer "
+                        "ou na Área de Trabalho..."
                     )
 
                     # win32com é bloqueante, por isso roda em uma
@@ -3002,7 +3238,8 @@ class GeminiLiveWorker(QThread):
                             f"selecionado: {resultado_arquivo} O email "
                             "NÃO foi preparado. Avise o usuário e "
                             "pergunte se ele quer selecionar um "
-                            "arquivo no Explorer e tentar de novo."
+                            "arquivo no Explorer ou na Área de "
+                            "Trabalho e tentar de novo."
                         )
 
                     elif len(resultado_arquivo) > 1:
@@ -3010,11 +3247,10 @@ class GeminiLiveWorker(QThread):
 
                         falha_anexo = (
                             f"Há {len(resultado_arquivo)} arquivos "
-                            f"selecionados no Explorer, não apenas "
-                            f"um ({lista}). O email NÃO foi preparado "
-                            "— pergunte ao usuário qual desses "
-                            "arquivos ele quer anexar, ou peça pra "
-                            "selecionar só um."
+                            f"selecionados, não apenas um ({lista}). "
+                            "O email NÃO foi preparado — pergunte ao "
+                            "usuário qual desses arquivos ele quer "
+                            "anexar, ou peça pra selecionar só um."
                         )
 
                     else:
@@ -3555,9 +3791,18 @@ class GeminiLiveWorker(QThread):
 
     # Controla as capturas de tela e câmera,
     # impedindo repetição e chamadas simultâneas.
+    #
+    # origem="voz" é o padrão (todo despacho de tool_call que chega
+    # aqui é por voz) — solicitar_analise_tela/solicitar_analise_camera
+    # passam origem="botão" desde que passaram a chamar esta função
+    # (em vez de enviar_tela_para_gemini/enviar_camera_para_gemini
+    # direto) pra corrigir o mutex faltando nesses dois botões; sem
+    # isso, um clique no botão mostraria "Comando de voz detectado"
+    # incorretamente no status/log de atividade.
     async def processar_funcao_visual(
         self,
         nome,
+        origem="voz",
     ):
         if self.executando_funcao_visual:
             return (
@@ -3594,6 +3839,8 @@ class GeminiLiveWorker(QThread):
             if nome == "analisar_tela":
                 self.status_recebido.emit(
                     "Comando de voz detectado: analisar tela."
+                    if origem == "voz"
+                    else "Botão pressionado: analisar tela."
                 )
 
                 await self.enviar_tela_para_gemini(
@@ -3608,6 +3855,8 @@ class GeminiLiveWorker(QThread):
             if nome == "analisar_camera":
                 self.status_recebido.emit(
                     "Comando de voz detectado: analisar câmera."
+                    if origem == "voz"
+                    else "Botão pressionado: analisar câmera."
                 )
 
                 await self.enviar_camera_para_gemini(
@@ -3622,6 +3871,54 @@ class GeminiLiveWorker(QThread):
             return "Função visual desconhecida."
 
         # Este bloco sempre é executado, mesmo se ocorrer erro.
+        finally:
+            self.executando_funcao_visual = False
+
+    # MUTEX REAL FALTANDO, corrigido aqui: identificar_planta,
+    # consultar_segunda_opiniao_visual, tirar_foto_camera e
+    # _obter_ou_capturar_ultima_captura chamavam capturar_camera_bytes()
+    # direto, sem passar por processar_funcao_visual — só
+    # analisar_tela/analisar_camera tinham a proteção de
+    # self.executando_funcao_visual. Isso só virou um risco real depois
+    # que tool_calls passaram a rodar em paralelo (ver "Concurrent
+    # function-call execution" no CLAUDE.md): duas dessas ferramentas
+    # disparadas perto uma da outra podem disputar o mesmo handle da
+    # webcam de verdade — o mesmo tipo de interferência entre duas
+    # cv2.VideoCapture(0) concorrentes já medido e corrigido pro preview
+    # de câmera (jarvis/pacotes/camera_preview/). Também usado por
+    # salvar_print_tela por consistência com o mutex já existente (que
+    # cobre "tela e câmera" pelo mesmo motivo de analisar_tela/
+    # analisar_camera), mesmo essa captura sendo só de tela (mss) —
+    # a screenshot em si não sofre a interferência documentada.
+    #
+    # Reaproveita o MESMO self.executando_funcao_visual de
+    # processar_funcao_visual (não um lock novo): as duas proteções, na
+    # prática, protegem o mesmo recurso físico. NUNCA chamar isto de
+    # dentro de processar_funcao_visual (ou de enviar_camera_para_gemini/
+    # enviar_tela_para_gemini quando chamados por ele) — o mutex já
+    # está adquirido nesse caminho, e adquiri-lo de novo aqui devolveria
+    # "ocupado" pra si mesmo. Só usar em pontos que capturam FORA desse
+    # fluxo (ver os pontos de uso abaixo).
+    #
+    # Segue o mesmo padrão de recusa imediata ("tente de novo") de
+    # processar_funcao_visual — nunca espera a vez, pra não segurar uma
+    # tool_call em andamento indefinidamente. Uso:
+    #     async with self._mutex_funcao_visual() as mutex_livre:
+    #         if not mutex_livre:
+    #             ... mensagem de "ocupado, tente de novo" ...
+    #         else:
+    #             ... captura ...
+    @contextlib.asynccontextmanager
+    async def _mutex_funcao_visual(self):
+        if self.executando_funcao_visual:
+            yield False
+            return
+
+        self.executando_funcao_visual = True
+
+        try:
+            yield True
+
         finally:
             self.executando_funcao_visual = False
 
@@ -3796,6 +4093,25 @@ class GeminiLiveWorker(QThread):
             # Mantém a sessão viva até que parar() altere self.ativo.
             while self.ativo:
                 audio_bytes = await fila_saida.get()
+
+                # [DIAGNÓSTICO DE ATRASO EM CONVERSAS LONGAS] popleft()
+                # porque _debug_fila_timestamps é preenchido em ordem
+                # FIFO por receber_audio (append), na mesma ordem que
+                # fila_saida.get() retira — mede exatamente quanto
+                # tempo ESTE bloco específico esperou entre entrar na
+                # fila e ser tirado dela agora, pouco antes de tocar.
+                if DEBUG_TIMING_FILA_SAIDA and self._debug_fila_timestamps:
+                    atraso = (
+                        time.monotonic()
+                        - self._debug_fila_timestamps.popleft()
+                    )
+
+                    self._debug_atraso_max_desde_tick = max(
+                        self._debug_atraso_max_desde_tick,
+                        atraso,
+                    )
+                    self._debug_atraso_soma_desde_tick += atraso
+                    self._debug_atraso_contagem_desde_tick += 1
 
                 # Mantém o microfone bloqueado durante toda a reprodução
                 # e descarta qualquer bloco antigo que ainda tenha sobrado.
@@ -3980,10 +4296,18 @@ class GeminiLiveWorker(QThread):
 
             return
 
-        # Agenda a função assíncrona dentro do loop da thread.
+        # MUTEX REAL FALTANDO, corrigido aqui: chamava
+        # enviar_tela_para_gemini diretamente, sem passar pelo mutex
+        # de processar_funcao_visual — um clique no botão bem perto de
+        # um "analisa a tela"/"analisa a câmera" por voz não tinha
+        # nenhuma proteção. processar_funcao_visual já faz exatamente
+        # o mesmo (captura + envia + emite status), só que protegido —
+        # a troca é direta, o retorno continua sendo descartado aqui
+        # como sempre foi.
         asyncio.run_coroutine_threadsafe(
-            self.enviar_tela_para_gemini(
-                origem="botao"
+            self.processar_funcao_visual(
+                "analisar_tela",
+                origem="botão",
             ),
             self.loop,
         )
@@ -4055,10 +4379,12 @@ class GeminiLiveWorker(QThread):
 
             return
 
-        # Agenda a função assíncrona dentro do loop da thread.
+        # MUTEX REAL FALTANDO, corrigido aqui — mesmo caso de
+        # solicitar_analise_tela logo acima, ver o comentário lá.
         asyncio.run_coroutine_threadsafe(
-            self.enviar_camera_para_gemini(
-                origem="botao"
+            self.processar_funcao_visual(
+                "analisar_camera",
+                origem="botão",
             ),
             self.loop,
         )

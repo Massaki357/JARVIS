@@ -48,6 +48,45 @@ EMAIL_SENHA_APP = os.getenv(
 )
 
 
+# Descreve as variáveis de .env que ESTE módulo lê via os.getenv(...)
+# acima, pra tela de configurações (jarvis/pacotes/configuracoes/window.py)
+# montar os campos automaticamente — mesmo contrato dos pacotes em
+# jarvis/pacotes/ (ver docs/INTEGRATION.md, seção "Tela de
+# configurações"), aplicado aqui mesmo este módulo não sendo um
+# pacote de tools. EMAIL_REMETENTE/EMAIL_SENHA_APP também aparecem no
+# config_schema() de jarvis/servicos/email/leitor.py — duplicado de
+# propósito (leitor.py também lê exatamente essas duas variáveis pra
+# autenticar no IMAP), não um erro de cópia; editar em qualquer uma
+# das duas seções atualiza a mesma chave no .env.
+def config_schema():
+    return [
+        {
+            "nome": "EMAIL_SMTP_HOST",
+            "rotulo": "Servidor SMTP (padrão: smtp.gmail.com)",
+            "sensivel": False,
+            "obrigatoria": False,
+        },
+        {
+            "nome": "EMAIL_SMTP_PORT",
+            "rotulo": "Porta SMTP (padrão: 587)",
+            "sensivel": False,
+            "obrigatoria": False,
+        },
+        {
+            "nome": "EMAIL_REMETENTE",
+            "rotulo": "Endereço de email remetente (usado também para ler emails)",
+            "sensivel": False,
+            "obrigatoria": True,
+        },
+        {
+            "nome": "EMAIL_SENHA_APP",
+            "rotulo": "Senha de aplicativo (nunca a senha normal da conta)",
+            "sensivel": True,
+            "obrigatoria": True,
+        },
+    ]
+
+
 # Envia um email simples em texto puro, com anexo opcional.
 # Retorna sempre uma mensagem em português descrevendo o
 # resultado, pronta para ser falada ou exibida por quem chamar.

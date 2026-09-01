@@ -3,7 +3,8 @@
 Este arquivo é a fonte da verdade de como religar os pacotes isolados
 (`jarvis/pacotes/rede_jarvis/`, `jarvis/pacotes/casa_inteligente/`, `jarvis/pacotes/delegacao_ia/`, `jarvis/pacotes/admin_terminal/`,
 `jarvis/pacotes/configuracoes/`, `jarvis/pacotes/identificacao_planta/`, `jarvis/pacotes/identificacao_visual/`,
-`jarvis/pacotes/explorador_windows/`, `jarvis/pacotes/chat_jarvis/`, `jarvis/pacotes/abrir_app_local/`, `jarvis/pacotes/discord_jarvis/`, e
+`jarvis/pacotes/explorador_windows/`, `jarvis/pacotes/chat_jarvis/`, `jarvis/pacotes/abrir_app_local/`, `jarvis/pacotes/discord_jarvis/`,
+`jarvis/pacotes/fechar_app/`, `jarvis/pacotes/criar_arquivo/`, e
 outros que vierem depois) a QUALQUER arquivo cliente Gemini Live — seja o
 `jarvis/gemini/cliente_live.py` atual (temporário, será substituído quando a versão
 completa do curso chegar) ou o arquivo cliente da versão final.
@@ -442,10 +443,31 @@ expor nada, **não entra em `PACOTES_REGISTRADOS`** — registrá-lo ali só adi
 uma chamada de `despachar()` sempre-`None` a cada tool_call de qualquer pacote, sem
 nenhum benefício.
 
+**Extensão (Área de Trabalho como fallback)**: `obter_arquivo_selecionado()`
+(`jarvis/pacotes/explorador_windows/selecao.py`) primeiro checa uma janela do
+Explorer em primeiro plano (comportamento original, via `Shell.Application().Windows()`);
+se não houver nenhuma correspondendo à janela em primeiro plano (sentinela `None`,
+distinta de `(False, mensagem)` — esse segundo caso é "havia uma janela do Explorer,
+mas vazia", e não cai no fallback), tenta a própria Área de Trabalho via
+`jarvis/pacotes/explorador_windows/desktop.py`. A Área de Trabalho não aparece na
+coleção do Shell.Application — é uma `SysListView32` dentro de
+`Progman`/`SHELLDLL_DefView` (ou uma `WorkerW` irmã, dependendo da versão do
+Windows), pertencente ao processo do `explorer.exe`. `LVM_GETNEXTITEM` dá o índice
+selecionado via `SendMessage` comum; já o nome do item (`LVM_GETITEMTEXTW`) exige um
+buffer alocado dentro do processo dono da listview — resolvido com
+`VirtualAllocEx`/`WriteProcessMemory`/`SendMessageW`/`ReadProcessMemory` (técnica
+clássica pra ler um ListView de outro processo, confirmada ao vivo com uma seleção
+real antes de considerar pronta). O nome exibido (extensão pode estar oculta) é
+resolvido pro caminho real dentro da pasta real da Área de Trabalho
+(`SHGetKnownFolderPath`, mesma técnica de `captura_tela.py`), incluindo o caso de
+atalho (`.lnk`) resolvido pro alvo real quando possível.
+
 `obter_arquivo_selecionado()` é chamado **diretamente** por quem precisar dele —
 igual `capturar_camera_bytes()`/`capturar_tela_bytes()` já são — não pelo mecanismo
-de tools. Hoje o único consumidor é a tool **nativa** `enviar_email` (não um pacote),
-dentro do `elif nome == "enviar_email":` em `processar_chamada_de_funcao`:
+de tools. Hoje o único consumidor é a tool **nativa** `preparar_email` (não um
+pacote), dentro do `elif nome == "preparar_email":` em
+`processar_chamada_de_funcao` (o trecho abaixo é ilustrativo do princípio geral —
+já reflete a versão atual, em dois passos, de envio de email):
 
 ```python
 from jarvis.pacotes import explorador_windows  # topo do arquivo, junto dos outros imports
@@ -550,6 +572,17 @@ Sem wiring extra — só o contrato padrão (`obter_function_declarations()`/
 `despachar()`), mesmo caso de `casa_inteligente`/`delegacao_ia`. Nenhum callback de
 sessão, inicialização em background ou estado por chamada de voz: busca (via
 subprocess pro PowerShell) e abertura de app são ambas pontuais e síncronas.
+
+**Extensão (pastas extras)**: `listar_apps_instalados()` (`buscador.py`) agora
+combina o resultado do Get-StartApps (`_listar_apps_via_powershell()`, lógica
+original inalterada) com uma varredura RASA (a pasta em si + um nível de
+subpastas, sem recursão funda) das pastas em `config.pastas_extras()`
+(`.env` → `PASTAS_EXTRAS_APPS`, opcional, caminhos absolutos separados por
+vírgula) procurando `.exe`. A whitelist continua sendo "o que já existe de fato
+nesta máquina" — nenhum caminho arbitrário passa a ser aceito, só se amplia a
+fonte de dados que já alimenta a busca aproximada/cache existentes, sem nenhuma
+mudança nelas nem em `executor.py` (um `.exe` de pasta extra já é um caminho
+absoluto de verdade, cai direto no ramo `os.startfile` que já existia).
 
 ### `discord_jarvis`
 
@@ -1125,6 +1158,54 @@ grande/multi-seção, como os dois que já existem — nesse caso, ao editar,
 re-verifique o texto montado (a função de carregamento normaliza espaços
 entre linhas, mas ainda vale reler o resultado final antes de considerar
 pronto).
+
+## `fechar_app`
+
+Sem wiring extra — só o contrato padrão (`obter_function_declarations()`/
+`despachar()`), mesmo caso de `casa_inteligente`/`delegacao_ia`. Nenhum callback de
+sessão, inicialização em background ou estado por chamada de voz: resolver o nome
+falado contra `psutil.process_iter()` e fechar a(s) janela(s) do processo é tudo
+pontual e síncrono.
+
+Resolução de nome segue a mesma técnica (accent/case fold, substring, difflib
+cutoff 0.72) já usada em `abrir_app_local/buscador.py` — copiada em
+`jarvis/pacotes/fechar_app/processos.py`, não importada (pacote isolado, mesma
+convenção de duplicação do resto do projeto). Fechamento (`fechador.py`) tenta
+`WM_CLOSE` (via `win32gui.PostMessage`) nas janelas visíveis com título do
+processo primeiro, espera até `TIMEOUT_FECHAMENTO_GRACIOSO_SEGUNDOS` (5s), e só
+recorre a `terminate()`/`kill()` se não houver janela ou o processo não responder
+a tempo. `PROCESSOS_PROTEGIDOS` (`explorer.exe`, `winlogon.exe`, `csrss.exe`,
+`services.exe`, `svchost.exe`) mais o próprio PID do processo do ALFRED (via
+`os.getpid()`, não por nome — bloquear "python.exe" genericamente fecharia a
+porta pra processos Python não relacionados) nunca são fechados, em nenhuma
+circunstância. Se o nome resolvido corresponder a mais de um PID (ex: várias
+janelas do mesmo navegador), todos são fechados e a mensagem final informa
+quantos foram graciosos vs. forçados.
+
+## `criar_arquivo`
+
+Sem wiring extra — mesmo caso de `fechar_app`. Único pacote com `.env` além do
+contrato padrão: `config.py` expõe `pastas_permitidas()` (lê
+`PASTAS_PERMITIDAS_CRIACAO`, caminhos absolutos separados por vírgula; sem valor
+configurado, cai num padrão seguro — Área de Trabalho, Documentos, Downloads do
+usuário) e `config_schema()` (registrado em
+`jarvis/pacotes/configuracoes/pacotes.py`).
+
+`escritor.py` nunca aceita um caminho vindo direto da fala/do modelo: `nome` é
+saneado (acento removido primeiro, depois restrito ao mesmo conjunto de
+caracteres seguros de `jarvis/servicos/email/leitor.py::_nome_arquivo_seguro`) e
+tratado sempre como um único componente de nome de arquivo, nunca como caminho;
+`pasta` (opcional) é resolvida contra os NOMES das pastas em
+`pastas_permitidas()` (exato, depois substring) — nunca aceita um caminho livre,
+só o nome de uma pasta já cadastrada, recusando com a lista de pastas permitidas
+se não encontrar correspondência. Antes de escrever, confirma de novo que o
+caminho final resolvido está dentro da pasta de destino (mesmo padrão de
+`jarvis/servicos/email/leitor.py::baixar_anexo` — nunca confia numa única camada
+de proteção). Conteúdo acima de `LIMITE_CARACTERES_CONTEUDO` (5000) é truncado,
+nunca rejeitado silenciosamente (mesma convenção do limite de texto de arquivo
+em `chat_jarvis`). Um arquivo já existente nunca é sobrescrito — ganha sufixo de
+data/hora, mesma técnica de `jarvis/servicos/email/leitor.py::_caminho_sem_sobrescrever`.
+
 ## Checklist para religar tudo em um cliente novo
 
 1. Copie o trecho da seção "Trecho pronto para copiar" (imports,

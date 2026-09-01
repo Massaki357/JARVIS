@@ -174,7 +174,30 @@ def _processar_texto(texto):
         _processar_arquivo_drive(envelope)
 
 
+# Mesma técnica de jarvis/pacotes/admin_terminal/executor.py
+# (_aparar_log_se_necessario, cópia independente por convenção do
+# projeto): descarta a metade mais antiga das linhas quando o log já
+# passou de config.LIMITE_TAMANHO_LOG_BYTES. Nunca lança exceção.
+def _aparar_log_se_necessario():
+    try:
+        if config.ARQUIVO_LOG.stat().st_size <= config.LIMITE_TAMANHO_LOG_BYTES:
+            return
+
+        with open(config.ARQUIVO_LOG, "r", encoding="utf-8", errors="replace") as arquivo:
+            linhas = arquivo.readlines()
+
+        linhas_mantidas = linhas[len(linhas) // 2:]
+
+        with open(config.ARQUIVO_LOG, "w", encoding="utf-8") as arquivo:
+            arquivo.writelines(linhas_mantidas)
+
+    except OSError:
+        pass
+
+
 def _registrar_log(origem, comando):
+    _aparar_log_se_necessario()
+
     try:
         with open(
             config.ARQUIVO_LOG,
