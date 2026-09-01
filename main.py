@@ -28,12 +28,24 @@ from jarvis.nucleo.sinalizador import obter_sinalizador
 # consumir mais recurso nenhum.
 from jarvis.nucleo.preferencias import aplicar_prioridade
 
+# Aplica o microfone e o alto-falante escolhidos na tela inicial —
+# ver jarvis/ui/painel_dispositivos.py.
+from jarvis.ui.painel_dispositivos import (
+    aplicar_preferencias as aplicar_dispositivos,
+)
+
 # Pacote isolado com a ativação por voz (palavra-chave) — ver
 # jarvis/pacotes/ativacao_voz/detector.py. iniciar() é chamado uma única vez aqui,
 # depois que a janela principal existe; pausar()/retomar() (chamados
 # por GeminiLiveWorker a cada chamada, pra nunca haver dois handles
 # de microfone concorrentes) não são responsabilidade deste arquivo.
 from jarvis.pacotes import ativacao_voz
+
+# Memória em vault do Obsidian. iniciar() só dispara, numa thread de
+# fundo, a varredura periódica que arquiva notas paradas e consolida o
+# que já estava arquivado — e só se já fizer mais de uma semana desde
+# a última vez. Nunca bloqueia a abertura do app.
+from jarvis.pacotes import memoria_obsidian
 
 # Referência mantida viva no módulo — sem isso, o Qt destruiria a
 # janela assim que _abrir_configuracoes() retornasse (nenhuma outra
@@ -182,6 +194,16 @@ def main():
     # Antes de qualquer coisa: se config.json pedir, eleva a
     # prioridade do processo (ver o docstring de aplicar_prioridade).
     aplicar_prioridade()
+
+    # Manutenção do vault de memória (arquivar/consolidar), em thread
+    # de fundo. Ver jarvis/pacotes/memoria_obsidian/consolidacao.py.
+    memoria_obsidian.iniciar()
+
+    # Microfone e alto-falante escolhidos na tela inicial. Aplicado
+    # ANTES de qualquer stream ser aberto (a ativação por voz abre o
+    # microfone logo abaixo), senão a primeira sessão do app ainda
+    # usaria o aparelho padrão do Windows.
+    aplicar_dispositivos()
 
     app = QApplication(sys.argv)
 

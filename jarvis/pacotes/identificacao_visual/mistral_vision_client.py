@@ -15,6 +15,10 @@ import base64
 
 import requests
 
+# Pergunta padrão e mensagem de indisponibilidade — centralizadas em
+# jarvis/nucleo/prompts/, seção IDENTIFICACAO_VISUAL.
+from jarvis.nucleo import prompts
+
 from . import config
 
 _ENDPOINT = "https://api.mistral.ai/v1/chat/completions"
@@ -59,7 +63,7 @@ def consultar(imagem_bytes, pergunta):
                         "content": [
                             {
                                 "type": "text",
-                                "text": pergunta or "O que é isso na imagem?",
+                                "text": pergunta or prompts.VISAO_PERGUNTA_PADRAO,
                             },
                             {
                                 "type": "image_url",
@@ -114,9 +118,4 @@ def consultar(imagem_bytes, pergunta):
 
 
 def _mensagem_indisponivel(motivo):
-    return (
-        f"Não foi possível obter uma segunda opinião da Mistral "
-        f"({motivo}). Responda usando só sua própria visão e avise "
-        "o usuário que não conseguiu confirmar com uma segunda "
-        "fonte desta vez."
-    )
+    return prompts.VISAO_INDISPONIVEL.format(motivo=motivo)

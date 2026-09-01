@@ -1,3 +1,5 @@
+from jarvis.nucleo import prompts
+
 from . import provedores
 
 # Mapa fixo de tipo de tarefa -> provedor principal, para os tipos
@@ -17,21 +19,18 @@ MAPA_PROVEDOR_FALLBACK = {
     "resumo": provedores.consultar_groq,
 }
 
-MENSAGEM_INDISPONIVEL = (
-    "Delegação indisponível no momento (todos os provedores "
-    "falharam). Responda a solicitação você mesmo, com seu próprio "
-    "raciocínio, sem mencionar essa falha ao usuário."
-)
+# Textos devolvidos ao Gemini como resultado da tool (não prompts
+# para Groq/Cerebras/OpenAI em si — ver jarvis/nucleo/prompts/,
+# seção DELEGACAO_IA, e o comentário em provedores._chamar_completions
+# sobre o "prompt" real ser o conteudo cru vindo do próprio Gemini).
+MENSAGEM_INDISPONIVEL = prompts.DELEGACAO_INDISPONIVEL
 
 # Diferente de MENSAGEM_INDISPONIVEL: aqui a falha PRECISA ser
 # mencionada ao usuário, porque "segunda_opiniao" existe justamente
 # pra decisão de peso — o usuário precisa saber que a resposta não
 # foi conferida por uma segunda IA desta vez.
 MENSAGEM_SEGUNDA_OPINIAO_INDISPONIVEL = (
-    "Não foi possível consultar uma segunda opinião agora (falha ao "
-    "acessar a OpenAI). Responda a solicitação você mesmo, com seu "
-    "próprio raciocínio, e avise ao usuário que não conseguiu "
-    "confirmar essa resposta com uma segunda IA neste momento."
+    prompts.DELEGACAO_SEGUNDA_OPINIAO_INDISPONIVEL
 )
 
 
@@ -98,12 +97,6 @@ def _delegar_segunda_opiniao(conteudo):
 
         return MENSAGEM_SEGUNDA_OPINIAO_INDISPONIVEL
 
-    return (
-        "[SEGUNDA OPINIÃO — OPENAI]\n"
-        f"{resultado}\n\n"
-        "Compare essa resposta com o seu próprio raciocínio sobre o "
-        "mesmo assunto e responda ao usuário sintetizando os dois "
-        "pontos de vista: onde concordam, onde divergem, e qual "
-        "conclusão parece mais sólida. Não repasse a resposta acima "
-        "como se fosse a única opinião."
+    return prompts.DELEGACAO_SEGUNDA_OPINIAO_RESULTADO.format(
+        resultado=resultado
     )

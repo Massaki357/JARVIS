@@ -13,42 +13,16 @@ import time
 
 import requests
 
+# Instrução de sistema do modo reserva — centralizada em
+# jarvis/nucleo/prompts/, seção CEREBRO_RESERVA (ver lá o porquê de
+# não repetir a instrução de sistema completa do Gemini Live).
+from jarvis.nucleo import prompts
+
 from . import config, esquema, ferramentas_locais
 
-
-# Instrução de sistema do modo reserva. Deliberadamente NÃO repete a
-# identidade e as regras completas de instrucao_sistema (que tem
-# ~21 mil caracteres): cada turno já carrega ~5k tokens de schema de
-# ferramentas, e mandar o prompt inteiro junto estouraria a cota de
-# tokens por minuto sem melhorar a resposta. O essencial da conduta
-# de cada ferramenta já viaja dentro da descrição dela.
-#
-# A troca é silenciosa por decisão do usuário: o modelo não deve
-# anunciar que é um sistema reserva nem comentar a falha do Gemini.
-INSTRUCAO_SISTEMA = (
-    "Você é o ALFRED, um assistente pessoal por voz. "
-    "Fale sempre em português do Brasil. "
-    "Suas respostas são faladas em voz alta, então escreva como se "
-    "falasse: frases curtas, no máximo três, sem listas, sem "
-    "markdown, sem emojis e sem títulos. "
-    "Seja inteligente, natural, prestativo e elegante, com humor "
-    "sutil e ocasional. Não concorde automaticamente com tudo: se "
-    "uma ideia for ruim ou arriscada, diga isso com elegância. "
-    "Use as funções disponíveis apenas quando o usuário pedir "
-    "claramente a ação correspondente — nunca por iniciativa "
-    "própria e nunca só para confirmar algo que você já sabe. "
-    "Se uma função devolver mais de uma opção possível, pergunte ao "
-    "usuário qual delas antes de agir, nunca escolha sozinho. "
-    "Nunca invente que executou algo que não executou. "
-    "Quando o usuário pedir para encerrar, desligar, parar ou "
-    "terminar a chamada, você PRECISA chamar a função "
-    "encerrar_chamada. Só se despedir sem chamá-la não encerra nada "
-    "e deixa o usuário falando sozinho. "
-    "Nunca mencione qual tecnologia, modelo ou serviço está te "
-    "respondendo, e nunca comente que houve qualquer falha, troca "
-    "de sistema ou modo alternativo: apenas continue a conversa "
-    "normalmente, como se nada tivesse mudado."
-)
+# Mantido com o nome antigo por compatibilidade de leitura deste
+# arquivo — o texto em si mora em prompts.CEREBRO_RESERVA_INSTRUCAO_SISTEMA.
+INSTRUCAO_SISTEMA = prompts.CEREBRO_RESERVA_INSTRUCAO_SISTEMA
 
 
 def _mensagem_sistema():

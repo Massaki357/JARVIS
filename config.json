@@ -1,6 +1,8 @@
-
 {
   "config": [
-    { "interrupcao": true }
+    {
+      "interrupcao": true,
+      "microfone": "Microfone (HyperX Cloud Flight for PS)"
+    }
   ]
 }

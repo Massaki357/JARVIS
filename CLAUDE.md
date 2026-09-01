@@ -139,7 +139,7 @@ dados/                      memoria.json, *_conhecidos caches, admin_fila/, logs
 jarvis/
   caminhos.py               RAIZ_PROJETO / CAMINHO_ENV / CAMINHO_CONFIG_JSON /
                             PASTA_DADOS / PASTA_LOGS / garantir_pasta()
-  nucleo/                   config.py, preferencias.py, sinalizador.py
+  nucleo/                   config.py, preferencias.py, sinalizador.py, prompts/
   gemini/cliente_live.py    GeminiLiveWorker
   ui/                       janela_principal / janela_chat /
                             janela_envio_arquivo / janela_camera
@@ -175,6 +175,74 @@ This layout replaced a flat root of 20+ sibling folders (`core/`, `config/`,
 meaning is not: `main.py`, `jarvis/gemini/cliente_live.py` and
 `jarvis/ui/janela_principal.py` are still the three course-project files to edit
 as little as possible (see the constraint about them further down).
+
+## Prompts (`jarvis/nucleo/prompts/`)
+
+Every hardcoded instruction text sent to any model (Gemini, Groq, Cerebras,
+OpenAI, Mistral) anywhere in the project lives here — centralized in one pass,
+with every extraction verified byte-for-byte against the original text before
+moving it (hashes for the two big ones, AST-based structural comparison for
+the rest; see the session transcript for the verification scripts if this
+process ever needs repeating).
+
+`prompts/` is a **package**, not a `prompts.py` module, even though it's
+imported and used exactly like one (`from jarvis.nucleo import prompts`,
+`prompts.ANUNCIO_ESPONTANEO`) — Python doesn't allow a module and a
+same-named package side by side in one directory, and the two long prompts
+below needed to live in files inside it. Short prompts (a few sentences) are
+constants in `prompts/__init__.py`, organized in commented sections by
+source file/package. The two genuinely long, multi-section prompts —
+`jarvis/gemini/cliente_live.py`'s full `instrucao_sistema` body (~22k chars)
+and its `bloco_autenticacao` — are `.md` files instead
+(`gemini_live_sistema.md`, `gemini_live_autenticacao.md`), because a
+22k-character single-line Python string would be unreviewable in a diff.
+
+**How the two `.md` files are loaded, and why it's safer than the original
+Python pattern**: `_carregar()` reads the file, drops blank lines and lines
+starting with `##` (section headers — pure human navigation, exactly like
+the old `# IDENTIDADE`/`# PERSONALIDADE` Python comments, never part of the
+text sent to the model), then joins every remaining line by appending a
+single space to **each** line before concatenating — never relying on a
+line's own trailing whitespace. This is deliberately more robust than the
+original adjacent-string-literal-concatenation pattern documented below: a
+missing trailing space in the `.md` source can no longer jam two words
+together, because the loader supplies the separating space itself
+regardless of what's in the file. `instrucao_sistema_corpo()` returns text
+already ending in `"\n\n"` (the separator before the memory context that
+gets concatenated after it in `cliente_live.py`) — that's added inside the
+function, not baked into the `.md` file, so the file's own whitespace can be
+freely normalized without disturbing that meaningful separator.
+
+**The `enviar_tela_para_gemini`/`enviar_camera_para_gemini` duplication was
+unified** into one `prompts.ANALISE_IMAGEM_PONTUAL` template taking
+`{origem}` (`"tela"` or `"câmera"`) — the two were byte-identical except for
+that one word (both use the article "da", so no other grammar adjustment
+was needed).
+
+**Package isolation vs. centralization — a real tension, flagged and then
+resolved per explicit instruction**: several of the packages this task
+touched (`delegacao_ia`, `identificacao_visual`, `memoria_obsidian`,
+`cerebro_reserva`) are documented elsewhere in this file as deliberately
+self-contained/"decoupled on purpose... to be copied to another project
+as-is." Importing `jarvis.nucleo.prompts` into them cuts against that
+principle. The user asked for this centralization explicitly, naming these
+exact packages, so it was done as asked rather than re-litigated — but if
+one of these packages is ever actually extracted to another project, its
+prompt constants would need to come along from `jarvis/nucleo/prompts/`
+too, or be re-inlined at that point.
+
+**What was deliberately left out of this centralization**: `FunctionDeclaration`
+descriptions (tool schemas) — these are tightly coupled to their parameter
+definitions and scattered by design across every package's own
+`obter_function_declarations()`; moving them would be a much larger,
+higher-risk refactor unrelated to what was asked. Also left alone: the
+dynamic status strings passed through `callback_falar` in
+`rede_jarvis/permissoes.py` and `admin_terminal/confirmacao.py` (e.g. "fulano
+pediu permissão remota...") — these are event descriptions, not instructional
+prompts; they get wrapped by `prompts.ANUNCIO_ESPONTANEO` downstream, but
+aren't prompts themselves. `identificacao_planta` (Pl@ntNet) sends no text
+prompt at all — image-only API, confirmed by reading the client, not
+assumed.
 
 ## Architecture
 
@@ -381,12 +449,33 @@ Three-layer flow, entry point `main.py`:
      - Also beware when writing QSS block comments: a `*/` inside the comment text closes it early and breaks the following rule. Hit exactly that while writing the comment explaining this very bug.
      - **Verified with 9 tests against a real `MainWindow`**: the panel exists with its opening line; a `print` from the main thread appears; a `print` from **another thread** arrives safely on the GUI; a `traceback.print_exc()` on stderr appears; a worker error delivered by Signal (never printed) appears; `sys.stdout` is confirmed *duplicated* rather than hijacked; 1200 lines of flood stay capped at the 600-line ceiling; the Limpar button empties it; and `restaurar_saida_padrao()` gives the real stdout back. The layout was also checked visually with a screenshot of the rendered window.
 
+   - `memoria_obsidian/` — **replaced `memory/memory_manager.py` as the live memory system.** Memory is now a folder of `.md` notes linked with `[[wikilinks]]` (an Obsidian vault), instead of ≤50 short sentences in a JSON file. The Obsidian app is never required — the package only reads and writes plain text files; opening the folder in Obsidian later is optional and the links already work. The old `jarvis/servicos/memoria/gerenciador.py` and `dados/memoria.json` are **kept, untouched and out of the flow**, as the migration source and as a backup of what existed before.
+     - **The real change is not the format, it's how memory reaches the model.** Before: every memory was pre-loaded into `instrucao_sistema` at session start. Now: only the `NOTAS_CONTEXTO_INICIAL` (5) most recently used notes go in, and the model pulls the rest on demand via `buscar_memorias_relacionadas`. That is what lets memory grow without inflating the prompt every session.
+     - **It is a normal tools package**, so `cliente_live.py` got *smaller*: the three native memory `FunctionDeclaration`s and their three dispatch branches were deleted, replaced by one import + one `PACOTES_REGISTRADOS` entry. `cerebro_reserva` inherited the memory tools with **zero** extra wiring, which is the package contract paying off — and it also had to *drop* its own copies from `ferramentas_locais.py`, or the reserve brain would have shipped two tools with the same name.
+     - **Note lifecycle, and no stage is ever skipped**: `ativa → arquivada → resumida (only then is the original deleted)`. A note is archived only when **all three** criteria hold: `last_used` older than 90 days **AND** `access_count < 2` **AND** `pinned == false`. Archiving **moves** to `arquivo/`, never deletes. An original is removed only after it has been included in a summary that was **successfully written to disk** — verified live twice by accident: a 404 (retired model) and a 503 (overloaded model) during testing both left all 16 notes intact.
+     - `pinned: true` is absolute — set by voice ("isso é importante, não esqueça nunca" → `fixar=true`), never pruned. Summaries are written pinned too, so a summary is never re-summarized.
+     - **Mass-delete refusal was carried over deliberately**, not reimplemented loosely: `esquecer.COMANDOS_APAGAR_TUDO` keeps the old set and adds spoken variants. Ambiguous titles return the candidate list instead of deleting a guess, matching the convention used across the project.
+     - **Path safety**: a note title is user/model-controlled input, so `notas.nome_arquivo_do_titulo()` strips path and forbidden characters, and `notas.caminho_seguro()` resolves and *raises* unless the result is inside `PASTA_VAULT_JARVIS`. Same reasoning as the email-attachment sanitization in `jarvis/servicos/email/leitor.py`. Tested with `../../` traversal.
+     - **Auto-linking had to be redesigned after measuring it.** The spec was "link when the content mentions an existing note's title", implemented first as a plain title-in-content substring — and against the **real migrated notes** it fired **zero** times, because the old system stored bare sentences, so migrated titles are whole sentences ("Email do Gabriel gabrielrapolinario0@gmail.com") that never appear verbatim in new text. `escritor._trechos_reconheciveis()` now matches contiguous word-runs of the title (2+ words, 10+ chars, containing a ≥4-char non-stopword) or a single ≥6-char non-stopword word. Deliberate bias: over-linking beats under-linking, because a wrong link is visible in the note and easy to delete, while a missing link silently costs the assistant context it actually had. Verified with 5 should-link and 5 should-not-link phrasings — all correct.
+     - **`contexto_inicial()` deliberately does NOT count as an access.** Auto-loading a note at session start is not the user having used it; counting it would keep `last_used` permanently fresh and the pruning criteria would never fire on anything.
+     - **`MODELO_CONSOLIDACAO` was confirmed live, not remembered**: the first value written (`gemini-2.5-flash`) returned 404 "no longer available to new users, use models/gemini-3.6-flash". `gemini-3.6-flash` takes ~9s vs ~1s for `gemini-3.5-flash-lite`, which is irrelevant here (background thread, nobody waiting) and worth it, since originals are discarded after the summary. A transient 503 then showed a second gap, fixed with 3 attempts and growing backoff. If it 404s again, list the models from the API rather than guessing a name.
+     - **Verified with 20 live tests**: 15 covering write/dedupe/auto-link/search/linked-notes/access counting/mass-delete refusal/ambiguity/path traversal/the three prune criteria/pinned immunity/archive-is-a-move/reactivation/summary-failure-deletes-nothing (in a throwaway vault, since these delete real files), plus 5 end-to-end consolidation tests against the **real** Gemini API: 16 archived notes summarized into `resumo-2026-Q3.md`, originals deleted only afterwards, and the summary correctly kept the durable facts (allergy, brother's name, football team, favourite restaurant) while dropping the ephemeral ones (a cancelled meeting, an old wifi password, a sold car's plate). The migration itself was run with the user watching: 6 notes created, original dates preserved, `dados/memoria.json` untouched.
+
+   - **Microphone/speaker selects on the main window (`jarvis/ui/painel_dispositivos.py`)** — two `QComboBox` above the activity log, one per direction. Logic lives in its own module; `janela_principal.py` only imports, instantiates and positions it, same approach as the console panel.
+     - **The raw device list is unusable as-is**: Windows exposes the same physical device once per host API, and on this machine `sd.query_devices()` returns **46 entries** for about eight real devices. The panel groups duplicates and shows one row each — measured result here: 46 → **4 microphones and 4 speakers**. Grouping is by name prefix, because MME truncates names at 31 chars ("Microfone (HyperX Cloud Flight") while DirectSound gives the full one ("Microfone (HyperX Cloud Flight for PS)"); the longest variant is what gets displayed. `Windows WDM-KS` is hidden entirely (it re-lists everything with worse names — one real entry here was a driver path containing a newline, which would have broken the combo), as are the "Mapeador de som"/"Driver de som primário" pseudo-devices, since the explicit "Padrão do Windows" option already means exactly that. If filtering ever leaves the list empty, the unfiltered list is shown instead rather than an empty select.
+     - **The index used comes from whichever host API PortAudio already treats as default on this machine** (MME here). The app always used that API implicitly, and audio is the fragile part of this project — switching the host API underneath as a side effect of adding a select would be changing two things at once.
+     - **What is stored in `config.json` is the device NAME, never the index.** Indices shift whenever any device is plugged or unplugged, so storing one would silently point at the wrong microphone. On startup the name is resolved back to an index; a device that is no longer present falls back to the Windows default with a console warning instead of raising.
+     - **Applied through `sd.default.device`**, which means every stream in the project picks it up with **zero changes**: the call's microphone, playback, the wake-word detector and the reserve brain's listener. `main.py` applies it before `ativacao_voz.iniciar()`, otherwise the first session would still open the old device.
+     - Changing the microphone restarts the wake-word detector (`pausar()`/`retomar()`), since it holds the mic between calls and would otherwise keep the old device until the app restarted. A change during an active call only takes effect on the next one — an already-open stream cannot be repointed.
+     - `preferencias.salvar_preferencia()` writes one key while preserving the rest of `config.json`, using the atomic `.tmp`-then-`replace` technique — a corrupted `config.json` would break app startup.
+     - **Verified with 10 tests** against the real audio hardware: the list collapses correctly and contains no blank or newline-bearing names; both selects exist with "Padrão do Windows" first; choosing a device saves it and **preserves the other preferences** (`interrupcao` survived); `sd.default.device` receives the right pair; **real input and output streams actually open on the chosen devices**; the choice survives a simulated restart; a device name that no longer exists falls back to the default without raising; and returning to "Padrão do Windows" clears it. The user's real `config.json` was backed up and restored around the run.
+
    - **Speech interruption, opt-in via `config.json` (not `.env`)** — `jarvis/nucleo/preferencias.py`'s `interrupcao_ativa()` reads `config.json` (project root, gitignored — a machine-local preference, format `{"config": [{"interrupcao": false}]}`), returning `False` (with a console warning, never a crash) for a missing file, missing field, or invalid JSON. Read once into `GeminiLiveWorker.interrupcao_habilitada` at `__init__` — not re-read mid-call; changing the file requires restarting the call/app. This is **not a tools package** (no `obter_function_declarations()`/`despachar()`, not in `PACOTES_REGISTRADOS`) — it's a core change to the mic/audio loop itself, which is why it's documented as its own standalone section in docs/INTEGRATION.md ("Interrupção de fala (config.json)") rather than folded into the packages checklist: the loop's structure is expected to differ in the finished course project, so the section documents the *concept* (which of the three `alfred_falando` checks in `enviar_microfone` to find and how to adapt them, the exact `resposta.server_content.interrupted` field confirmed against the installed `google-genai` SDK, the fila_saida-flush + skip-the-normal-delay handling on interruption, the no-headphones echo risk) rather than line numbers. Default (`false`, including "no config.json at all") is byte-for-byte the pre-existing behavior — all three checks degrade to their original `if self.alfred_falando:` form.
 
 ## Key constraints to preserve when editing
 
 - The voice keyword authentication gate in the system prompt is a deliberate security/access-control feature of the assistant persona — don't strip it out during refactors. `EXIGIR_AUTENTICACAO=false` in `.env` is the one sanctioned, explicit, default-safe way to disable it (see `jarvis/nucleo/config.py` / the `bloco_autenticacao` splice in `executar()`) — don't add a second way to bypass it, and don't change the default away from `true`.
-- Keep every segment inside `instrucao_sistema`'s (and `bloco_autenticacao`'s) `"..." "..."` adjacent-string-literal concatenation ending in a trailing space. A missing one silently jams two words together (confirmed live to cause a real, hard-to-diagnose behavior regression — see `jarvis/pacotes/ativacao_voz/` section above) — when editing this block, re-scan for the pattern (a lowercase letter directly followed by an uppercase one) rather than assuming a stray edit is safe.
+- `instrucao_sistema`'s body and `bloco_autenticacao` now live in `jarvis/nucleo/prompts/gemini_live_sistema.md` and `gemini_live_autenticacao.md` (see the "Prompts" section above), not as Python string-literal concatenation in `cliente_live.py` — but the trailing-space discipline still matters for a different reason there: `prompts._carregar()` skips blank lines and `##`-prefixed section headers, then joins every remaining line by appending its own separating space, so a missing space at a line's end can no longer jam two words together (the loader supplies it regardless). When editing either `.md` file, the still-useful sanity check is the same one that already caught a real regression once: re-scan the assembled text for a lowercase letter directly followed by an uppercase one (a proper noun's internal capital, like "OpenAI" or "YouTube", is a false positive — verify each hit by eye rather than assuming it's a jam).
 - Audio playback must stay glitch-free: no `asyncio.sleep` was deliberately added inside the `reproduzir_audio` write loop (see comment in that method) — don't add pacing delays there. The device write must also stay on the **dedicated** single-worker executor (`laco.run_in_executor(executor_audio, ...)`), never back on `asyncio.to_thread`: the shared default pool is used by every other blocking call in the file, and a full pool delays an audio block by seconds — measured 1,69s, about 40 blocks of speech — which the user experiences as the assistant freezing mid-sentence with the CPU idle.
 - Never make `capturar_camera_bytes()` (or any new camera consumer) open its own `cv2.VideoCapture(0)` while the shared handle might already be open — always check `camera_compartilhada_esta_aberta()` first and read via `ler_frame_camera_compartilhada()` when it's `True`. Confirmed live that two concurrent handles interfere with each other (see `jarvis/pacotes/camera_preview/`'s section above); a second handle opened while `JanelaCamera`'s preview is active isn't just wasteful, it visibly breaks the preview.
 - `navegador_jarvis` must never execute arbitrary JavaScript or navigate to a URL constructed from unvalidated user text beyond the documented, narrow actions (search-and-click-first-result, the "k" play/pause shortcut, `abrir_site`'s own URL-or-Google-search resolution) — an explicit user requirement, not just good practice for a package that drives a real browser by voice.
@@ -420,10 +509,15 @@ Three-layer flow, entry point `main.py`:
 - `cerebro_reserva` must never gain `preparar_email`/`confirmar_envio_email` (or any direct call to `enviar_email`). The two-step confirmation gate is enforced in code on `GeminiLiveWorker.email_pendente`; a copy of that flow inside the reserve would be a second path capable of sending mail, which is exactly what the email constraint above exists to prevent.
 - `cerebro_reserva` must receive `PACOTES_REGISTRADOS` **as a parameter** and never import `jarvis/gemini/cliente_live.py` — the client imports the package, so the reverse direction is a circular import.
 - **OpenAI is only ever reachable through `delegacao_ia.delegar_tarefa(tipo_tarefa="segunda_opiniao", ...)`.** Don't add a second code path that calls OpenAI directly (from `cliente_live.py`, a new package, or anywhere else) — the single, rarely-used, no-fallback `segunda_opiniao` route in `jarvis/pacotes/delegacao_ia/roteador.py` is deliberate (see that package's section above), since OpenAI is the most expensive provider in use.
+- `memoria_obsidian` must never write outside `PASTA_VAULT_JARVIS`. Every write and delete goes through `notas.caminho_seguro()`, which raises rather than returning a path outside the vault — a note title is model-controlled input, so this is the only thing standing between a crafted title and the rest of the filesystem.
+- **A note is never deleted before being summarized.** The order in `consolidacao.consolidar_arquivo()` — generate summary → write summary to disk → only then delete the originals that went into it — is load-bearing, not stylistic. Any failure before the write must leave every file in place (two real API failures during testing confirmed it does). Never add a path that deletes archived notes without a summary, and never delete notes that were not in the summary just generated.
+- `pinned: true` is an absolute exemption from pruning, and the three prune criteria (`last_used` age **AND** `access_count` **AND** not pinned) must keep being required together — loosening any one of them starts discarding memories the user still relies on.
+- The mass-delete refusal in `memoria_obsidian/esquecer.py` (`COMANDOS_APAGAR_TUDO`) is a security rule inherited from the old memory manager, not a technical limitation — don't drop it, and keep returning candidate lists instead of guessing which note to delete.
 - **Avoid unnecessary disk writes.** Vision *capture* (`jarvis/servicos/visao/captura_tela.py`/`jarvis/servicos/visao/captura_camera.py`) deliberately returns in-memory JPEG bytes and never writes a file on its own; `jarvis/servicos/memoria/gerenciador.py` is the one legitimate persistent store (atomic `.tmp`-then-`replace` writes, guarded by a lock), `jarvis/pacotes/rede_jarvis/comandos.py`'s `ARQUIVO_LOG` is the one legitimate append-only log, and `screen_capture.salvar_print_bytes()` / `camera_capture.salvar_foto_bytes()` are the two legitimate cases where a capture's bytes get written to disk — but only because saving *is* the entire point of the `salvar_print_tela`/`tirar_foto_camera` tools that call them; every other tool that touches a screen/camera capture (`analisar_tela`, `analisar_camera`, continuous viewing, the vision cross-check flows) still never writes anything. Don't add new on-disk artifacts (temp files, caches, logs) as a shortcut inside a tool's request/response cycle — keep data in memory unless persistence is the actual point of the feature.
 - **Portuguese-only convention is not optional**: every identifier, comment, docstring, UI string, and `instrucao_sistema`/tool-result string added to this codebase must be in Brazilian Portuguese, matching the existing files — this includes new packages, not just edits to existing ones.
 - `admin_terminal`'s Scheduled Task elevation mechanism (`python -m jarvis.pacotes.admin_terminal.setup`) must **never** be invoked automatically by any code path — creating (or removing) it is a standing, persistent change to the machine's own configuration and stays a manual, explicitly-confirmed action the user runs themselves in a terminal. Don't add a code path that calls `setup.criar_tarefa()`/`schtasks /create` from inside the app.
 - `admin_terminal` and `rede_jarvis` stay disconnected on purpose (see `jarvis/pacotes/admin_terminal/`'s section above) — don't add `executar_comando_admin`/`confirmar_comando_admin` to `jarvis/pacotes/rede_jarvis/comandos.py`'s `TABELA_COMANDOS`, and don't have either package import from the other, without an explicit decision from the user first (remote-triggered admin execution is a materially different risk than local voice-triggered execution).
+- `painel_dispositivos` must keep storing the device **name** in `config.json` and resolving it to an index at load time — never store the index, which changes whenever any audio device is connected or removed. It must also keep applying the choice via `sd.default.device` rather than passing `device=` at each stream: that single assignment is what lets the call mic, playback, the wake-word detector and the reserve brain all honour the selection without any of them being modified.
 - The console panel must keep echoing `sys.stdout`/`sys.stderr` rather than being called from each print site, must keep crossing threads via its `Signal` (never touch the widget directly from a worker thread), and must keep its line cap — those three are what make it safe to leave on permanently. It must also keep styling itself in `painel_console.py`: a rule moved into `ESTILO_GLOBAL` dies silently, because of the `#`-comment bug documented above.
 - `jarvis/ui/janela_principal.py` never gains new UI (buttons, menus, dialogs) for a package's feature — any package that needs to show its own window emits a `Signal` on `jarvis.nucleo.sinalizador` instead (see `jarvis/pacotes/configuracoes/`'s section above and docs/INTEGRATION.md), connected from `main.py`. This keeps the main window ignorant of every package built on top of it, matching the same "don't touch the course-project files beyond the standard touch points" principle applied to the UI layer specifically.
 - Never print, log, or otherwise surface a sensitive `.env` value (API key, token, password, secret) in plain text outside the masked field it belongs to — this applies to `jarvis/pacotes/configuracoes/window.py` specifically (a sensitive field's value must never appear in a `print()`, an exception message, or anywhere but that one `QLineEdit`), on top of the project-wide rule of never hardcoding or echoing credentials.

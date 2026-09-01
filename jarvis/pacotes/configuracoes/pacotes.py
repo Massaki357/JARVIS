@@ -14,6 +14,7 @@ import jarvis.pacotes.casa_inteligente.config as casa_inteligente_config
 import jarvis.pacotes.cerebro_reserva.config as cerebro_reserva_config
 import jarvis.pacotes.delegacao_ia.config as delegacao_ia_config
 import jarvis.pacotes.identificacao_planta.config as identificacao_planta_config
+import jarvis.pacotes.memoria_obsidian.config as memoria_obsidian_config
 import jarvis.pacotes.identificacao_visual.config as identificacao_visual_config
 import jarvis.pacotes.navegador_jarvis.config as navegador_jarvis_config
 import jarvis.pacotes.rede_jarvis.config as rede_jarvis_config
@@ -28,6 +29,7 @@ PACOTES_COM_CONFIG = [
     ("Identificação de Plantas (Pl@ntNet)", identificacao_planta_config),
     ("Segunda Opinião Visual (Mistral)", identificacao_visual_config),
     ("Ativação por Voz (Vosk, 100% local)", ativacao_voz_config),
+    ("Memória (vault do Obsidian)", memoria_obsidian_config),
     (
         "Cérebro Reserva (assume quando o Gemini falha)",
         cerebro_reserva_config,

@@ -7,6 +7,11 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
+# Textos de instrução enviados ao Gemini junto da imagem/arquivo —
+# centralizados em jarvis/nucleo/prompts/, seção "ENVIO DE ARQUIVO
+# PELA UI".
+from jarvis.nucleo import prompts
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -75,10 +80,8 @@ def _enviar_imagem(worker, caminho, tipo_mime):
     enviado = worker.enviar_imagem_da_ui(
         imagem_bytes,
         tipo_mime,
-        texto_contexto=(
-            "[SISTEMA] O usuário acabou de enviar a imagem "
-            f"'{caminho.name}' como contexto adicional — considere "
-            "essa imagem na conversa."
+        texto_contexto=prompts.CONTEXTO_IMAGEM_ENVIADA.format(
+            nome=caminho.name
         ),
     )
 
@@ -136,8 +139,11 @@ def _enviar_texto_como_contexto(worker, nome_arquivo, texto_extraido):
     )
 
     enviado = worker.enviar_texto_da_ui(
-        "[SISTEMA] O usuário enviou o seguinte arquivo como contexto "
-        f"({nome_arquivo}){aviso_truncamento}:\n\n{texto_truncado}"
+        prompts.CONTEXTO_ARQUIVO_ENVIADO.format(
+            nome_arquivo=nome_arquivo,
+            aviso_truncamento=aviso_truncamento,
+            texto_truncado=texto_truncado,
+        )
     )
 
     if not enviado:

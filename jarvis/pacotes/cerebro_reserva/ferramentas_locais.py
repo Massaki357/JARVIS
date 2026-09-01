@@ -12,6 +12,11 @@
 #
 # O que ficou de fora, de propósito:
 #
+#   As tools de memoria nao estao aqui: memoria_obsidian e um
+#   pacote registrado, entao elas ja sao herdadas automaticamente
+#   pela conversao de esquema.py. Declara-las de novo criaria duas
+#   ferramentas com o mesmo nome.
+#
 #   preparar_email / confirmar_envio_email — o envio de email é uma
 #   confirmação em duas etapas garantida por CÓDIGO, e o rascunho
 #   pendente mora em GeminiLiveWorker.email_pendente. Recriar esse
@@ -27,11 +32,6 @@
 #   aqui. Quem quiser análise de imagem no modo reserva tem
 #   identificar_planta e consultar_segunda_opiniao_visual, que já vêm
 #   pelos pacotes e falam com as próprias APIs.
-from jarvis.servicos.memoria.gerenciador import (
-    esquecer_memoria,
-    listar_memorias,
-    salvar_memoria,
-)
 from jarvis.servicos.visao.captura_camera import (
     capturar_camera_bytes,
     salvar_foto_bytes,
@@ -48,71 +48,6 @@ NOME_ENCERRAR = "encerrar_chamada"
 
 
 DECLARACOES = [
-    {
-        "type": "function",
-        "function": {
-            "name": "salvar_memoria",
-            "description": (
-                "Guarda de forma permanente uma informação que o "
-                "usuário pediu explicitamente para você lembrar. Use "
-                "somente quando ele disser claramente para lembrar, "
-                "guardar ou anotar algo — nunca por iniciativa "
-                "própria e nunca para guardar algo que ele só "
-                "mencionou de passagem."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "texto": {
-                        "type": "string",
-                        "description": (
-                            "A informação a lembrar, curta e "
-                            "objetiva, em uma frase."
-                        ),
-                    },
-                },
-                "required": ["texto"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "listar_memorias",
-            "description": (
-                "Lista tudo que você tem guardado sobre o usuário. "
-                "Use quando ele perguntar o que você lembra ou o que "
-                "sabe sobre ele."
-            ),
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "esquecer_memoria",
-            "description": (
-                "Apaga uma memória guardada. Use somente quando o "
-                "usuário pedir claramente para esquecer algo "
-                "específico. Se a função devolver mais de uma "
-                "memória parecida, pergunte qual delas antes de "
-                "tentar de novo — nunca escolha sozinho."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "referencia": {
-                        "type": "string",
-                        "description": (
-                            "Número, texto exato ou trecho da "
-                            "memória que deve ser apagada."
-                        ),
-                    },
-                },
-                "required": ["referencia"],
-            },
-        },
-    },
     {
         "type": "function",
         "function": {
@@ -173,15 +108,6 @@ def despachar(nome, argumentos):
     argumentos = argumentos or {}
 
     try:
-        if nome == "salvar_memoria":
-            return salvar_memoria(argumentos.get("texto", ""))
-
-        if nome == "listar_memorias":
-            return listar_memorias()
-
-        if nome == "esquecer_memoria":
-            return esquecer_memoria(argumentos.get("referencia", ""))
-
         if nome == "salvar_print_tela":
             caminho = salvar_print_bytes(
                 capturar_monitor_do_cursor_bytes()

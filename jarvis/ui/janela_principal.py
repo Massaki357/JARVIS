@@ -31,6 +31,11 @@ from jarvis.gemini.cliente_live import GeminiLiveWorker
 # limite de linhas) mora no próprio módulo.
 from jarvis.ui.painel_console import PainelConsole
 
+# Selects de microfone e alto-falante — toda a lógica (listar os
+# aparelhos agrupando as duplicatas de host API, salvar no config.json
+# e aplicar em sd.default.device) mora no próprio módulo.
+from jarvis.ui.painel_dispositivos import PainelDispositivos
+
 
 # QSS é a linguagem de estilos do Qt.
 # Ela possui sintaxe parecida com CSS e define cores,
@@ -365,6 +370,20 @@ class MainWindow(QMainWindow):
         # Adiciona o layout horizontal dentro do layout principal.
         layout.addLayout(
             layout_visao
+        )
+
+        # Selects de microfone e alto-falante. A troca vale para a
+        # PRÓXIMA chamada (um stream já aberto não muda de aparelho no
+        # meio); a ativação por voz, que segura o microfone entre as
+        # chamadas, é reiniciada na hora pelo próprio painel.
+        layout.addSpacing(
+            8
+        )
+
+        self.painel_dispositivos = PainelDispositivos()
+
+        layout.addWidget(
+            self.painel_dispositivos
         )
 
         # Adiciona um espaço fixo entre grupos de componentes.

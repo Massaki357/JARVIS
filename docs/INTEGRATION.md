@@ -31,7 +31,7 @@ dados/                      estado gerado pelo app (memória, caches, logs)
 docs/INTEGRATION.md         este arquivo
 jarvis/
   caminhos.py               RAIZ_PROJETO, PASTA_DADOS, PASTA_LOGS
-  nucleo/                   config.py, preferencias.py, sinalizador.py
+  nucleo/                   config.py, preferencias.py, sinalizador.py, prompts/
   gemini/cliente_live.py    o worker da sessão Live
   ui/                       janela_principal, janela_chat,
                             janela_envio_arquivo, janela_camera
@@ -1010,6 +1010,121 @@ A troca é silenciosa por decisão explícita do usuário — a instrução de s
 do modo reserva proíbe mencionar falha, troca de sistema ou qual modelo está
 respondendo.
 
+## memoria_obsidian (substitui a memória em JSON)
+
+`jarvis/pacotes/memoria_obsidian/` guarda a memória do jarvis como notas `.md`
+ligadas por `[[links]]` numa pasta dedicada (`PASTA_VAULT_JARVIS`). O app do
+Obsidian não precisa estar instalado nem aberto — são arquivos de texto comuns.
+
+É um **pacote de tools normal**: expõe `salvar_memoria`,
+`buscar_memorias_relacionadas`, `esquecer_memoria` e `listar_memorias` pelo
+contrato padrão. Por isso o `cliente_live.py` ficou MENOR ao adotá-lo: as três
+`FunctionDeclaration` nativas de memória e os três ramos de despacho saíram de
+lá. O cérebro reserva também herdou essas tools de graça, sem wiring nenhum.
+
+### Wiring no cliente
+
+Além do import + `PACOTES_REGISTRADOS`, só uma coisa a mais: o contexto
+inicial da sessão deixou de ser "toda a memória" e virou "as poucas notas mais
+recentes".
+
+```python
+# Em vez de contexto_memorias() do gerenciador antigo:
+memorias_atuais = await asyncio.to_thread(
+    memoria_obsidian.contexto_inicial
+)
+```
+
+E, uma vez na inicialização do app (`main.py`), a manutenção periódica:
+
+```python
+memoria_obsidian.iniciar()   # dispara a varredura em thread de fundo
+```
+
+`iniciar()` é idempotente e não bloqueia: só arquiva/consolida se já fizer mais
+de `INTERVALO_VARREDURA_DIAS` desde a última vez (registrado em
+`dados/memoria_obsidian_controle.json`).
+
+### O ciclo de vida de uma nota
+
+```
+ativa  ->  arquivada  ->  resumida (e só então o original é apagado)
+```
+
+Nenhuma etapa é pulada. Uma nota só é arquivada se os **três** critérios
+baterem juntos: `last_used` há mais de 90 dias **E** `access_count` < 2 **E**
+`pinned == false`. Arquivar é **mover** para `arquivo/`, nunca apagar. Um
+original só some depois de ter entrado num resumo **gravado com sucesso em
+disco** — se a chamada de resumo falhar, nada é apagado (confirmado ao vivo:
+um 404 e um 503 reais durante os testes deixaram as 16 notas intactas).
+
+Uma nota do `arquivo/` citada numa busca é **reativada**: volta para a pasta
+ativa com `access_count` zerado.
+
+### Migração
+
+Passo manual, roda uma vez:
+
+```
+python -m jarvis.pacotes.memoria_obsidian.migracao
+```
+
+Lê `dados/memoria.json`, cria uma nota por memória preservando o texto e a data
+de criação originais, e **não apaga nem altera o JSON antigo**.
+
+## Seleção de microfone e alto-falante (config.json)
+
+`jarvis/ui/painel_dispositivos.py` põe dois selects na tela inicial. **Não é um
+pacote de tools** — é UI mais uma preferência local, guardada no `config.json`
+junto de `interrupcao` e `prioridade_alta`:
+
+```json
+{ "config": [ { "microfone": "Microfone (HyperX ...)", "alto_falante": "..." } ] }
+```
+
+Guarda-se o **nome** do aparelho, nunca o índice: índice muda quando qualquer
+dispositivo é conectado ou removido.
+
+Para religar em outro cliente, dois pontos:
+
+```python
+# 1. main.py, antes de qualquer stream ser aberto:
+from jarvis.ui.painel_dispositivos import aplicar_preferencias
+aplicar_preferencias()
+
+# 2. Na janela: instanciar e posicionar
+self.painel_dispositivos = PainelDispositivos()
+layout.addWidget(self.painel_dispositivos)
+```
+
+A escolha é aplicada em `sd.default.device`, então **todos** os streams do
+projeto passam a usá-la sem nenhuma alteração: microfone da chamada,
+reprodução, detector de palavra-chave e a escuta do cérebro reserva.
+
+## Prompts centralizados (jarvis/nucleo/prompts/)
+
+Todo texto de instrução hardcoded enviado a algum modelo (Gemini, Groq,
+Cerebras, OpenAI, Mistral), de qualquer pacote, mora em
+`jarvis/nucleo/prompts/` — constantes curtas em `prompts/__init__.py`
+(organizadas por seção/pacote de origem), e os dois prompts realmente
+grandes (a instrução de sistema completa do Gemini Live e o bloco de
+autenticação) em arquivos `.md` dentro da mesma pasta.
+
+Um pacote que precisa de um texto de instrução importa:
+
+```python
+from jarvis.nucleo import prompts
+
+texto = prompts.NOME_DA_CONSTANTE.format(campo=valor)
+```
+
+Ao adicionar um pacote novo com prompt próprio: se for curto (poucas frases),
+vira constante em `prompts/__init__.py`, numa seção nova comentada com o
+nome do pacote. Só crie um `.md` separado se o prompt for realmente
+grande/multi-seção, como os dois que já existem — nesse caso, ao editar,
+re-verifique o texto montado (a função de carregamento normaliza espaços
+entre linhas, mas ainda vale reler o resultado final antes de considerar
+pronto).
 ## Checklist para religar tudo em um cliente novo
 
 1. Copie o trecho da seção "Trecho pronto para copiar" (imports,

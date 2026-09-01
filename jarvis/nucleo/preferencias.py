@@ -65,6 +65,84 @@ def interrupcao_ativa():
         return False
 
 
+def _ler_bloco():
+    """
+    Devolve o dict de config[0], ou {} se o arquivo não existir ou
+    estiver em formato inesperado. Nunca levanta exceção.
+    """
+    if not _CAMINHO_CONFIG.is_file():
+        return {}
+
+    try:
+        with open(_CAMINHO_CONFIG, encoding="utf-8") as arquivo:
+            dados = json.load(arquivo)
+
+        bloco = dados["config"][0]
+
+        return bloco if isinstance(bloco, dict) else {}
+
+    except (
+        json.JSONDecodeError,
+        KeyError,
+        IndexError,
+        TypeError,
+        OSError,
+    ):
+        return {}
+
+
+def salvar_preferencia(chave, valor):
+    """
+    Grava UMA preferência no config.json, preservando as demais.
+
+    Escrita atômica (arquivo temporário + replace), mesma técnica já
+    usada em jarvis/servicos/memoria/gerenciador.py: uma queda no meio
+    da gravação não pode deixar o config.json corrompido e derrubar a
+    inicialização do app.
+
+    Devolve True/False e nunca levanta exceção — é chamada de dentro
+    de um slot da interface.
+    """
+    bloco = _ler_bloco()
+    bloco[chave] = valor
+
+    temporario = _CAMINHO_CONFIG.with_suffix(".json.tmp")
+
+    try:
+        temporario.write_text(
+            json.dumps(
+                {"config": [bloco]},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        temporario.replace(_CAMINHO_CONFIG)
+
+        return True
+
+    except OSError as erro:
+        print(
+            f"Aviso: não consegui gravar o config.json ({erro}) — "
+            "a preferência vale só até fechar o app."
+        )
+
+        return False
+
+
+# Nome do microfone e do alto-falante escolhidos na tela inicial.
+# Vazio = usar o padrão do Windows. Guardamos o NOME, não o índice:
+# índice muda quando qualquer dispositivo é conectado ou removido.
+# Ver jarvis/ui/painel_dispositivos.py.
+def dispositivo_entrada():
+    return str(_ler_bloco().get("microfone", "") or "").strip()
+
+
+def dispositivo_saida():
+    return str(_ler_bloco().get("alto_falante", "") or "").strip()
+
+
 def prioridade_alta_ativa():
     """
     Lê config[0]["prioridade_alta"] de config.json. Ausente ou
