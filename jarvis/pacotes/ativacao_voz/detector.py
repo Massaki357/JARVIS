@@ -41,7 +41,7 @@ TAXA_AMOSTRAGEM_VOSK = 16000
 TAMANHO_BLOCO_VOSK = 4000
 
 # Corte de similaridade pro fallback difflib — mesmo valor já usado
-# em jarvis/pacotes/abrir_app_local/buscador.py e jarvis/pacotes/discord_jarvis/contatos.py pra
+# em jarvis/pacotes/fechar_app/processos.py e jarvis/pacotes/discord_jarvis/contatos.py pra
 # tolerar imprecisões do reconhecimento de voz.
 CORTE_SIMILARIDADE = 0.72
 
@@ -67,7 +67,7 @@ _callback_ativacao = None
 
 
 # Mesma técnica de normalização já usada em vários outros pacotes
-# deste projeto (jarvis/pacotes/abrir_app_local/buscador.py,
+# deste projeto (jarvis/pacotes/fechar_app/processos.py,
 # jarvis/pacotes/discord_jarvis/contatos.py, etc.) — copiada aqui de forma
 # independente, não importada, seguindo a convenção do projeto.
 def _normalizar(texto):

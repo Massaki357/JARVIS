@@ -2,7 +2,7 @@
 
 # Qt fornece constantes do framework.
 # Neste arquivo, é utilizado principalmente para alinhar textos ao centro.
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 # Importa os componentes visuais utilizados pela janela:
 # QHBoxLayout organiza itens horizontalmente.
@@ -26,6 +26,9 @@ from PySide6.QtWidgets import (
 # Essa classe cuida do áudio, da visão e da comunicação em tempo real.
 from jarvis.gemini.cliente_live import GeminiLiveWorker
 
+# Provedor de IA ativo (.env, PROVEDOR_IA) — ver jarvis/nucleo/config.py.
+from jarvis.nucleo.config import usar_provedor_openai
+
 # Console de diagnóstico exibido ao lado do registro de atividade —
 # toda a lógica (captura de sys.stdout/sys.stderr, ponte de thread,
 # limite de linhas) mora no próprio módulo.
@@ -35,6 +38,29 @@ from jarvis.ui.painel_console import PainelConsole
 # aparelhos agrupando as duplicatas de host API, salvar no config.json
 # e aplicar em sd.default.device) mora no próprio módulo.
 from jarvis.ui.painel_dispositivos import PainelDispositivos
+
+# Esfera animada que reage ao estado da chamada e ao volume da voz —
+# veio do JARVIS COMPLETO (ui/alfred_visualizer.py). Todo o desenho
+# (QPainter, cache de fundo/esfera, FPS adaptativo) mora no próprio
+# módulo; aqui ela é só instanciada, posicionada e alimentada por
+# definir_status/definir_ativo/definir_nivel_audio.
+from jarvis.ui.visualizador_alfred import VisualizadorAlfred
+
+
+# Devolve a CLASSE de worker do provedor configurado. Os dois workers
+# expõem a mesma API pública (sinais, construtor e métodos), então
+# daqui para baixo a janela não precisa saber qual deles está rodando.
+#
+# O import da OpenAI é feito aqui dentro, e não no topo do arquivo, de
+# propósito: quem usa o Gemini não precisa ter o pacote openai
+# instalado nem pagar o custo de importá-lo a cada abertura do app.
+def _classe_do_worker():
+    if usar_provedor_openai():
+        from jarvis.openai_realtime import OpenAIRealtimeWorker
+
+        return OpenAIRealtimeWorker
+
+    return GeminiLiveWorker
 
 
 # QSS é a linguagem de estilos do Qt.
@@ -151,23 +177,44 @@ class MainWindow(QMainWindow):
             "ALFRED"
         )
 
-        # Define o menor tamanho permitido para a janela. Mais largo
-        # do que era antes porque agora existem DUAS colunas embaixo
-        # (registro de atividade e console), e espremer as duas em
-        # 560px deixaria as duas ilegíveis.
+        # Define o menor tamanho permitido para a janela. Largo
+        # porque agora são TRÊS colunas: controles + registro de
+        # atividade (330px), a esfera do visualizador (o que sobrar) e
+        # o console de diagnóstico (340px).
         self.setMinimumSize(
-            900,
-            460,
+            1180,
+            560,
         )
 
         # Define o tamanho inicial da janela.
         self.resize(
-            1040,
-            560,
+            1380,
+            760,
         )
 
         # Remove a referência da thread encerrada.
         self.live_worker = None
+
+        # Estado da retomada de sessão (vem do JARVIS COMPLETO).
+        #
+        # session_handle: último token de retomada emitido pelo
+        # servidor. Preservado APENAS entre reconexões automáticas; é
+        # zerado em qualquer encerramento manual ou por voz, para a
+        # próxima chamada do usuário começar limpa.
+        self.session_handle = None
+
+        # Transcrição acumulada da conversa, carregada de um worker
+        # para o próximo numa reconexão automática — do lado do
+        # servidor a conversa continua, então o histórico daqui
+        # também precisa continuar (senão o resumo salvo no fim teria
+        # só o trecho depois da última renovação).
+        self.transcricao_preservada = []
+
+        # Distinguem uma QUEDA de conexão (deve reabrir sozinho,
+        # preservando a conversa) de um encerramento pedido pelo
+        # usuário ou por voz (não deve reabrir nada).
+        self.reconectar_automaticamente = False
+        self.encerramento_manual = False
 
         # Aplica o estilo QSS em toda a janela.
         self.setStyleSheet(
@@ -193,9 +240,33 @@ class MainWindow(QMainWindow):
         # Cria o widget central que receberá o layout principal.
         container = QWidget()
 
-        # Cria um layout vertical dentro do container.
-        layout = QVBoxLayout(
+        # A janela tem três colunas: controles à esquerda, a esfera
+        # animada no centro (o painel principal, como no JARVIS
+        # COMPLETO) e o console de diagnóstico à direita.
+        layout_raiz = QHBoxLayout(
             container
+        )
+
+        layout_raiz.setContentsMargins(
+            0,
+            0,
+            0,
+            0,
+        )
+
+        layout_raiz.setSpacing(
+            0
+        )
+
+        # Coluna da esquerda. Continua se chamando "layout" porque é
+        # nela que todos os controles já existentes são adicionados.
+        coluna_controles = QWidget()
+        coluna_controles.setFixedWidth(
+            330
+        )
+
+        layout = QVBoxLayout(
+            coluna_controles
         )
 
         # Define as margens internas:
@@ -391,19 +462,22 @@ class MainWindow(QMainWindow):
             8
         )
 
-        # Coluna da esquerda: o registro de atividade, como sempre foi.
-        coluna_registro = QVBoxLayout()
-        coluna_registro.setContentsMargins(0, 0, 0, 0)
-        coluna_registro.setSpacing(6)
-
-        coluna_registro.addWidget(
+        # Fim da coluna da esquerda: o registro de atividade, como
+        # sempre foi — só que agora empilhado abaixo dos controles em
+        # vez de dividir a largura da janela com o console.
+        layout.addWidget(
             registro_titulo
         )
 
-        coluna_registro.addWidget(
+        layout.addWidget(
             self.log_box,
             1,
         )
+
+        # Coluna do centro: a esfera. É o painel principal da
+        # interface — mostra o status da chamada e reage ao volume da
+        # voz do ALFRED (sinal nivel_audio do worker).
+        self.visualizador = VisualizadorAlfred()
 
         # Coluna da direita: o console de diagnóstico. Ele duplica
         # sys.stdout/sys.stderr, então mostra em tempo real tudo que
@@ -413,23 +487,41 @@ class MainWindow(QMainWindow):
         # instanciado e posicionado.
         self.painel_console = PainelConsole()
 
-        # Os dois lado a lado, com o mesmo peso.
-        area_inferior = QHBoxLayout()
-        area_inferior.setSpacing(12)
-
-        area_inferior.addLayout(
-            coluna_registro,
-            1,
+        coluna_console = QWidget()
+        coluna_console.setFixedWidth(
+            340
         )
 
-        area_inferior.addWidget(
+        layout_console = QVBoxLayout(
+            coluna_console
+        )
+
+        layout_console.setContentsMargins(
+            0,
+            25,
+            30,
+            25,
+        )
+
+        layout_console.addWidget(
             self.painel_console,
             1,
         )
 
-        layout.addLayout(
-            area_inferior,
+        # A esfera é a única que recebe peso de expansão: as duas
+        # colunas laterais têm largura fixa, então toda a sobra de
+        # espaço da janela vai para ela.
+        layout_raiz.addWidget(
+            coluna_controles
+        )
+
+        layout_raiz.addWidget(
+            self.visualizador,
             1,
+        )
+
+        layout_raiz.addWidget(
+            coluna_console
         )
 
         # Define o container como área central da QMainWindow.
@@ -467,10 +559,24 @@ class MainWindow(QMainWindow):
             str(texto).upper()
         )
 
+        # O mesmo texto aparece dentro da esfera — ela é o painel
+        # principal da janela, e o rótulo pequeno da lateral vira só
+        # uma repetição de apoio.
+        self.visualizador.definir_status(
+            texto
+        )
+
     # Decide entre iniciar ou encerrar a chamada.
     def alternar_chamada(self):
         # Se não existe worker, inicia uma nova chamada.
         if self.live_worker is None:
+            # Uma chamada iniciada pelo usuário (botão ou palavra de
+            # ativação) começa SEMPRE do zero: o token de retomada e a
+            # transcrição preservada só valem para reconexão
+            # automática. Ver preparar_reconexao_automatica.
+            self.session_handle = None
+            self.transcricao_preservada = []
+
             self.iniciar_chamada()
 
         # Se já existe worker, solicita o encerramento.
@@ -527,8 +633,22 @@ class MainWindow(QMainWindow):
             "Iniciando conexão..."
         )
 
-        # Cria a thread responsável pela sessão Gemini.
-        self.live_worker = GeminiLiveWorker()
+        # Uma abertura de chamada nova (ou reconexão) nunca é, ela
+        # própria, um encerramento manual.
+        self.encerramento_manual = False
+
+        # A esfera entra em modo animado de "conectado".
+        self.visualizador.definir_ativo(
+            True
+        )
+
+        # Cria a thread responsável pela sessão Gemini. O
+        # session_handle e a transcrição só vêm preenchidos numa
+        # reconexão automática — ver preparar_reconexao_automatica.
+        self.live_worker = _classe_do_worker()(
+            session_handle=self.session_handle,
+            transcricao_inicial=self.transcricao_preservada,
+        )
 
         # Recebe mensagens de status vindas da thread.
         self.live_worker.status_recebido.connect(
@@ -547,7 +667,24 @@ class MainWindow(QMainWindow):
 
         # Permite que um comando de voz encerre a chamada.
         self.live_worker.solicitou_encerramento.connect(
-            self.encerrar_chamada
+            self.encerrar_chamada_por_voz
+        )
+
+        # O servidor pediu renovação do WebSocket (go_away): é
+        # reconexão esperada, não erro.
+        self.live_worker.solicitou_reconexao.connect(
+            self.preparar_reconexao_automatica
+        )
+
+        # Guarda o token de retomada mais recente, para a reconexão
+        # continuar a mesma conversa.
+        self.live_worker.session_handle_atualizado.connect(
+            self.salvar_session_handle
+        )
+
+        # Alimenta a animação da esfera com o volume da voz do ALFRED.
+        self.live_worker.nivel_audio.connect(
+            self.visualizador.definir_nivel_audio
         )
 
         # Inicia efetivamente a QThread.
@@ -557,6 +694,13 @@ class MainWindow(QMainWindow):
     def encerrar_chamada(self):
         # Só executa se existir uma thread ativa.
         if self.live_worker:
+            # Encerramento pedido pelo usuário: não reabrir nada, e a
+            # conversa atual termina aqui (o token de retomada é
+            # descartado; só go_away/erro o preservam).
+            self.encerramento_manual = True
+            self.reconectar_automaticamente = False
+            self.session_handle = None
+
             self.definir_status(
                 "ENCERRANDO"
             )
@@ -583,9 +727,19 @@ class MainWindow(QMainWindow):
 
     # Exibe um erro recebido da thread.
     def mostrar_erro(self, erro):
+        # Uma queda que o usuário não pediu deve reabrir a chamada
+        # sozinha, preservando a conversa (o session_handle NÃO é
+        # zerado aqui, ao contrário de encerrar_chamada).
+        if not self.encerramento_manual:
+            self.reconectar_automaticamente = True
+
         # Atualiza o status visual.
         self.definir_status(
             "ERRO"
+        )
+
+        self.visualizador.definir_nivel_audio(
+            0.0
         )
 
         # Registra o acontecimento na caixa de atividades.
@@ -614,6 +768,23 @@ class MainWindow(QMainWindow):
             "self.live_worker voltando a ser None agora."
         )
 
+        # Antes de largar a referência: se a chamada vai reabrir
+        # sozinha, leva a transcrição acumulada para o próximo worker.
+        # Do lado do servidor a conversa continua (session_handle), e
+        # sem isto o resumo salvo no fim teria só o trecho depois da
+        # última renovação.
+        if (
+            self.live_worker is not None
+            and self.reconectar_automaticamente
+            and not self.encerramento_manual
+        ):
+            self.transcricao_preservada = list(
+                self.live_worker.transcricao_conversa
+            )
+
+        else:
+            self.transcricao_preservada = []
+
         # Remove a referência da thread encerrada.
         self.live_worker = None
 
@@ -638,15 +809,81 @@ class MainWindow(QMainWindow):
             self.btn_chamada
         )
 
+        # Zera a animação da esfera.
+        self.visualizador.definir_ativo(
+            False
+        )
+
+        self.visualizador.definir_nivel_audio(
+            0.0
+        )
+
         # Atualiza o status visual.
         self.definir_status(
             "OFFLINE"
         )
 
+        # Reabre a chamada sozinha quando a queda não foi pedida pelo
+        # usuário — usando o mesmo session_handle, então a conversa
+        # continua de onde parou. O pequeno atraso deixa a thread
+        # anterior terminar de morrer antes de abrir a próxima.
+        if self.reconectar_automaticamente and not self.encerramento_manual:
+            self.reconectar_automaticamente = False
+
+            self.escrever_log(
+                "Reconectando automaticamente sem perder a conversa..."
+            )
+
+            QTimer.singleShot(
+                450,
+                self.iniciar_chamada,
+            )
+
+            return
+
         # Registra o acontecimento na caixa de atividades.
         self.escrever_log(
             "Chamada encerrada."
         )
+
+    # Encerramento pedido POR VOZ (sinal solicitou_encerramento).
+    #
+    # Existe separado de encerrar_chamada só por clareza: os dois
+    # fazem a mesma coisa, e a limpeza do session_handle já acontece
+    # lá dentro. Sem este método, o sinal de voz cairia direto em
+    # encerrar_chamada e o comportamento seria idêntico — mas o log
+    # não distinguiria "o usuário clicou" de "o usuário mandou
+    # desligar".
+    def encerrar_chamada_por_voz(self):
+        self.escrever_log(
+            "Encerramento solicitado por voz."
+        )
+
+        self.encerrar_chamada()
+
+    # Conectado a solicitou_reconexao: o servidor avisou (go_away) que
+    # vai fechar o WebSocket. Isso é renovação normal da sessão, não
+    # erro — então a próxima abertura é marcada como esperada, e o
+    # session_handle NÃO é descartado.
+    def preparar_reconexao_automatica(self):
+        if self.encerramento_manual:
+            return
+
+        self.reconectar_automaticamente = True
+
+        self.definir_status(
+            "RENOVANDO CONEXÃO"
+        )
+
+        self.escrever_log(
+            "Renovando a conexão sem perder a conversa..."
+        )
+
+    # Conectado a session_handle_atualizado: guarda o token mais
+    # recente de retomada emitido pelo servidor.
+    def salvar_session_handle(self, handle):
+        if handle:
+            self.session_handle = handle
 
     # Solicita ao worker uma captura e análise da tela.
     def analisar_tela(self):
@@ -687,6 +924,11 @@ class MainWindow(QMainWindow):
     # Evento executado automaticamente ao fechar a janela.
     # Garante que a thread não continue rodando em segundo plano.
     def closeEvent(self, event):
+        # Fechar a janela é encerramento manual: nada de reabrir a
+        # chamada sozinha depois que o app já está fechando.
+        self.encerramento_manual = True
+        self.reconectar_automaticamente = False
+
         # Só executa se existir uma thread ativa.
         if self.live_worker:
             # Altera o estado interno do worker para encerrar os loops.

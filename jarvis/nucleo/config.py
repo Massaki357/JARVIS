@@ -3,6 +3,25 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ============================================================
+# PROVEDOR DE IA ATIVO
+# ============================================================
+# Qual cérebro de voz o ALFRED usa: "gemini"
+# (jarvis/gemini/cliente_live.py) ou "openai"
+# (jarvis/openai_realtime/cliente_realtime.py). A troca é só esta
+# variável no .env mais reiniciar o app — nenhum outro arquivo muda,
+# porque os dois workers expõem a mesma API pública e as duas listas
+# de ferramentas saem do mesmo PACOTES_REGISTRADOS.
+#
+# Qualquer valor diferente de "openai" cai no Gemini, de propósito: um
+# .env com erro de digitação não deve trocar de provedor sozinho.
+PROVEDOR_IA = os.getenv("PROVEDOR_IA", "gemini").strip().lower()
+
+
+def usar_provedor_openai():
+    return PROVEDOR_IA == "openai"
+
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Controla se o gate de autenticação por palavra-chave (ver a seção
@@ -53,6 +72,15 @@ def config_schema():
             "rotulo": (
                 "Exigir a palavra-chave de autenticação por voz "
                 "(padrão: true — nunca desative sem entender o risco)"
+            ),
+            "sensivel": False,
+            "obrigatoria": False,
+        },
+        {
+            "nome": "PROVEDOR_IA",
+            "rotulo": (
+                "Cérebro de voz ativo: 'gemini' ou 'openai' "
+                "(padrão: gemini — exige reiniciar o app)"
             ),
             "sensivel": False,
             "obrigatoria": False,
@@ -125,3 +153,39 @@ GEMINI_VOICE = "Charon"
 # Sadachbia - animada
 # Sadaltager - experiente
 # Sulafat  - calorosa
+
+
+# ============================================================
+# CONFIGURAÇÃO DA OPENAI (Realtime API)
+# ============================================================
+# Usadas só quando PROVEDOR_IA = "openai". A chave é a MESMA
+# OPENAI_API_KEY que jarvis/pacotes/delegacao_ia/ já usa para a
+# segunda opinião — não existe uma segunda chave.
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Modelo Realtime usado pelo ALFRED quando PROVEDOR_IA = "openai".
+OPENAI_REALTIME_MODEL = "gpt-realtime"
+
+# ============================================================
+# MODELOS REALTIME DISPONÍVEIS PARA TESTE
+# ============================================================
+#OPENAI_REALTIME_MODEL = "gpt-realtime"
+#OPENAI_REALTIME_MODEL = "gpt-4o-realtime-preview"
+#OPENAI_REALTIME_MODEL = "gpt-4o-mini-realtime-preview"
+
+# Voz usada pelo ALFRED quando PROVEDOR_IA = "openai".
+OPENAI_VOICE = "marin"
+
+# ============================================================
+# VOZES DISPONÍVEIS PARA TESTE (Realtime API)
+# ============================================================
+# alloy    - neutra
+# ash      - grave
+# ballad   - suave
+# coral    - calorosa
+# echo     - firme
+# sage     - equilibrada
+# shimmer  - brilhante
+# verse    - versátil
+# marin    - natural
+# cedar    - natural/grave

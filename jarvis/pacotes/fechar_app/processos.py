@@ -1,7 +1,7 @@
 # Lista e resolve processos em execução pelo nome falado, pra fechar
 # um aplicativo aberto por voz. Mesma técnica de normalização e
 # correspondência aproximada (accent/case fold, substring, difflib
-# cutoff 0.72) já usada em jarvis/pacotes/abrir_app_local/buscador.py
+# cutoff 0.72) já usada em jarvis/pacotes/discord_jarvis/contatos.py
 # — copiada aqui, não importada: pacote isolado, mesmo princípio de
 # duplicação deliberada já usado no resto do projeto (cada pacote
 # mantém sua própria cópia de _normalizar). Nunca fecha nada fora dos

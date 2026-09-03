@@ -67,7 +67,7 @@ NOTAS_CONTEXTO_INICIAL = int(
 )
 
 # Corte da correspondência aproximada de título. Mesmo valor já usado
-# em abrir_app_local/buscador.py e discord_jarvis/contatos.py.
+# em fechar_app/processos.py e discord_jarvis/contatos.py.
 CORTE_TITULO_APROXIMADO = 0.72
 
 # Modelo usado só na consolidação (texto puro, sem voz nem UI, roda em

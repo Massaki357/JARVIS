@@ -12,8 +12,10 @@ venv/
 dados/logs/comandos_admin.log
 dados/admin_fila/
 
-# abrir_app_local: cache técnico nome->AppID, específico de cada
-# máquina (AppIDs mudam conforme o que está instalado).
+# abrir_app_local: cache técnico nome->AppID. O pacote foi removido
+# (substituído por abrir_aplicativo, que não usa cache em disco), mas
+# a linha fica para o arquivo antigo de quem já tinha um não voltar a
+# aparecer como novidade no Git.
 dados/apps_conhecidos.json
 
 # discord_jarvis: cache técnico nome->contato e nome->canal do
@@ -24,5 +26,11 @@ dados/discord_canais.json
 
 # Continuam versionados, como já eram antes desta reorganização:
 #   dados/memoria.json                 (memória conversacional)
+#   dados/agenda.json                  (compromissos do pacote agenda)
 #   dados/logs/comandos_remotos.log    (log do rede_jarvis)
 #   config.json                        (preferência local da máquina)
+#
+# dados/agenda.json segue a mesma regra de dados/memoria.json (era
+# versionado no projeto do curso também). Se você preferir manter seus
+# compromissos fora do Git, acrescente "dados/agenda.json" aqui.
+JARVIS_COMPLETO

@@ -16,5 +16,5 @@ pywin32
 pypdf
 discord.py
 vosk
-playwright
-edge-tts
+openai
+ddgs

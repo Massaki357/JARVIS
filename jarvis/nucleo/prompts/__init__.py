@@ -28,6 +28,7 @@
 # (`from jarvis.nucleo import prompts`, `prompts.ANUNCIO_ESPONTANEO`
 # funcionam igual), só que agora os .md moram dentro da mesma pasta,
 # não ao lado dela.
+from datetime import datetime
 from pathlib import Path
 
 _PASTA = Path(__file__).resolve().parent
@@ -74,21 +75,6 @@ CRUZAMENTO_SEGUNDA_OPINIAO = (
 # voz alta (diferente de ANUNCIO_ESPONTANEO): o usuário já ouviu essa
 # parte da conversa de verdade, através do reserva — só o contexto
 # precisa chegar até você, em silêncio, pra continuar naturalmente.
-RETOMADA_CEREBRO_RESERVA = (
-    "[SISTEMA] Você ficou temporariamente sem responder, e outra IA "
-    "(o modo reserva) conduziu a conversa com o usuário nesse "
-    "meio-tempo. Aqui está o que foi dito enquanto você estava fora, "
-    "pra você continuar a conversa sabendo o que já aconteceu: "
-    "{resumo} A partir de agora você está de volta — não anuncie "
-    "que esteve indisponível nem repita o que já foi dito, apenas "
-    "continue a conversa naturalmente a partir daqui."
-)
-
-# Análise pontual de uma captura de tela ou câmera — UNIFICADO: antes
-# existiam duas cópias quase idênticas em enviar_tela_para_gemini e
-# enviar_camera_para_gemini, diferindo só na palavra "tela"/"câmera".
-# {origem} recebe uma das duas (ambas usam o artigo "da", por isso
-# nenhum outro ajuste de gênero é necessário).
 ANALISE_IMAGEM_PONTUAL = (
     "Analise exatamente esta imagem da {origem} enviada neste "
     "turno. Ignore imagens anteriores. Use somente esta imagem "
@@ -218,44 +204,6 @@ CONSOLIDACAO_RESUMO_CONVERSA = (
 
 
 # ============================================================
-# CEREBRO_RESERVA — jarvis/pacotes/cerebro_reserva/cerebro.py
-# (Mistral, chat com ferramentas — assume a conversa por voz quando
-# a sessão do Gemini Live falha).
-# ============================================================
-
-# Deliberadamente NÃO repete a identidade e as regras completas da
-# instrução de sistema principal (~22 mil caracteres): cada turno já
-# carrega ~5k tokens de schema de ferramentas, e mandar o prompt
-# inteiro junto estouraria a cota de tokens por minuto sem melhorar
-# a resposta. O essencial da conduta de cada ferramenta já viaja
-# dentro da própria descrição dela.
-CEREBRO_RESERVA_INSTRUCAO_SISTEMA = (
-    "Você é o ALFRED, um assistente pessoal por voz. "
-    "Fale sempre em português do Brasil. "
-    "Suas respostas são faladas em voz alta, então escreva como se "
-    "falasse: frases curtas, no máximo três, sem listas, sem "
-    "markdown, sem emojis e sem títulos. "
-    "Seja inteligente, natural, prestativo e elegante, com humor "
-    "sutil e ocasional. Não concorde automaticamente com tudo: se "
-    "uma ideia for ruim ou arriscada, diga isso com elegância. "
-    "Use as funções disponíveis apenas quando o usuário pedir "
-    "claramente a ação correspondente — nunca por iniciativa "
-    "própria e nunca só para confirmar algo que você já sabe. "
-    "Se uma função devolver mais de uma opção possível, pergunte ao "
-    "usuário qual delas antes de agir, nunca escolha sozinho. "
-    "Nunca invente que executou algo que não executou. "
-    "Quando o usuário pedir para encerrar, desligar, parar ou "
-    "terminar a chamada, você PRECISA chamar a função "
-    "encerrar_chamada. Só se despedir sem chamá-la não encerra nada "
-    "e deixa o usuário falando sozinho. "
-    "Nunca mencione qual tecnologia, modelo ou serviço está te "
-    "respondendo, e nunca comente que houve qualquer falha, troca "
-    "de sistema ou modo alternativo: apenas continue a conversa "
-    "normalmente, como se nada tivesse mudado."
-)
-
-
-# ============================================================
 # GEMINI LIVE — instrução de sistema principal
 # ============================================================
 # As duas peças mais longas do projeto ficam em arquivos .md ao lado
@@ -299,6 +247,19 @@ def _carregar(nome_arquivo):
 # vem concatenado logo depois, em jarvis/gemini/cliente_live.py.
 def instrucao_sistema_corpo():
     return _carregar("gemini_live_sistema.md") + "\n\n"
+
+
+# Data e hora local, injetada no fim da instrução de sistema. Vem
+# do JARVIS COMPLETO, onde era um f-string dentro da própria
+# instrucao_sistema: sem isso o modelo não tem como interpretar
+# "hoje", "amanhã" ou um dia da semana ao criar um evento de agenda.
+# É função, e não constante, justamente porque precisa ser avaliada
+# no início de CADA chamada, não uma vez no import do módulo.
+def contexto_data_hora():
+    return (
+        "Data e hora local atual: "
+        f"{datetime.now().strftime('%d/%m/%Y %H:%M')}. "
+    )
 
 
 # Bloco de autenticação (a palavra-chave "Coisa") — só deve ser

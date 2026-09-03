@@ -2,10 +2,10 @@
 # (user_id + nome de exibição), separado da memória conversacional
 # do jarvis — mesma técnica de escrita segura já validada em
 # jarvis/servicos/memoria/gerenciador.py e reaproveitada em
-# jarvis/pacotes/abrir_app_local/cache.py (arquivo temporário + replace, lock de
+# jarvis/servicos/memoria/gerenciador.py (arquivo temporário + replace, lock de
 # thread), copiada aqui de propósito: cada pacote isolado mantém sua
 # própria cópia, sem compartilhar arquivo nem lógica com
-# abrir_app_local.
+# memória conversacional.
 import json
 import threading
 from jarvis.caminhos import PASTA_DADOS, garantir_pasta

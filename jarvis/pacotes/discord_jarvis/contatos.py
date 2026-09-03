@@ -1,6 +1,6 @@
 # Busca membros dos servidores em que o bot está, por nome falado.
 # Mesma técnica de correspondência aproximada já usada em
-# jarvis/pacotes/abrir_app_local/buscador.py (normalização acento/caixa-insensível
+# jarvis/pacotes/fechar_app/processos.py (normalização acento/caixa-insensível
 # + exato -> parcial -> difflib) — copiada aqui, não importada de
 # outro pacote: cada pacote isolado deste projeto mantém sua própria
 # cópia dessa lógica de propósito (mesmo padrão de jarvis/servicos/email/,

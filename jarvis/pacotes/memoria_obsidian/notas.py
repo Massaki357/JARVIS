@@ -58,7 +58,7 @@ IRRELEVANTES = {
 
 # Normalização usada em toda comparação de título: sem acento, em
 # minúsculas, sem espaço duplicado. Mesma técnica já validada em
-# jarvis/servicos/memoria/gerenciador.py, abrir_app_local/buscador.py e
+# jarvis/servicos/memoria/gerenciador.py, fechar_app/processos.py e
 # discord_jarvis/contatos.py — cópia própria de propósito, seguindo a
 # convenção do projeto de cada pacote não depender do interno de
 # outro (aquelas funções são privadas dos pacotes delas).
@@ -295,7 +295,7 @@ def listar_notas(pasta=None, incluir_arquivo=False):
 # --- Localização por título ------------------------------------------
 
 # Encontra notas cujo título "casa" com o procurado, na mesma escada
-# já usada em abrir_app_local/buscador.py: exato, depois substring nos
+# já usada em fechar_app/processos.py: exato, depois substring nos
 # dois sentidos, depois difflib. Devolve SEMPRE uma lista — quem chama
 # decide o que fazer com zero, um ou vários resultados. Nunca escolhe
 # sozinho quando há ambiguidade.

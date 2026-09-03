@@ -7,7 +7,6 @@ Assistente de voz para Windows (PySide6 + Gemini Live API).
 ```powershell
 .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-playwright install chromium   # uma única vez, para o controle de navegador
 python main.py
 ```
 
@@ -21,8 +20,8 @@ requirements.txt
 docs/INTEGRATION.md      como religar os pacotes em outro cliente Gemini Live
 
 dados/                   TUDO que o app gera enquanto roda
-  memoria.json             memória conversacional
-  apps_conhecidos.json     cache do abrir_app_local
+  memoria.json             memória conversacional (formato antigo, fora do fluxo)
+  agenda.json              compromissos salvos pelo pacote agenda
   discord_contatos.json    cache do discord_jarvis
   discord_canais.json      cache do discord_jarvis
   admin_fila/              troca de arquivos com o processo elevado
@@ -30,20 +29,26 @@ dados/                   TUDO que o app gera enquanto roda
 
 jarvis/                  todo o código da aplicação
   caminhos.py              único lugar que sabe onde ficam a raiz e dados/
-  nucleo/                  config.py, preferencias.py, sinalizador.py
+  nucleo/                  config.py, preferencias.py, sinalizador.py,
+                           prompts/, registro_pacotes.py
   gemini/cliente_live.py   o worker da sessão Live (coração do app)
-  ui/                      janela_principal, janela_chat,
-                           janela_envio_arquivo, janela_camera
+  openai_realtime/         cérebro de voz alternativo (PROVEDOR_IA=openai)
+  ui/                      janela_principal, visualizador_alfred, janela_chat,
+                           janela_envio_arquivo, janela_camera,
+                           painel_console, painel_dispositivos
   servicos/                infra compartilhada
-    visao/                   captura_tela, captura_camera, monitor_continuo
+    visao/                   captura_tela, captura_camera, monitor_continuo,
+                             localizador_clique
     email/                   remetente (SMTP), leitor (IMAP)
     memoria/                 gerenciador da memória persistente
   pacotes/                 uma pasta por integração/ferramenta
-    abrir_app_local/  admin_terminal/  ativacao_voz/  camera_preview/
-    casa_inteligente/ chat_jarvis/     configuracoes/ delegacao_ia/
-    discord_jarvis/   explorador_windows/
+    abrir_aplicativo/ admin_terminal/  agenda/        arquivos_area_trabalho/
+    ativacao_voz/     camera_preview/  casa_inteligente/
+    chat_jarvis/      clique_visual/   configuracoes/
+    consulta_acoes/   controle_mouse/  criar_arquivo/ delegacao_ia/
+    discord_jarvis/   escrita_texto/   explorador_windows/  fechar_app/
     identificacao_planta/   identificacao_visual/
-    navegador_jarvis/ rede_jarvis/
+    memoria_obsidian/ navegador_web/   pesquisa_web/  rede_jarvis/
 ```
 
 Regra que mantém isso organizado: **código fica em `jarvis/`, estado
@@ -53,7 +58,9 @@ pasta — quem precisa de um caminho importa de `jarvis/caminhos.py`.
 Cada pasta em `jarvis/pacotes/` é isolada e expõe o mesmo par de funções
 (`obter_function_declarations()` / `despachar()`) descrito em
 `docs/INTEGRATION.md`. Adicionar uma ferramenta nova é criar uma pasta
-ali e acrescentar uma linha em `PACOTES_REGISTRADOS`.
+ali e acrescentar uma linha em `PACOTES_REGISTRADOS`, que fica em
+`jarvis/nucleo/registro_pacotes.py` — a mesma lista alimenta os dois
+cérebros de voz (Gemini Live e OpenAI Realtime).
 
 ---
 
@@ -166,14 +173,31 @@ Rode o comando:
 pip install -r requirements.txt
 ```
 
-Para o jarvis conseguir controlar o navegador por voz (abrir sites, buscar e tocar
-música no YouTube, pausar/retomar — ver `jarvis/pacotes/navegador_jarvis/`), rode também, uma única
-vez, depois do `pip install`:
+Para escolher qual "cérebro" o ALFRED usa na conversa por voz, você pode
+opcionalmente adicionar no .env:
 ```
-playwright install chromium
+PROVEDOR_IA=gemini
 ```
-Isso baixa o navegador Chromium que o Playwright usa (não é o Chrome já instalado no
-seu Windows — é uma cópia própria, baixada e gerenciada pelo próprio Playwright).
+`gemini` (padrão) usa a Gemini Live API; `openai` usa a Realtime API da OpenAI
+(`jarvis/openai_realtime/`), reaproveitando a MESMA `OPENAI_API_KEY` que já é usada
+para a segunda opinião. Qualquer outro valor cai no Gemini, então um erro de digitação
+nunca troca de provedor sem querer. A troca exige reiniciar o app.
+
+As duas opções têm exatamente as mesmas ferramentas e a mesma instrução de sistema
+(inclusive a palavra-chave de autenticação). A diferença que importa saber: só o Gemini
+tem retomada automática de sessão — se o servidor pedir para renovar a conexão, ele
+reabre sozinho sem perder a conversa. Na OpenAI isso não existe.
+
+--------------------------------------------------
+
+Para o ALFRED consultar cotação e histórico de ações por voz, adicione no .env:
+```
+TWELVE_DATA_API_KEY=
+```
+A chave sai de [twelvedata.com](https://twelvedata.com/) (tem plano gratuito). Sem
+ela, as duas ferramentas de ações simplesmente avisam que não estão configuradas; o
+resto do ALFRED continua funcionando normal.
+
 --------------------------------------------------
 
 Para o jarvis iniciar a chamada sozinho ao ouvir uma palavra-chave (sem precisar clicar

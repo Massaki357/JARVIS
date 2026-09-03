@@ -4,21 +4,20 @@
 # de configurações", para o formato esperado).
 #
 # Registro explícito de propósito — mesmo espírito de
-# PACOTES_REGISTRADOS em jarvis/gemini/cliente_live.py: adicionar um
+# PACOTES_REGISTRADOS em jarvis/nucleo/registro_pacotes.py: adicionar um
 # pacote novo com config_schema() é só importar o módulo de config
 # dele e acrescentar uma linha aqui, nada mais muda em
 # jarvis/pacotes/configuracoes/window.py.
-import jarvis.pacotes.abrir_app_local.config as abrir_app_local_config
+import jarvis.pacotes.abrir_aplicativo.config as abrir_aplicativo_config
 import jarvis.pacotes.admin_terminal.config as admin_terminal_config
 import jarvis.pacotes.ativacao_voz.config as ativacao_voz_config
 import jarvis.pacotes.casa_inteligente.config as casa_inteligente_config
-import jarvis.pacotes.cerebro_reserva.config as cerebro_reserva_config
 import jarvis.pacotes.criar_arquivo.config as criar_arquivo_config
 import jarvis.pacotes.delegacao_ia.config as delegacao_ia_config
 import jarvis.pacotes.identificacao_planta.config as identificacao_planta_config
 import jarvis.pacotes.memoria_obsidian.config as memoria_obsidian_config
 import jarvis.pacotes.identificacao_visual.config as identificacao_visual_config
-import jarvis.pacotes.navegador_jarvis.config as navegador_jarvis_config
+import jarvis.pacotes.consulta_acoes.config as consulta_acoes_config
 import jarvis.pacotes.rede_jarvis.config as rede_jarvis_config
 
 # Estes dois não são pacotes de tools (jarvis/pacotes/) — são módulos
@@ -42,12 +41,8 @@ PACOTES_COM_CONFIG = [
     ("Segunda Opinião Visual (Mistral)", identificacao_visual_config),
     ("Ativação por Voz (Vosk, 100% local)", ativacao_voz_config),
     ("Memória (vault do Obsidian)", memoria_obsidian_config),
-    (
-        "Cérebro Reserva (assume quando o Gemini falha)",
-        cerebro_reserva_config,
-    ),
-    ("Navegador (Playwright)", navegador_jarvis_config),
-    ("Abrir Aplicativo Local (pastas extras)", abrir_app_local_config),
+    ("Cotação de Ações (Twelve Data)", consulta_acoes_config),
+    ("Abrir Aplicativo (pastas extras)", abrir_aplicativo_config),
     ("Criar Arquivo (pastas permitidas)", criar_arquivo_config),
     ("Gemini / Núcleo do ALFRED", nucleo_config),
     ("Email — Envio (SMTP)", email_remetente_config),

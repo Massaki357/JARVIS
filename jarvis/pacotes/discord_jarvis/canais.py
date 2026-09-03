@@ -1,6 +1,6 @@
 # Busca canais de texto dos servidores em que o bot está, por nome
 # falado. Mesma técnica de correspondência aproximada já usada em
-# jarvis/pacotes/abrir_app_local/buscador.py e jarvis/pacotes/discord_jarvis/contatos.py
+# jarvis/pacotes/fechar_app/processos.py e jarvis/pacotes/discord_jarvis/contatos.py
 # (normalização acento/caixa-insensível + exato -> parcial ->
 # difflib) — copiada aqui, não importada: cada pacote/módulo deste
 # projeto mantém sua própria cópia dessa lógica de propósito (ver
