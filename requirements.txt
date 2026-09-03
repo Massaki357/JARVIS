@@ -6,3 +6,5 @@ numpy
 mss 
 opencv-python 
 pillow
+pywhatkit
+ddgs
