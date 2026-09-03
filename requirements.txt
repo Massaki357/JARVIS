@@ -1,5 +1,6 @@
-google-genai 
-PySide6 
+google-genai
+openai
+PySide6
 python-dotenv
 sounddevice 
 numpy 
@@ -8,3 +9,4 @@ opencv-python
 pillow
 pywhatkit
 ddgs
+requests

@@ -18,9 +18,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# [CURSO] Importa a thread que mantém a conexão em tempo real com o Gemini.
-# [CURSO] Ela envia status, erros, áudio e sinais de encerramento para a interface.
+# [CURSO] Importa as duas threads de conexão em tempo real disponíveis.
+# [CURSO] Ambas enviam status, erros, áudio e sinais de encerramento
+# [CURSO] para a interface com a mesma API pública. Qual delas é usada
+# [CURSO] depende de core.config.PROVEDOR_IA ("gemini" ou "openai").
+from core.config import PROVEDOR_IA
 from gemini.live_client import GeminiLiveWorker
+from openai_provider.live_client import OpenAILiveWorker
 # [CURSO] Importa o visualizador futurista que desenha a esfera,
 # [CURSO] os anéis, o status e a animação de áudio.
 from ui.alfred_visualizer import AlfredVisualizer
@@ -488,9 +492,13 @@ class MainWindow(QMainWindow):
             "CONECTANDO"
         )
 
-        # [CURSO] Cria a thread responsável pela chamada Gemini Live.
+        # [CURSO] Cria a thread responsável pela chamada em tempo real,
+        # [CURSO] usando o provedor definido em core.config.PROVEDOR_IA.
         self.encerramento_manual = False
-        self.live_worker = GeminiLiveWorker(
+        classe_worker = (
+            OpenAILiveWorker if PROVEDOR_IA == "openai" else GeminiLiveWorker
+        )
+        self.live_worker = classe_worker(
             session_handle=self.session_handle
         )
 
