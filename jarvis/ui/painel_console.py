@@ -33,6 +33,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+# Tokens de cor compartilhados (ver jarvis/ui/estilo.py) — este painel
+# continua se auto-estilizando (ver comentário mais abaixo, no
+# setStyleSheet de self.caixa), mas usa os mesmos hex do resto do app
+# em vez de duplicar valores soltos.
+from jarvis.ui import estilo
+
 # Máximo de linhas mantidas no painel. Passando disso, as mais antigas
 # são descartadas: sem esse limite, uma chamada longa (ou um print em
 # laço) faria o QTextEdit crescer sem parar e travar a interface —
@@ -40,9 +46,9 @@ from PySide6.QtWidgets import (
 # travamento.
 MAXIMO_LINHAS = 600
 
-COR_ERRO = "#c0392b"
-COR_AVISO = "#b9770e"
-COR_INFO = "#555555"
+COR_ERRO = "#ff3044"
+COR_AVISO = "#c9862c"
+COR_INFO = "#8f8388"
 
 # Marcadores que o projeto já usa nos prints, classificados por
 # gravidade. A classificação é só visual — nada de comportamento
@@ -173,24 +179,21 @@ class PainelConsole(QWidget):
         self.caixa.setObjectName("console")
         self.caixa.setReadOnly(True)
 
-        # O estilo é aplicado AQUI, no próprio widget, e não no
-        # ESTILO_GLOBAL da janela principal — por dois motivos:
-        #
-        # 1) Encapsulamento: o painel se veste sozinho, como o resto
-        #    da lógica dele.
-        # 2) Necessidade real: o ESTILO_GLOBAL usa cerquilha para
-        #    comentar, e QSS não tem esse tipo de comentário (só o de
-        #    bloco, no estilo do CSS). Cada linha dessas vira um
-        #    seletor de id e engole a regra seguinte. Medido: das 16
-        #    regras de lá, 13 estão mortas por isso. Uma regra do
-        #    console colocada naquele arquivo morreria junto —
-        #    confirmado testando a mesma regra isolada (aplica) e
-        #    dentro do ESTILO_GLOBAL (não aplica).
+        # O estilo é aplicado AQUI, no próprio widget, e não herdado do
+        # ESTILO_GLOBAL de jarvis/ui/estilo.py — por encapsulamento: o
+        # painel se veste sozinho, como o resto da lógica dele. Isso já
+        # foi também uma NECESSIDADE (o antigo ESTILO_GLOBAL usava
+        # cerquilha "#" pra comentar, o que em QSS vira seletor de id e
+        # engole a regra seguinte — 13 das 16 regras de lá estavam
+        # mortas por isso). Esse bug foi corrigido em jarvis/ui/estilo.py,
+        # mas o painel continua se auto-estilizando mesmo assim, agora
+        # só pelo motivo 1 — e usando os mesmos tokens de cor do resto
+        # do app (import estilo), não valores soltos.
         self.caixa.setStyleSheet(
             "QTextEdit#console {"
-            "    color: #dddddd;"
-            "    background-color: #1e1e1e;"
-            "    border: 1px solid #3a3a3a;"
+            f"    color: {estilo.TEXTO_PRIMARIO};"
+            f"    background-color: {estilo.FUNDO_PAINEL};"
+            f"    border: 1px solid {estilo.BORDA};"
             "    border-radius: 3px;"
             "    padding: 8px;"
             '    font-family: "Consolas";'

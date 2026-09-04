@@ -21,6 +21,11 @@ from jarvis.servicos.visao.captura_camera import (
     ler_frame_camera_compartilhada,
 )
 
+# Identidade visual compartilhada com o resto do app (ver
+# jarvis/ui/estilo.py) — esta janela é top-level, separada de
+# MainWindow, então precisa aplicar o estilo nela mesma.
+from jarvis.ui.estilo import ESTILO_GLOBAL
+
 # Intervalo entre atualizações do preview, em milissegundos.
 # ~33ms ≈ 30fps — ajustável se ficar pesado demais na prática.
 INTERVALO_ATUALIZACAO_MS = 33
@@ -39,6 +44,7 @@ class JanelaCamera(QWidget):
 
         self.setWindowTitle("Câmera ao vivo - jarvis")
         self.resize(640, 480)
+        self.setStyleSheet(ESTILO_GLOBAL)
 
         self._label_feed = QLabel("Iniciando a câmera...")
         self._label_feed.setAlignment(Qt.AlignmentFlag.AlignCenter)

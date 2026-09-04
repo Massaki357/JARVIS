@@ -22,6 +22,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+# Identidade visual compartilhada com o resto do app (ver
+# jarvis/ui/estilo.py) — esta janela é top-level, separada de
+# MainWindow, então precisa aplicar o estilo nela mesma.
+from jarvis.ui import estilo
+from jarvis.ui.estilo import ESTILO_GLOBAL
+
 # Extensões tratadas como texto puro (lidas direto, sem biblioteca
 # de PDF nenhuma).
 _EXTENSOES_TEXTO = {".txt", ".md", ".csv", ".json", ".log"}
@@ -169,6 +175,7 @@ class EnvioArquivoWindow(QWidget):
         self.setWindowTitle("Enviar arquivo para o jarvis")
         self.resize(420, 240)
         self.setAcceptDrops(True)
+        self.setStyleSheet(ESTILO_GLOBAL)
 
         layout = QVBoxLayout(self)
 
@@ -180,8 +187,17 @@ class EnvioArquivoWindow(QWidget):
         )
         self._rotulo.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._rotulo.setWordWrap(True)
+
+        # A área de drop precisa de uma borda tracejada que o
+        # ESTILO_GLOBAL não define (é uma exceção visual só dela, não
+        # um componente reutilizável) — usa os mesmos tokens de cor do
+        # resto do app em vez de valores soltos.
         self._rotulo.setStyleSheet(
-            "border: 2px dashed #888; border-radius: 8px; padding: 24px;"
+            f"color: {estilo.TEXTO_SECUNDARIO};"
+            f"background-color: {estilo.FUNDO_PAINEL};"
+            f"border: 2px dashed {estilo.BORDA};"
+            "border-radius: 8px;"
+            "padding: 24px;"
         )
         layout.addWidget(self._rotulo, stretch=1)
 

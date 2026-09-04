@@ -14,6 +14,11 @@ from PySide6.QtWidgets import (
 
 from jarvis.ui.janela_envio_arquivo import processar_arquivo_para_sessao
 
+# Identidade visual compartilhada com o resto do app (ver
+# jarvis/ui/estilo.py) — esta janela é top-level, separada de
+# MainWindow, então precisa aplicar o estilo nela mesma.
+from jarvis.ui.estilo import ESTILO_GLOBAL
+
 
 class ChatWindow(QWidget):
 
@@ -34,6 +39,7 @@ class ChatWindow(QWidget):
         self.setWindowTitle("Chat com o jarvis")
         self.resize(480, 560)
         self.setAcceptDrops(True)
+        self.setStyleSheet(ESTILO_GLOBAL)
 
         layout = QVBoxLayout(self)
 

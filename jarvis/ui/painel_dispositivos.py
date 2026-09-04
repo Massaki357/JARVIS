@@ -290,11 +290,13 @@ class PainelDispositivos(QWidget):
             Qt.CursorShape.PointingHandCursor
         )
 
-        # O ESTILO_GLOBAL da janela principal tem as regras comentadas
-        # com cerquilha, o que em QSS mata a regra seguinte (ver
-        # jarvis/ui/painel_console.py). Por isso o painel se estiliza
-        # sozinho, igual o console.
-        estilo = (
+        # As cores base (fundo, texto, borda) vêm do ESTILO_GLOBAL
+        # compartilhado (jarvis/ui/estilo.py, regra QComboBox) por
+        # cascata normal do Qt — este painel é filho de MainWindow, que
+        # aplica aquele estilo. Só o AJUSTE DE TAMANHO (min-height,
+        # padding, font-size) é definido aqui, no próprio widget, por
+        # encapsulamento — mesmo princípio de jarvis/ui/painel_console.py.
+        estilo_combo = (
             "QComboBox#comboDispositivo {"
             "    min-height: 0px;"
             "    padding: 4px 8px;"
@@ -302,8 +304,8 @@ class PainelDispositivos(QWidget):
             "}"
         )
 
-        self.combo_microfone.setStyleSheet(estilo)
-        self.combo_alto_falante.setStyleSheet(estilo)
+        self.combo_microfone.setStyleSheet(estilo_combo)
+        self.combo_alto_falante.setStyleSheet(estilo_combo)
 
         layout.addWidget(rotulo_micro, 0, 0)
         layout.addWidget(rotulo_saida, 0, 1)

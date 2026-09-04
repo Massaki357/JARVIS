@@ -4,6 +4,11 @@
 # Neste arquivo, é utilizado principalmente para alinhar textos ao centro.
 from PySide6.QtCore import Qt, QTimer
 
+# QFont é usado para aplicar espaçamento entre letras no título — QSS
+# não tem propriedade letter-spacing (só existe via QFont em Python),
+# mesma técnica já usada em jarvis/ui/visualizador_alfred.py.
+from PySide6.QtGui import QFont
+
 # Importa os componentes visuais utilizados pela janela:
 # QHBoxLayout organiza itens horizontalmente.
 # QLabel exibe textos.
@@ -54,6 +59,13 @@ from jarvis.ui.painel_dispositivos import PainelDispositivos
 # definir_status/definir_ativo/definir_nivel_audio.
 from jarvis.ui.visualizador_alfred import VisualizadorAlfred
 
+# Identidade visual compartilhada por todas as janelas do app (ver
+# jarvis/ui/estilo.py) — antes definida localmente aqui, com um bug real
+# de QSS (comentário com "#" engolindo a regra seguinte). Corrigida e
+# centralizada lá, pra JanelaCamera/ChatWindow/EnvioArquivoWindow usarem
+# o mesmo visual sem duplicar a string.
+from jarvis.ui.estilo import ESTILO_GLOBAL
+
 
 # Devolve a CLASSE de worker do provedor configurado. Os dois workers
 # expõem a mesma API pública (sinais, construtor e métodos), então
@@ -69,104 +81,6 @@ def _classe_do_worker():
         return OpenAIRealtimeWorker
 
     return GeminiLiveWorker
-
-
-# QSS é a linguagem de estilos do Qt.
-# Ela possui sintaxe parecida com CSS e define cores,
-# fontes, bordas, tamanhos e estados dos componentes.
-ESTILO_GLOBAL = """
-# Define o estilo da janela principal.
-QMainWindow {
-    background-color: #ffffff;
-}
-
-# Define o estilo padrão de todos os widgets.
-QWidget {
-    color: #222222;
-    font-family: "Segoe UI";
-}
-
-# Aplica estilo somente ao QLabel cujo objectName é "titulo".
-QLabel#titulo {
-    color: #111111;
-    font-size: 22px;
-    font-weight: 600;
-}
-
-# Estilo específico do subtítulo.
-QLabel#subtitulo {
-    color: #666666;
-    font-size: 11px;
-}
-
-# Estilo usado nos títulos de pequenas seções.
-QLabel#statusTitulo {
-    color: #555555;
-    font-size: 11px;
-    font-weight: 600;
-}
-
-# Estilo do valor atual do status.
-QLabel#statusValor {
-    color: #b00020;
-    font-size: 13px;
-    font-weight: 600;
-}
-
-# Estilo padrão aplicado a todos os botões.
-QPushButton {
-    min-height: 40px;
-    padding: 0 14px;
-    color: #222222;
-    background-color: #f2f2f2;
-    border: 1px solid #cccccc;
-    border-radius: 4px;
-    font-size: 11px;
-}
-
-# Estilo aplicado quando o mouse passa sobre o botão.
-QPushButton:hover {
-    background-color: #e8e8e8;
-}
-
-# Estilo aplicado enquanto o botão está pressionado.
-QPushButton:pressed {
-    background-color: #dddddd;
-}
-
-# Estilo específico do botão principal de chamada.
-QPushButton#botaoChamada {
-    color: #ffffff;
-    background-color: #b00020;
-    border: 1px solid #8f001a;
-    font-weight: 600;
-}
-
-QPushButton#botaoChamada:hover {
-    background-color: #98001c;
-}
-
-# Estilo aplicado quando a propriedade personalizada
-# "encerrando" estiver definida como true.
-QPushButton#botaoChamada[encerrando="true"] {
-    color: #ffffff;
-    background-color: #555555;
-    border: 1px solid #444444;
-}
-
-# Estilo da caixa que exibe o registro de atividades.
-QTextEdit#registro {
-    color: #222222;
-    background-color: #ffffff;
-    border: 1px solid #cccccc;
-    border-radius: 3px;
-    padding: 8px;
-    font-family: "Consolas";
-    font-size: 10px;
-}
-
-
-"""
 
 
 # Classe principal da interface básica do ALFRED.
@@ -306,6 +220,21 @@ class MainWindow(QMainWindow):
             Qt.AlignCenter
         )
 
+        # Espaçamento entre letras — QSS não tem essa propriedade, só
+        # dá pra aplicar via QFont (mesma técnica de
+        # jarvis/ui/visualizador_alfred.py, que usa o mesmo recurso pro
+        # "A L F R E D" desenhado dentro da esfera).
+        fonte_titulo = titulo.font()
+
+        fonte_titulo.setLetterSpacing(
+            QFont.SpacingType.AbsoluteSpacing,
+            2,
+        )
+
+        titulo.setFont(
+            fonte_titulo
+        )
+
         # Cria o subtítulo da aplicação.
         subtitulo = QLabel(
             "Assistente de Inteligência Artificial"
@@ -372,6 +301,16 @@ class MainWindow(QMainWindow):
         # Botão que solicita a análise da webcam.
         self.btn_camera = QPushButton(
             "ANALISAR CÂMERA"
+        )
+
+        # Botão secundário: outline vermelho, um degrau abaixo do
+        # botão principal de chamada (ver jarvis/ui/estilo.py).
+        self.btn_tela.setObjectName(
+            "botaoVisao"
+        )
+
+        self.btn_camera.setObjectName(
+            "botaoVisao"
         )
 
         # Adiciona um botão ao layout horizontal.
@@ -484,6 +423,53 @@ class MainWindow(QMainWindow):
             layout_extras
         )
 
+        # Segunda linha de navegação: câmera ao vivo (preview contínuo
+        # da webcam, diferente de "ANALISAR CÂMERA" — que é uma captura
+        # pontual de um frame) e envio de arquivo pro contexto da
+        # conversa (antes só alcançável arrastando um arquivo dentro do
+        # chat). Os dois sinais já existem e já estão conectados em
+        # main.py (solicitou_abrir_camera/solicitou_abrir_envio_arquivo)
+        # — estes botões só emitem o mesmo sinalizador, sem precisar
+        # tocar em main.py.
+        layout_extras2 = QHBoxLayout()
+
+        layout_extras2.setSpacing(
+            10
+        )
+
+        self.btn_camera_ao_vivo = QPushButton(
+            "CÂMERA AO VIVO"
+        )
+
+        self.btn_envio_arquivo = QPushButton(
+            "ENVIAR ARQUIVO"
+        )
+
+        layout_extras2.addWidget(
+            self.btn_camera_ao_vivo
+        )
+
+        layout_extras2.addWidget(
+            self.btn_envio_arquivo
+        )
+
+        layout.addLayout(
+            layout_extras2
+        )
+
+        # Botão terciário: mais discreto que o botão de visão, pra não
+        # competir com o fluxo principal da chamada (ver
+        # jarvis/ui/estilo.py).
+        for botao_nav in (
+            self.btn_configuracoes,
+            self.btn_chat,
+            self.btn_camera_ao_vivo,
+            self.btn_envio_arquivo,
+        ):
+            botao_nav.setObjectName(
+                "botaoNav"
+            )
+
         # Selects de microfone e alto-falante. A troca vale para a
         # PRÓXIMA chamada (um stream já aberto não muda de aparelho no
         # meio); a ativação por voz, que segura o microfone entre as
@@ -594,6 +580,16 @@ class MainWindow(QMainWindow):
 
         self.btn_chat.clicked.connect(
             self.abrir_chat
+        )
+
+        # Conecta os botões novos de câmera ao vivo e envio de
+        # arquivo, mesmo padrão dos dois acima.
+        self.btn_camera_ao_vivo.clicked.connect(
+            self.abrir_camera_ao_vivo
+        )
+
+        self.btn_envio_arquivo.clicked.connect(
+            self.abrir_envio_arquivo
         )
 
     # Adiciona uma nova mensagem ao registro de atividade.
@@ -985,6 +981,21 @@ class MainWindow(QMainWindow):
     # (ver ChatWindow / _obter_worker_ativo em main.py).
     def abrir_chat(self):
         obter_sinalizador().solicitou_abrir_chat.emit()
+
+    # Abre o preview ao vivo da webcam (jarvis/ui/janela_camera.py) —
+    # mesmo sinal que o tool de voz abrir_camera já emite
+    # (jarvis/pacotes/camera_preview/). Diferente de "ANALISAR CÂMERA":
+    # aquele é uma captura pontual de um frame por voz, isto é vídeo
+    # contínuo. Funciona com ou sem chamada ativa.
+    def abrir_camera_ao_vivo(self):
+        obter_sinalizador().solicitou_abrir_camera.emit()
+
+    # Abre a janela de envio de arquivo pro contexto da conversa
+    # (jarvis/ui/janela_envio_arquivo.py) — mesmo sinal que o tool de voz
+    # abrir_envio_arquivo já emite (jarvis/pacotes/chat_jarvis/). Antes só
+    # alcançável arrastando um arquivo dentro da janela de chat.
+    def abrir_envio_arquivo(self):
+        obter_sinalizador().solicitou_abrir_envio_arquivo.emit()
 
     # Evento executado automaticamente ao fechar a janela.
     # Garante que a thread não continue rodando em segundo plano.
