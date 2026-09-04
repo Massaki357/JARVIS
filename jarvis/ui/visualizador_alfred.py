@@ -40,6 +40,10 @@ from PySide6.QtGui import (
 # QWidget é a classe base do componente visual personalizado.
 from PySide6.QtWidgets import QWidget
 
+# Nome de identidade configurável (.env NOME_JARVIS, padrão "ALFRED")
+# — usado no texto desenhado no centro da esfera.
+from jarvis.nucleo.config import obter_nome_jarvis
+
 
 # Classe responsável por desenhar toda a interface animada do ALFRED.
 # Como herda de QWidget, pode ser colocada diretamente na janela principal.
@@ -96,6 +100,14 @@ class VisualizadorAlfred(QWidget):
         # Texto de status exibido abaixo do título.
         self.status = "OFFLINE"
 
+        # Nome desenhado no centro da esfera ("A L F R E D" com o
+        # espaçamento de letras aplicado pelo próprio desenho — ver
+        # _desenhar_textos). Carregado do .env na criação; troca em
+        # tempo real via definir_nome(), chamado por
+        # jarvis/ui/janela_principal.py quando o usuário edita o nome
+        # na tela principal.
+        self.nome = obter_nome_jarvis()
+
         # Nível bruto de áudio recebido da thread.
         self.nivel_audio = 0.0
         # Versão suavizada do nível de áudio.
@@ -143,6 +155,15 @@ class VisualizadorAlfred(QWidget):
         ).upper()
 
         # Solicita ao Qt uma nova pintura do componente.
+        self.update()
+
+    # Atualiza o nome desenhado no centro da esfera, em tempo real —
+    # chamado por jarvis/ui/janela_principal.py assim que o usuário
+    # salva um nome novo em jarvis/ui/painel_nome.py, sem precisar
+    # reiniciar o app nem reabrir a janela.
+    def definir_nome(self, nome):
+        self.nome = str(nome).strip().upper() or "ALFRED"
+
         self.update()
 
     # Ativa ou desativa visualmente o ALFRED.
@@ -1361,7 +1382,9 @@ class VisualizadorAlfred(QWidget):
                 40,
             ),
             Qt.AlignCenter,
-            "A L F R E D",
+            # Mesmo espaçamento visual de "A L F R E D" — aplicado a
+            # qualquer nome, uma letra por vez.
+            " ".join(self.nome),
         )
 
         # Cria a fonte usada no status.

@@ -32,6 +32,14 @@ class SinalizadorInterfacesExtras(QObject):
     solicitou_abrir_camera = Signal()
     solicitou_fechar_camera = Signal()
 
+    # Emitido pelo botão PERFIL da tela inicial
+    # (jarvis/ui/janela_principal.py) para abrir a janela de perfis
+    # (jarvis/ui/janela_perfil.py). Segue o mesmo padrão dos sinais
+    # acima, com uma diferença: não existe tool de voz que o dispare —
+    # escolher perfil é uma decisão de configuração do usuário, tomada
+    # ANTES da chamada, não durante ela.
+    solicitou_abrir_perfil = Signal()
+
     # Emitido por jarvis/pacotes/ativacao_voz/detector.py — numa thread de fundo
     # própria dele, nunca a thread da GUI — assim que a palavra-chave
     # de ativação é reconhecida no microfone, enquanto nenhuma chamada

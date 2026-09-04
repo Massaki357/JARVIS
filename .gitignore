@@ -34,3 +34,13 @@ dados/discord_canais.json
 # versionado no projeto do curso também). Se você preferir manter seus
 # compromissos fora do Git, acrescente "dados/agenda.json" aqui.
 JARVIS_COMPLETO
+
+# Perfis do jarvis (dados/perfis/): a PASTA de cada perfil é a fonte
+# da verdade e continua versionada, mesma regra de dados/memoria.json
+# e dados/agenda.json — o perfil padrão "completo/" carrega o prompt
+# de sistema do projeto, e os perfis que o usuário criar são a
+# configuração dele. O que NÃO é versionado é só o índice, que é 100%
+# derivado dessas pastas, carrega um "gerado_em" que muda a cada
+# regravação, e se refaz sozinho quando falta
+# (jarvis/nucleo/perfis/armazenamento.py::reconstruir_indice).
+dados/perfis/indice.json

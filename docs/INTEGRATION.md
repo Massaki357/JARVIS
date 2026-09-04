@@ -275,6 +275,45 @@ delegação é uma chamada HTTP pontual e síncrona (com timeout curto e
 fallback já resolvidos dentro do próprio pacote), sem callback de
 sessão nem estado em background.
 
+**Segunda porta de entrada, fora do contrato de tools:**
+`roteador.delegar_para_cerebro_configurado(conteudo, json_esperado=False,
+timeout=None)`. Não é uma tool (não aparece em
+`obter_function_declarations()`, o modelo de voz não a enxerga) — é uma
+função chamada direto por outro módulo, do mesmo jeito que
+`discord_jarvis.enviar_dm_discord` já é chamada direto pelo cliente.
+Hoje o único chamador é `jarvis/nucleo/perfis/geracao.py` (criação de
+perfil por IA).
+
+Diferenças em relação a `delegar(tipo_tarefa, conteudo)`:
+
+| | `delegar()` | `delegar_para_cerebro_configurado()` |
+|---|---|---|
+| Escolhe o provedor por | tipo de tarefa | `PROVEDOR_IA` do `.env` |
+| Provedores possíveis | Groq, Cerebras, OpenAI | Gemini, OpenAI |
+| Fallback | sim (menos em `segunda_opiniao`) | **nunca** |
+| Devolve | texto pronto pro modelo de voz falar | `(sucesso, texto)` cru |
+
+O **fallback ausente é deliberado**: o requisito é usar o cérebro que o
+usuário escolheu. Cair calado em outra IA entregaria um perfil escrito
+por quem ele não escolheu — melhor a tela dizer que falhou e ele tentar
+de novo.
+
+Foi por causa dessa rota que o **Gemini virou um quarto provedor** do
+pacote (`provedores.consultar_gemini`, `config.MODELO_GEMINI`). Ele não
+passa por `_chamar_completions` porque não expõe a API no formato da
+OpenAI — usa o SDK `google-genai`, que o projeto já tem. Os outros três
+provedores e o `delegar()` continuam exatamente como estavam.
+
+Isso também é o que mantém a **regra das duas portas da OpenAI** do
+`CLAUDE.md` intacta: com `PROVEDOR_IA=openai`, a criação de perfil
+alcança a OpenAI *por dentro deste pacote*, em vez de abrir uma
+terceira porta em `jarvis/nucleo/perfis/`.
+
+`config.TIMEOUT_LONGO_SEGUNDOS` (60s) existe para esta rota:
+`TIMEOUT_SEGUNDOS` (8s) é curto de propósito porque uma resposta falada
+não pode esperar, mas aqui o usuário está olhando uma tela de
+progresso e o texto pedido é bem maior.
+
 ### `admin_terminal`
 
 Precisa de uma chamada de inicialização no `__init__` do worker, reaproveitando o

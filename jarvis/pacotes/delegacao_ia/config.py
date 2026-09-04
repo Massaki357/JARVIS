@@ -21,6 +21,20 @@ OPENAI_API_KEY = os.getenv(
     "OPENAI_API_KEY"
 )
 
+# O Gemini entrou neste pacote depois dos outros três, por um motivo
+# específico: a criação de perfil por IA (jarvis/nucleo/perfis/
+# geracao.py) tem que mandar a descrição para o cérebro que o usuário
+# escolheu em PROVEDOR_IA, e esse cérebro é "gemini" ou "openai" — os
+# dois precisavam existir aqui dentro para essa rota não virar uma
+# chamada direta à OpenAI fora deste pacote (o CLAUDE.md permite
+# exatamente duas portas para a OpenAI, e uma delas é aqui).
+#
+# Mesma chave obrigatória do projeto inteiro, só relida aqui pela
+# convenção de cada pacote ter o próprio load_dotenv().
+GEMINI_API_KEY = os.getenv(
+    "GEMINI_API_KEY"
+)
+
 # Timeout de cada chamada de completions, em segundos. Curto de
 # propósito: se um provedor demorar mais que isso, desiste e tenta o
 # fallback (ou devolve o controle pro Jarvis) em vez de travar a
@@ -46,6 +60,20 @@ MODELO_OPENAI = os.getenv(
     "DELEGACAO_MODELO_OPENAI",
     "gpt-4o-mini",
 )
+
+# Mesmo modelo que jarvis/pacotes/memoria_obsidian/config.py usa para
+# consolidar notas — confirmado ao vivo lá, não adivinhado.
+MODELO_GEMINI = os.getenv(
+    "DELEGACAO_MODELO_GEMINI",
+    "gemini-3.6-flash",
+)
+
+# Timeout das tarefas que NÃO são resposta de voz (hoje, a criação de
+# perfil). TIMEOUT_SEGUNDOS é curto de propósito porque uma resposta
+# falada não pode esperar; aqui o usuário está olhando uma tela com
+# "Consultando o modelo...", e o texto pedido é bem maior — desistir
+# em 8s reprovaria uma resposta que estava vindo.
+TIMEOUT_LONGO_SEGUNDOS = 60
 
 
 # Descreve as variáveis de .env deste pacote pra tela de
@@ -87,6 +115,12 @@ def config_schema():
         {
             "nome": "DELEGACAO_MODELO_OPENAI",
             "rotulo": "Modelo usado na OpenAI (padrão: gpt-4o-mini)",
+            "sensivel": False,
+            "obrigatoria": False,
+        },
+        {
+            "nome": "DELEGACAO_MODELO_GEMINI",
+            "rotulo": "Modelo do Gemini (delegação e criação de perfil)",
             "sensivel": False,
             "obrigatoria": False,
         },

@@ -91,6 +91,16 @@ def _ler_bloco():
         return {}
 
 
+def ler_preferencia(chave, padrao=None):
+    """
+    Lê UMA preferência do config.json, devolvendo `padrao` quando o
+    arquivo não existe, está em formato inesperado, ou não tem a
+    chave. Contraparte de salvar_preferencia() — nunca levanta
+    exceção.
+    """
+    return _ler_bloco().get(chave, padrao)
+
+
 def salvar_preferencia(chave, valor):
     """
     Grava UMA preferência no config.json, preservando as demais.

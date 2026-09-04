@@ -52,6 +52,18 @@ from jarvis.ui.painel_console import PainelConsole
 # e aplicar em sd.default.device) mora no próprio módulo.
 from jarvis.ui.painel_dispositivos import PainelDispositivos
 
+# Select do cérebro de voz ativo (PROVEDOR_IA) — toda a lógica de
+# ler/escrever o .env mora no próprio módulo.
+from jarvis.ui.painel_provedor import PainelProvedor
+
+# Input do nome de identidade do assistente (NOME_JARVIS) — toda a
+# lógica de ler/escrever o .env mora no próprio módulo.
+from jarvis.ui.painel_nome import PainelNome
+
+# Nome de identidade configurável (.env NOME_JARVIS, padrão "ALFRED")
+# — usado no título da janela e no rótulo lateral, na abertura.
+from jarvis.nucleo.config import obter_nome_jarvis
+
 # Esfera animada que reage ao estado da chamada e ao volume da voz —
 # veio do JARVIS COMPLETO (ui/alfred_visualizer.py). Todo o desenho
 # (QPainter, cache de fundo/esfera, FPS adaptativo) mora no próprio
@@ -94,9 +106,12 @@ class MainWindow(QMainWindow):
         # Inicializa a classe QMainWindow.
         super().__init__()
 
-        # Define o texto exibido na barra superior da janela.
+        # Define o texto exibido na barra superior da janela — nome
+        # configurável (.env NOME_JARVIS, padrão "ALFRED"). Atualizado
+        # em tempo real por _aplicar_nome_novo quando o usuário edita
+        # o nome em jarvis/ui/painel_nome.py.
         self.setWindowTitle(
-            "ALFRED"
+            obter_nome_jarvis()
         )
 
         # Define o menor tamanho permitido para a janela. Largo
@@ -120,16 +135,20 @@ class MainWindow(QMainWindow):
         # Estado da retomada de sessão (vem do JARVIS COMPLETO).
         #
         # session_handle: último token de retomada emitido pelo
-        # servidor. Preservado APENAS entre reconexões automáticas; é
-        # zerado em qualquer encerramento manual ou por voz, para a
-        # próxima chamada do usuário começar limpa.
+        # servidor. Preservado entre reconexões automáticas (go_away)
+        # E entre uma pausa por voz (pausar_chamada) e a retomada
+        # seguinte — nesses dois casos a conversa continua; é zerado
+        # em qualquer encerramento de verdade (manual ou por voz via
+        # encerrar_chamada), para a próxima chamada do usuário começar
+        # limpa.
         self.session_handle = None
 
         # Transcrição acumulada da conversa, carregada de um worker
-        # para o próximo numa reconexão automática — do lado do
-        # servidor a conversa continua, então o histórico daqui
-        # também precisa continuar (senão o resumo salvo no fim teria
-        # só o trecho depois da última renovação).
+        # para o próximo numa reconexão automática OU numa retomada
+        # depois de uma pausa por voz — do lado do servidor (Gemini) a
+        # conversa continua, então o histórico daqui também precisa
+        # continuar (senão o resumo salvo no fim teria só o trecho
+        # depois da última renovação/pausa).
         self.transcricao_preservada = []
 
         # Distinguem uma QUEDA de conexão (deve reabrir sozinho,
@@ -137,6 +156,22 @@ class MainWindow(QMainWindow):
         # usuário ou por voz (não deve reabrir nada).
         self.reconectar_automaticamente = False
         self.encerramento_manual = False
+
+        # True só entre o momento em que a chamada foi pausada por voz
+        # (pausar_chamada, ver preparar_hibernacao) e a limpeza de
+        # chamada_finalizada logo depois — diferencia essa pausa
+        # deliberada da reconexão automática por queda/go_away, que
+        # usa o mesmo reconectar_automaticamente acima mas reabre
+        # sozinha (com um QTimer) em vez de esperar a ativação por voz
+        # detectar a frase de novo.
+        self.hibernando_por_voz = False
+
+        # True só na PRÓXIMA chamada a iniciar — setado por
+        # iniciar_chamada_por_voz (frase de ativação detectada) antes
+        # de chamar iniciar_chamada, que repassa isso ao construtor do
+        # worker e zera de volta a False logo em seguida (consumido).
+        # O botão manual (alternar_chamada) nunca liga isso.
+        self.ativado_por_voz = False
 
         # Aplica o estilo QSS em toda a janela.
         self.setStyleSheet(
@@ -205,33 +240,36 @@ class MainWindow(QMainWindow):
             12
         )
 
-        # Cria o texto principal da interface.
-        titulo = QLabel(
-            "ALFRED"
+        # Cria o texto principal da interface — nome configurável
+        # (.env NOME_JARVIS, padrão "ALFRED"). Salvo em self porque
+        # _aplicar_nome_novo atualiza o texto em tempo real quando o
+        # usuário edita o nome em jarvis/ui/painel_nome.py.
+        self.titulo_label = QLabel(
+            obter_nome_jarvis()
         )
 
         # Define o objectName usado pelo estilo QSS.
-        titulo.setObjectName(
+        self.titulo_label.setObjectName(
             "titulo"
         )
 
         # Centraliza o texto dentro do QLabel.
-        titulo.setAlignment(
+        self.titulo_label.setAlignment(
             Qt.AlignCenter
         )
 
         # Espaçamento entre letras — QSS não tem essa propriedade, só
         # dá pra aplicar via QFont (mesma técnica de
         # jarvis/ui/visualizador_alfred.py, que usa o mesmo recurso pro
-        # "A L F R E D" desenhado dentro da esfera).
-        fonte_titulo = titulo.font()
+        # nome desenhado dentro da esfera).
+        fonte_titulo = self.titulo_label.font()
 
         fonte_titulo.setLetterSpacing(
             QFont.SpacingType.AbsoluteSpacing,
             2,
         )
 
-        titulo.setFont(
+        self.titulo_label.setFont(
             fonte_titulo
         )
 
@@ -352,7 +390,7 @@ class MainWindow(QMainWindow):
 
         # Adiciona um componente ao layout vertical.
         layout.addWidget(
-            titulo
+            self.titulo_label
         )
 
         # Adiciona um componente ao layout vertical.
@@ -457,6 +495,19 @@ class MainWindow(QMainWindow):
             layout_extras2
         )
 
+        # Terceira linha, com um botão só ocupando a largura inteira.
+        # PERFIL não entrou nas linhas de dois acima de propósito: a
+        # coluna de controles tem largura fixa (330px), e um terceiro
+        # botão nela cortava os rótulos dos outros dois ("ÂMERA AO
+        # VIV", "NVIAR ARQUIV") — conferido num print da janela real.
+        self.btn_perfil = QPushButton(
+            "PERFIL"
+        )
+
+        layout.addWidget(
+            self.btn_perfil
+        )
+
         # Botão terciário: mais discreto que o botão de visão, pra não
         # competir com o fluxo principal da chamada (ver
         # jarvis/ui/estilo.py).
@@ -465,10 +516,41 @@ class MainWindow(QMainWindow):
             self.btn_chat,
             self.btn_camera_ao_vivo,
             self.btn_envio_arquivo,
+            self.btn_perfil,
         ):
             botao_nav.setObjectName(
                 "botaoNav"
             )
+
+        # Input do nome de identidade do assistente — atualiza o
+        # título da janela, este rótulo lateral e o texto desenhado na
+        # esfera assim que o usuário confirma a edição (ver
+        # _aplicar_nome_novo), além de já valer na próxima chamada
+        # (a instrução de sistema relê o .env a cada conexão).
+        layout.addSpacing(
+            8
+        )
+
+        self.painel_nome = PainelNome(
+            ao_alterar=self._aplicar_nome_novo
+        )
+
+        layout.addWidget(
+            self.painel_nome
+        )
+
+        # Select do cérebro de voz ativo (Gemini/OpenAI). Mesma regra
+        # de "vale na próxima chamada" do que os selects de aparelho
+        # logo abaixo — nunca afeta uma chamada já em andamento.
+        layout.addSpacing(
+            8
+        )
+
+        self.painel_provedor = PainelProvedor()
+
+        layout.addWidget(
+            self.painel_provedor
+        )
 
         # Selects de microfone e alto-falante. A troca vale para a
         # PRÓXIMA chamada (um stream já aberto não muda de aparelho no
@@ -484,21 +566,12 @@ class MainWindow(QMainWindow):
             self.painel_dispositivos
         )
 
-        # Adiciona um espaço fixo entre grupos de componentes.
-        layout.addSpacing(
-            8
-        )
-
-        # Fim da coluna da esquerda: o registro de atividade, como
-        # sempre foi — só que agora empilhado abaixo dos controles em
-        # vez de dividir a largura da janela com o console.
-        layout.addWidget(
-            registro_titulo
-        )
-
-        layout.addWidget(
-            self.log_box,
-            1,
+        # Fim da coluna da esquerda: só botões e painéis de ajuste
+        # rápido — o registro de atividade saiu daqui e foi para a
+        # coluna da direita, acima do console (ver mais abaixo).
+        # addStretch mantém tudo colado no topo em vez de esticar.
+        layout.addStretch(
+            1
         )
 
         # Coluna do centro: a esfera. É o painel principal da
@@ -528,6 +601,30 @@ class MainWindow(QMainWindow):
             25,
             30,
             25,
+        )
+
+        layout_console.setSpacing(
+            8
+        )
+
+        # Registro de atividade — antes ficava na coluna da esquerda,
+        # dividindo espaço com os botões; agora fica aqui, acima do
+        # console de diagnóstico, deixando a esquerda só para
+        # controles. registro_titulo e self.log_box continuam sendo os
+        # mesmos widgets de sempre (criados mais acima, junto com o
+        # resto da coluna de controles) — só o lugar onde entram no
+        # layout mudou.
+        layout_console.addWidget(
+            registro_titulo
+        )
+
+        layout_console.addWidget(
+            self.log_box,
+            1,
+        )
+
+        layout_console.addSpacing(
+            12
         )
 
         layout_console.addWidget(
@@ -592,6 +689,10 @@ class MainWindow(QMainWindow):
             self.abrir_envio_arquivo
         )
 
+        self.btn_perfil.clicked.connect(
+            self.abrir_perfil
+        )
+
     # Adiciona uma nova mensagem ao registro de atividade.
     def escrever_log(self, texto):
         # append adiciona o texto em uma nova linha.
@@ -613,16 +714,40 @@ class MainWindow(QMainWindow):
             texto
         )
 
+    # Chamado por jarvis/ui/painel_nome.py assim que o usuário confirma
+    # um nome novo (já salvo no .env naquele ponto) — atualiza tudo que
+    # mostra o nome na tela principal, sem precisar reiniciar o app:
+    # barra de título da janela, rótulo lateral e o texto desenhado no
+    # centro da esfera. O que é FALADO/ESCRITO pelo modelo (instrução
+    # de sistema, "<nome> conectado...") já pega o nome novo sozinho na
+    # próxima chamada, porque relê o .env do disco a cada conexão (ver
+    # jarvis/nucleo/config.py::obter_nome_jarvis) — não precisa deste
+    # método pra isso.
+    def _aplicar_nome_novo(self, nome):
+        self.setWindowTitle(
+            nome
+        )
+
+        self.titulo_label.setText(
+            nome
+        )
+
+        self.visualizador.definir_nome(
+            nome
+        )
+
     # Decide entre iniciar ou encerrar a chamada.
     def alternar_chamada(self):
         # Se não existe worker, inicia uma nova chamada.
         if self.live_worker is None:
-            # Uma chamada iniciada pelo usuário (botão ou palavra de
-            # ativação) começa SEMPRE do zero: o token de retomada e a
-            # transcrição preservada só valem para reconexão
-            # automática. Ver preparar_reconexao_automatica.
+            # Uma chamada iniciada pelo BOTÃO MANUAL começa SEMPRE do
+            # zero: o token de retomada e a transcrição preservada só
+            # valem para reconexão automática (go_away) ou retomada
+            # por voz depois de uma pausa — ver
+            # preparar_reconexao_automatica / iniciar_chamada_por_voz.
             self.session_handle = None
             self.transcricao_preservada = []
+            self.ativado_por_voz = False
 
             self.iniciar_chamada()
 
@@ -646,6 +771,37 @@ class MainWindow(QMainWindow):
             )
 
             self.encerrar_chamada()
+
+    # Chamado por main.py quando jarvis/pacotes/ativacao_voz detecta a frase de
+    # ativação (NOME_ATIVACAO) com nenhuma chamada em andamento —
+    # cobre os DOIS casos com o mesmo código, sem precisar saber qual
+    # é qual:
+    #
+    # - Modo ocioso "frio" (nunca pausou, ou pausou e o handle já
+    #   expirou): self.session_handle e self.transcricao_preservada já
+    #   estão None/[] (zerados pela última vez que uma chamada
+    #   terminou de verdade), então a chamada começa limpa, igual ao
+    #   botão manual — só que sem precisar zerar nada aqui, porque já
+    #   estão zerados.
+    # - Retomando de uma pausa por voz (pausar_chamada): os dois já
+    #   estão preenchidos (preservados por preparar_hibernacao), então
+    #   a chamada nova continua a MESMA conversa.
+    #
+    # Diferente de alternar_chamada: NUNCA zera session_handle/
+    # transcricao_preservada — é exatamente essa diferença que faz a
+    # retomada funcionar.
+    def iniciar_chamada_por_voz(self):
+        # Defensivo: ativacao_voz já deveria estar pausado enquanto
+        # existe uma chamada ativa (ver GeminiLiveWorker.executar()),
+        # então isto não deveria disparar com self.live_worker
+        # preenchido — mas se disparar, é melhor ignorar do que
+        # atropelar a chamada em andamento.
+        if self.live_worker is not None:
+            return
+
+        self.ativado_por_voz = True
+
+        self.iniciar_chamada()
 
     # Prepara a interface e inicia a thread do Gemini Live.
     def iniciar_chamada(self):
@@ -691,11 +847,18 @@ class MainWindow(QMainWindow):
 
         # Cria a thread responsável pela sessão Gemini. O
         # session_handle e a transcrição só vêm preenchidos numa
-        # reconexão automática — ver preparar_reconexao_automatica.
+        # reconexão automática ou numa retomada por voz — ver
+        # preparar_reconexao_automatica / iniciar_chamada_por_voz.
         self.live_worker = _classe_do_worker()(
             session_handle=self.session_handle,
             transcricao_inicial=self.transcricao_preservada,
+            ativado_por_voz=self.ativado_por_voz,
         )
+
+        # Consumido: só vale para ESTA chamada que está sendo criada
+        # agora. Uma futura reconexão automática (go_away) desta mesma
+        # chamada não deve repetir a saudação de ativação por voz.
+        self.ativado_por_voz = False
 
         # Recebe mensagens de status vindas da thread.
         self.live_worker.status_recebido.connect(
@@ -721,6 +884,12 @@ class MainWindow(QMainWindow):
         # reconexão esperada, não erro.
         self.live_worker.solicitou_reconexao.connect(
             self.preparar_reconexao_automatica
+        )
+
+        # O usuário confirmou que não precisa de mais ajuda agora
+        # (tool pausar_chamada): pausa em vez de encerrar de verdade.
+        self.live_worker.solicitou_hibernacao.connect(
+            self.preparar_hibernacao
         )
 
         # Guarda o token de retomada mais recente, para a reconexão
@@ -816,10 +985,14 @@ class MainWindow(QMainWindow):
         )
 
         # Antes de largar a referência: se a chamada vai reabrir
-        # sozinha, leva a transcrição acumulada para o próximo worker.
-        # Do lado do servidor a conversa continua (session_handle), e
-        # sem isto o resumo salvo no fim teria só o trecho depois da
-        # última renovação.
+        # sozinha (go_away) OU foi pausada por voz, leva a transcrição
+        # acumulada para o próximo worker. Do lado do servidor a
+        # conversa continua (session_handle), e sem isto o resumo
+        # salvo no fim teria só o trecho depois da última renovação/
+        # pausa. hibernando_por_voz também liga reconectar_automaticamente
+        # (ver preparar_hibernacao), então esta mesma condição já
+        # cobre os dois casos sem precisar checar hibernando_por_voz
+        # aqui também.
         if (
             self.live_worker is not None
             and self.reconectar_automaticamente
@@ -869,6 +1042,30 @@ class MainWindow(QMainWindow):
         self.definir_status(
             "OFFLINE"
         )
+
+        # Pausada por voz (pausar_chamada): NÃO reabre sozinha — o
+        # session_handle/transcricao_preservada já foram levados pra
+        # cima (mesma condição), e agora é jarvis/pacotes/ativacao_voz (já
+        # reativado sozinho pela própria limpeza de executar()) que
+        # fica esperando a frase de ativação de novo. Checado ANTES do
+        # bloco de reconexão automática abaixo, porque
+        # hibernando_por_voz também liga reconectar_automaticamente —
+        # sem essa ordem, cairia no QTimer de reconexão imediata em
+        # vez de esperar a voz.
+        if self.hibernando_por_voz:
+            self.hibernando_por_voz = False
+            self.reconectar_automaticamente = False
+
+            self.definir_status(
+                "PAUSADO — DIGA A FRASE DE ATIVAÇÃO"
+            )
+
+            self.escrever_log(
+                "Chamada pausada — diga a frase de ativação para "
+                "continuar."
+            )
+
+            return
 
         # Reabre a chamada sozinha quando a queda não foi pedida pelo
         # usuário — usando o mesmo session_handle, então a conversa
@@ -925,6 +1122,38 @@ class MainWindow(QMainWindow):
         self.escrever_log(
             "Renovando a conexão sem perder a conversa..."
         )
+
+    # Conectado a solicitou_hibernacao: o usuário confirmou que não
+    # precisa de mais ajuda agora (tool pausar_chamada) — pede pra
+    # fechar a sessão atual, preservando o session_handle/transcrição
+    # (reaproveita reconectar_automaticamente pra isso, mesma lógica
+    # de preparar_reconexao_automatica acima), mas SEM reabrir
+    # sozinho: hibernando_por_voz (checado em chamada_finalizada) faz
+    # a chamada ficar parada até jarvis/pacotes/ativacao_voz detectar a
+    # frase de ativação de novo, em vez do QTimer de reconexão
+    # imediata que o go_away usa.
+    def preparar_hibernacao(self):
+        if self.encerramento_manual:
+            return
+
+        self.hibernando_por_voz = True
+        self.reconectar_automaticamente = True
+
+        self.definir_status(
+            "PAUSANDO CHAMADA..."
+        )
+
+        self.escrever_log(
+            "Pausando a chamada por pedido do usuário..."
+        )
+
+        # Pede pro loop assíncrono do worker terminar — mesmo método
+        # que o botão de encerrar usa (self.live_worker.parar()), só
+        # que sem passar por encerrar_chamada (que zeraria
+        # session_handle/transcricao_preservada e marcaria
+        # encerramento_manual, os dois errados aqui).
+        if self.live_worker:
+            self.live_worker.parar()
 
     # Conectado a session_handle_atualizado: guarda o token mais
     # recente de retomada emitido pelo servidor.
@@ -996,6 +1225,12 @@ class MainWindow(QMainWindow):
     # alcançável arrastando um arquivo dentro da janela de chat.
     def abrir_envio_arquivo(self):
         obter_sinalizador().solicitou_abrir_envio_arquivo.emit()
+
+    # Abre a janela de perfis (jarvis/ui/janela_perfil.py). Diferente
+    # dos slots acima, não existe tool de voz equivalente: escolher
+    # perfil é configuração feita ANTES da chamada, não durante.
+    def abrir_perfil(self):
+        obter_sinalizador().solicitou_abrir_perfil.emit()
 
     # Evento executado automaticamente ao fechar a janela.
     # Garante que a thread não continue rodando em segundo plano.

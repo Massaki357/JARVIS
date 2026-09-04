@@ -6,7 +6,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -19,6 +18,79 @@ from PySide6.QtWidgets import (
 
 from . import env_io
 from .pacotes import PACOTES_COM_CONFIG
+
+
+# Seção recolhível de uma categoria de configuração — substitui o
+# QGroupBox simples de antes. Com muitos pacotes registrados, a tela
+# de configurações virou uma lista longa demais pra achar um campo
+# específico; agora cada categoria começa FECHADA, e um clique no
+# cabeçalho abre só aquela (as outras continuam como estavam).
+class _SecaoRecolhivel(QWidget):
+
+    def __init__(self, titulo, parent=None):
+        super().__init__(parent)
+
+        self._titulo_base = titulo
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 8)
+        layout.setSpacing(0)
+
+        # O próprio texto do botão carrega o indicador de estado (▸
+        # fechado / ▾ aberto) — mais simples que desenhar uma seta à
+        # parte, e já dá o feedback visual de clique do QPushButton
+        # (estado "pressionado" quando checked=True).
+        self.botao_titulo = QPushButton()
+        self.botao_titulo.setCheckable(True)
+        self.botao_titulo.setChecked(False)
+        self.botao_titulo.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.botao_titulo.setStyleSheet(
+            "QPushButton {"
+            "    text-align: left;"
+            "    padding: 8px 10px;"
+            "    font-weight: 600;"
+            "    border: 1px solid #999999;"
+            "    border-radius: 3px;"
+            "}"
+            "QPushButton:checked {"
+            "    border-bottom-left-radius: 0px;"
+            "    border-bottom-right-radius: 0px;"
+            "}"
+        )
+        self.botao_titulo.clicked.connect(self._alternar)
+
+        # Conteúdo (o formulário com os campos da categoria) — começa
+        # invisível, exatamente como o botão começa desmarcado.
+        self.conteudo = QWidget()
+        self.conteudo.setVisible(False)
+        self.conteudo.setStyleSheet(
+            "border: 1px solid #999999; border-top: none;"
+        )
+
+        self.layout_conteudo = QFormLayout(self.conteudo)
+        self.layout_conteudo.setContentsMargins(12, 10, 12, 10)
+
+        layout.addWidget(self.botao_titulo)
+        layout.addWidget(self.conteudo)
+
+        self._atualizar_texto_botao()
+
+    def _alternar(self):
+        aberto = self.botao_titulo.isChecked()
+
+        self.conteudo.setVisible(aberto)
+
+        self._atualizar_texto_botao()
+
+    def _atualizar_texto_botao(self):
+        seta = "▾" if self.botao_titulo.isChecked() else "▸"
+
+        self.botao_titulo.setText(
+            f"{seta}  {self._titulo_base}"
+        )
+
+    def form(self):
+        return self.layout_conteudo
 
 
 # Uma linha de campo. Duas variantes, conforme a entrada do schema:
@@ -160,8 +232,8 @@ class ConfiguracoesWindow(QWidget):
         )
 
     def _montar_secao(self, rotulo_secao, modulo_config, valores_atuais):
-        grupo = QGroupBox(rotulo_secao)
-        formulario = QFormLayout(grupo)
+        secao = _SecaoRecolhivel(rotulo_secao)
+        formulario = secao.form()
 
         schema = modulo_config.config_schema()
 
@@ -178,7 +250,7 @@ class ConfiguracoesWindow(QWidget):
 
             formulario.addRow(rotulo_campo, campo.widget_linha)
 
-        return grupo
+        return secao
 
     def _salvar(self):
         campos_alterados = [c for c in self._campos if c.valor_alterado()]

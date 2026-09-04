@@ -166,6 +166,35 @@ def _ao_fechar_camera():
     _janela_camera = None
 
 
+# Mesma referência de módulo que _janela_camera usa, pelo mesmo
+# motivo: sem ela a janela seria coletada pelo garbage collector
+# assim que _abrir_perfil retornasse, e permite só focar a existente
+# em vez de abrir uma segunda.
+_janela_perfil = None
+
+
+def _abrir_perfil():
+    global _janela_perfil
+
+    if _janela_perfil is not None:
+        # Já aberta: recarrega a lista (um perfil pode ter sido criado
+        # ou apagado por fora nesse meio tempo) e só traz pra frente.
+        _janela_perfil.recarregar_perfis()
+        _janela_perfil.raise_()
+        _janela_perfil.activateWindow()
+        return
+
+    from jarvis.ui.janela_perfil import JanelaPerfil
+
+    _janela_perfil = JanelaPerfil(ao_fechar=_ao_fechar_perfil)
+    _janela_perfil.show()
+
+
+def _ao_fechar_perfil():
+    global _janela_perfil
+    _janela_perfil = None
+
+
 # Chamado numa thread de fundo própria de jarvis/pacotes/ativacao_voz/detector.py,
 # assim que a palavra-chave de ativação é reconhecida — nunca a
 # thread da GUI, por isso só faz uma coisa thread-safe (emitir um
@@ -175,12 +204,16 @@ def _callback_ativacao_detectada():
     obter_sinalizador().solicitou_iniciar_chamada_por_voz.emit()
 
 
-# Roda na thread principal (slot conectado ao Signal acima) — dispara
-# a MESMA ação do clique no botão de iniciar chamada, reaproveitada,
-# não duplicada.
+# Roda na thread principal (slot conectado ao Signal acima). Chama
+# MainWindow.iniciar_chamada_por_voz, não alternar_chamada (o botão
+# manual) — a diferença é que este caminho NUNCA zera session_handle/
+# transcricao_preservada, o que é o que permite retomar uma chamada
+# pausada por voz (tool pausar_chamada) continuando a mesma conversa,
+# além de cobrir o início a frio normal (os dois já valem None/[]
+# nesse caso, então o efeito é idêntico ao do botão).
 def _iniciar_chamada_por_voz():
     if _janela_principal is not None:
-        _janela_principal.alternar_chamada()
+        _janela_principal.iniciar_chamada_por_voz()
 
 
 # [CURSO] Função principal da aplicação.
@@ -237,6 +270,10 @@ def main():
     )
     obter_sinalizador().solicitou_fechar_camera.connect(
         _fechar_camera
+    )
+
+    obter_sinalizador().solicitou_abrir_perfil.connect(
+        _abrir_perfil
     )
 
     # Mesmo padrão, pro pedido de iniciar uma chamada por ativação de

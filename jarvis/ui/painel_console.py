@@ -199,6 +199,17 @@ class PainelConsole(QWidget):
             '    font-family: "Consolas";'
             "    font-size: 10px;"
             "}"
+            # Variante desabilitada. Precisa ser repetida aqui, por
+            # objectName: em QSS um seletor de ID vence a pseudo-classe
+            # :disabled num seletor de tipo, então a regra
+            # QTextEdit:disabled do ESTILO_GLOBAL não alcança este
+            # widget e ele ficaria idêntico habilitado e desabilitado —
+            # conferido comparando os pixels renderizados.
+            "QTextEdit#console:disabled {"
+            "    color: #4d4348;"
+            "    background-color: #0a0709;"
+            "    border: 1px solid #1a0b0e;"
+            "}"
         )
         self.caixa.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.caixa.setPlaceholderText(

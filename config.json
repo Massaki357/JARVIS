@@ -3,7 +3,8 @@
     {
       "interrupcao": true,
       "microfone": "",
-      "alto_falante": ""
+      "alto_falante": "",
+      "perfil_ativo": ""
     }
   ]
 }

@@ -100,3 +100,62 @@ def _delegar_segunda_opiniao(conteudo):
     return prompts.DELEGACAO_SEGUNDA_OPINIAO_RESULTADO.format(
         resultado=resultado
     )
+
+
+# Provedor de cada valor possível de PROVEDOR_IA (jarvis/nucleo/
+# config.py). São só dois porque só existem dois cérebros de voz.
+MAPA_CEREBRO_CONFIGURADO = {
+    "openai": provedores.consultar_openai,
+    "gemini": provedores.consultar_gemini,
+}
+
+
+def delegar_para_cerebro_configurado(
+    conteudo,
+    json_esperado=False,
+    timeout=None,
+):
+    """
+    Manda um pedido de texto para O MESMO cérebro que o usuário
+    escolheu em PROVEDOR_IA (.env) — Gemini ou OpenAI.
+
+    Diferente de delegar(): esta rota NÃO escolhe provedor por tipo de
+    tarefa, não tem fallback para outro provedor, e devolve
+    (sucesso, texto) cru em vez de uma mensagem pronta para o modelo
+    de voz falar. Quem chama é a criação de perfil por IA
+    (jarvis/nucleo/perfis/geracao.py), que precisa do texto para
+    validar em código, e para quem "tentar outro provedor" seria
+    errado: o requisito é usar o cérebro configurado, não qualquer um
+    que responda.
+
+    Fallback seria pior que o erro aqui. Se o cérebro configurado não
+    responde, a tela diz isso e o usuário tenta de novo — em vez de
+    receber, calado, um perfil escrito por outra IA que ele não
+    escolheu.
+
+    Esta função é também o motivo de o Gemini ter entrado neste
+    pacote: com ela, a criação de perfil alcança a OpenAI SEM abrir
+    uma terceira porta fora daqui (ver a regra das duas portas
+    sancionadas no CLAUDE.md).
+    """
+    # Import adiado: roteador.py é carregado no import do pacote, que
+    # entra em PACOTES_REGISTRADOS, e jarvis.nucleo.config lê o .env
+    # em tempo de importação. Adiando, a leitura acontece na hora da
+    # chamada — que é o que faz uma troca de PROVEDOR_IA valer sem
+    # reiniciar o app.
+    from jarvis.nucleo.config import usar_provedor_openai
+
+    nome_cerebro = "openai" if usar_provedor_openai() else "gemini"
+
+    funcao = MAPA_CEREBRO_CONFIGURADO[nome_cerebro]
+
+    sucesso, resultado = funcao(
+        conteudo,
+        json_esperado=json_esperado,
+        timeout=timeout,
+    )
+
+    if sucesso:
+        return True, resultado
+
+    return False, f"[{nome_cerebro}] {resultado}"

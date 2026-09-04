@@ -128,6 +128,19 @@ QPushButton:pressed {
     background-color: #1a0e10;
 }
 
+/* Botão desabilitado. Sem esta regra um botão com setEnabled(False)
+   fica visualmente IDÊNTICO a um habilitado (o QSS acima sobrescreve
+   a aparência padrão do sistema, inclusive a de desabilitado), e o
+   usuário só descobre que não pode clicar tentando. Vale para todos
+   os botões do app: os de ferramenta do perfil padrão, que são
+   travados de propósito (ver jarvis/ui/janela_perfil.py), e o EDITAR
+   PERFIL quando não há perfil nenhum. */
+QPushButton:disabled {
+    color: #4d4348;
+    background-color: #0a0709;
+    border: 1px solid #1a0b0e;
+}
+
 /* Botão primário — a chamada. Único vermelho sólido da interface,
    reservado pra ação mais importante da tela. */
 QPushButton#botaoChamada {
@@ -139,6 +152,12 @@ QPushButton#botaoChamada {
 
 QPushButton#botaoChamada:hover {
     background-color: #98001c;
+}
+
+QPushButton#botaoChamada:disabled {
+    color: #6b6b6b;
+    background-color: #3a1015;
+    border: 1px solid #2a0b0f;
 }
 
 QPushButton#botaoChamada[encerrando="true"] {
@@ -178,6 +197,51 @@ QPushButton#botaoNav:hover {
     background-color: #0d0a0c;
 }
 
+/* Desabilitado precisa ser repetido por objectName: em QSS, um
+   seletor de ID (#botaoNav) é mais específico que a pseudo-classe
+   :disabled num seletor de tipo (QPushButton:disabled), então a regra
+   genérica lá de cima NÃO alcança estes botões e eles continuariam
+   parecendo clicáveis. Conferido num print da janela real, não
+   deduzido da documentação. */
+QPushButton#botaoNav:disabled {
+    color: #4d4348;
+    background-color: #0a0709;
+    border: 1px solid #1a0b0e;
+}
+
+QPushButton#botaoVisao:disabled {
+    color: #4d4348;
+    background-color: #0a0709;
+    border: 1px solid #1a0b0e;
+}
+
+/* Botão destrutivo — hoje só APAGAR ESTE PERFIL, no rodapé da tela de
+   edição de perfil. Deliberadamente NÃO usa o vermelho sólido de
+   identidade (#b00020): esse é do INICIAR CHAMADA e do CRIAR PERFIL,
+   ações que devem ser fáceis de achar e clicar. Apagar não deve
+   competir com elas nem atrair o clique — fica discreto, com o texto
+   já acinzentado, e só acende vermelho quando o ponteiro está em cima,
+   confirmando o que ele é antes do clique. */
+QPushButton#botaoPerigo {
+    min-height: 32px;
+    color: #8f8388;
+    background-color: transparent;
+    border: 1px solid #2a1014;
+    font-size: 10px;
+}
+
+QPushButton#botaoPerigo:hover {
+    color: #ff3044;
+    border: 1px solid #b00020;
+    background-color: #150c0e;
+}
+
+QPushButton#botaoPerigo:disabled {
+    color: #4d4348;
+    background-color: #0a0709;
+    border: 1px solid #1a0b0e;
+}
+
 /* Caixas de texto — registro de atividade, histórico do chat, etc. */
 QTextEdit {
     color: #ece6e7;
@@ -192,6 +256,17 @@ QTextEdit {
 
 QTextEdit:focus {
     border: 1px solid #b00020;
+}
+
+/* Não existia variante :disabled para QTextEdit/QLineEdit/QComboBox
+   em lugar nenhum do projeto. Como as regras acima sobrescrevem a
+   aparência padrão do sistema (que tem o seu próprio desabilitado), o
+   widget ficava idêntico nos dois estados — conferido comparando os
+   pixels renderizados, não lendo o QSS. */
+QTextEdit:disabled {
+    color: #4d4348;
+    background-color: #0a0709;
+    border: 1px solid #1a0b0e;
 }
 
 /* Campo de texto de uma linha (o campo de mensagem do chat). */
@@ -209,6 +284,12 @@ QLineEdit:focus {
     border: 1px solid #b00020;
 }
 
+QLineEdit:disabled {
+    color: #4d4348;
+    background-color: #0a0709;
+    border: 1px solid #1a0b0e;
+}
+
 /* Selects de microfone/alto-falante — só a cor base vem daqui;
    dimensão (min-height, padding, font-size) continua sendo ajustada
    localmente em jarvis/ui/painel_dispositivos.py. */
@@ -221,6 +302,12 @@ QComboBox {
 
 QComboBox:hover {
     border: 1px solid #b00020;
+}
+
+QComboBox:disabled {
+    color: #4d4348;
+    background-color: #0a0709;
+    border: 1px solid #1a0b0e;
 }
 
 QComboBox QAbstractItemView {

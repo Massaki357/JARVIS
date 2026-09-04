@@ -50,6 +50,7 @@ from jarvis.nucleo.config import (
     OPENAI_API_KEY,
     OPENAI_REALTIME_MODEL,
     OPENAI_VOICE,
+    obter_nome_jarvis,
 )
 
 from jarvis.nucleo import prompts
@@ -65,6 +66,10 @@ from jarvis.servicos.visao.captura_tela import capturar_tela_bytes
 from jarvis.servicos.visao.captura_camera import capturar_camera_bytes
 
 from jarvis.pacotes import ativacao_voz
+
+# Frase de ativação por voz atual — usada pela tool pausar_chamada,
+# mesmo motivo e mesma convenção de jarvis/gemini/cliente_live.py.
+from jarvis.pacotes.ativacao_voz.config import NOME_ATIVACAO
 from jarvis.pacotes import admin_terminal
 from jarvis.pacotes import discord_jarvis
 from jarvis.pacotes import memoria_obsidian
@@ -153,6 +158,19 @@ FUNCTION_DECLARATIONS_NATIVAS = [
             "'pode desligar', 'termine a chamada'."
         ),
     ),
+
+    types.FunctionDeclaration(
+        name="pausar_chamada",
+        description=(
+            "Pausa a chamada atual SEM encerrá-la de vez — a "
+            "conversa fica pronta para continuar de onde parou "
+            "quando o usuário chamar de novo pela frase de "
+            "ativação, em vez de terminar. Use somente depois de "
+            "perguntar se o usuário precisa de mais alguma coisa "
+            "e ele confirmar que não precisa. Nunca use no lugar "
+            "de encerrar_chamada."
+        ),
+    ),
 ]
 
 
@@ -171,17 +189,33 @@ class OpenAIRealtimeWorker(QThread):
     solicitou_reconexao = Signal()
     session_handle_atualizado = Signal(str)
 
+    # O usuário pediu pra pausar a chamada por voz (tool
+    # pausar_chamada) — mesmo contrato do GeminiLiveWorker: a janela
+    # preserva session_handle/transcricao_preservada (aqui o handle
+    # nunca é usado de fato, ver acima, mas a transcrição sim) e só
+    # reconecta quando ativacao_voz detectar a frase de novo.
+    solicitou_hibernacao = Signal()
+
     # Mesma assinatura do GeminiLiveWorker. session_handle e
     # transcricao_inicial são aceitos para a janela poder criar
     # qualquer um dos dois workers do mesmo jeito; o handle é ignorado
-    # (ver acima), a transcrição não.
-    def __init__(self, session_handle=None, transcricao_inicial=None):
+    # (ver acima), a transcrição não. ativado_por_voz: mesmo motivo do
+    # GeminiLiveWorker — True só quando esta chamada veio da detecção
+    # da frase de ativação, controla a saudação logo após conectar.
+    def __init__(
+        self,
+        session_handle=None,
+        transcricao_inicial=None,
+        ativado_por_voz=False,
+    ):
         super().__init__()
 
         self.ativo = True
         self.loop = None
         self.conexao = None
         self.session_handle = session_handle
+        self.ativado_por_voz = ativado_por_voz
+        self.hibernacao_solicitada = False
 
         # Trava de envio: vários pontos podem escrever na conexão
         # (microfone, resposta de ferramenta, imagem avulsa) e a
@@ -509,7 +543,9 @@ class OpenAIRealtimeWorker(QThread):
                     }
                 )
 
-                self.status_recebido.emit("ALFRED conectado. Pode falar.")
+                self.status_recebido.emit(
+                    f"{obter_nome_jarvis()} conectado. Pode falar."
+                )
 
                 tarefas = [
                     asyncio.create_task(
@@ -529,6 +565,30 @@ class OpenAIRealtimeWorker(QThread):
                         name="REPRODUÇÃO",
                     ),
                 ]
+
+                # Mesma lógica e mesmo motivo do GeminiLiveWorker (ver
+                # o comentário lá): só quando esta chamada veio da
+                # ativação por voz, pede ao modelo pra cumprimentar
+                # agora. Enviado só depois de RECEPÇÃO já estar na
+                # lista de tarefas acima.
+                if self.ativado_por_voz:
+                    texto_saudacao = prompts.SAUDACAO_ATIVACAO_POR_VOZ
+
+                    async with self.lock_envio:
+                        await conexao.conversation.item.create(
+                            item={
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": texto_saudacao,
+                                    },
+                                ],
+                            }
+                        )
+
+                        await conexao.response.create()
 
                 try:
                     while self.ativo:
@@ -815,6 +875,16 @@ class OpenAIRealtimeWorker(QThread):
                 )
                 encerrar_depois = True
 
+            elif nome == "pausar_chamada":
+                self.hibernacao_solicitada = True
+
+                resultado = (
+                    "Chamada pausada. Diga ao usuário, de forma breve "
+                    "e natural, que para falar com você de novo é só "
+                    f"dizer '{NOME_ATIVACAO}'."
+                )
+                encerrar_depois = True
+
             else:
                 resultado = await self._despachar_para_pacotes(nome, args)
 
@@ -948,11 +1018,20 @@ class OpenAIRealtimeWorker(QThread):
             )
 
     async def encerrar_apos_resposta(self):
+        # Mesma lógica do GeminiLiveWorker: solicitou_hibernacao em
+        # vez de solicitou_encerramento quando foi pausar_chamada que
+        # agendou esta espera.
         try:
             await asyncio.sleep(ATRASO_ENCERRAMENTO_SEGUNDOS)
 
             if self.ativo:
-                self.solicitou_encerramento.emit()
+                if self.hibernacao_solicitada:
+                    self.hibernacao_solicitada = False
+
+                    self.solicitou_hibernacao.emit()
+
+                else:
+                    self.solicitou_encerramento.emit()
 
         except asyncio.CancelledError:
             pass

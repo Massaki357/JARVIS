@@ -65,6 +65,7 @@ from jarvis.nucleo.config import (
     GEMINI_LIVE_MODEL_FALLBACK,
     GEMINI_VOICE,
     TIMEOUT_INATIVIDADE_SEGUNDOS,
+    obter_nome_jarvis,
 )
 
 # Função responsável por capturar, em bytes, o monitor onde o
@@ -123,6 +124,14 @@ from jarvis.pacotes import discord_jarvis
 # retomar() são chamados diretamente aqui, ao redor do ciclo de vida
 # do microfone desta própria chamada (ver executar()).
 from jarvis.pacotes import ativacao_voz
+
+# Frase de ativação por voz atual — usada pela tool pausar_chamada
+# pra dizer ao usuário exatamente como chamar de volta (ver o
+# despacho nativo mais abaixo). Import direto do módulo de config do
+# pacote (não do jarvis.nucleo.config): lido uma única vez na
+# importação, mesma convenção já usada por NOME_ATIVACAO ali (uma
+# troca no .env já precisa de reiniciar o app pra valer, hoje).
+from jarvis.pacotes.ativacao_voz.config import NOME_ATIVACAO
 
 # Sinalizador genérico (ver jarvis/nucleo/sinalizador.py) — aqui
 # usado só pra ENTREGAR a transcrição da resposta falada do Gemini
@@ -450,23 +459,55 @@ class GeminiLiveWorker(QThread):
     # contexto da conversa.
     session_handle_atualizado = Signal(str)
 
+    # O usuário pediu pra pausar a chamada por voz (tool
+    # pausar_chamada — ver o despacho nativo mais abaixo), depois de
+    # confirmar que não precisa de mais ajuda por agora. Diferente de
+    # solicitou_encerramento: a janela preserva session_handle e
+    # transcricao_preservada em vez de zerar, e NÃO reconecta sozinha
+    # — só quando jarvis/pacotes/ativacao_voz detectar a frase de ativação
+    # de novo (ver MainWindow.preparar_hibernacao).
+    solicitou_hibernacao = Signal()
+
     # Inicializa os estados internos do worker.
     #
     # session_handle: token de retomada da sessão anterior, passado
-    # pela janela SOMENTE numa reconexão automática. Uma chamada
-    # iniciada pelo usuário (botão ou palavra de ativação) sempre
-    # recebe None e começa limpa — ver MainWindow.alternar_chamada.
+    # pela janela numa reconexão automática (go_away) OU numa retomada
+    # por voz depois de uma pausa (pausar_chamada). Uma chamada
+    # iniciada do zero (botão, ou ativação por voz sem pausa anterior)
+    # sempre recebe None e começa limpa — ver MainWindow.alternar_chamada
+    # / iniciar_chamada_por_voz.
     #
     # transcricao_inicial: a transcrição já acumulada antes de uma
-    # reconexão automática. Vem junto com o session_handle e pelo
-    # mesmo motivo — do lado do servidor a conversa continua, então do
-    # lado de cá o histórico também precisa continuar, senão o resumo
-    # salvo no fim conteria só o pedaço depois da última renovação.
-    def __init__(self, session_handle=None, transcricao_inicial=None):
+    # reconexão automática ou retomada por voz. Vem junto com o
+    # session_handle e pelo mesmo motivo — do lado do servidor a
+    # conversa continua, então do lado de cá o histórico também
+    # precisa continuar, senão o resumo salvo no fim conteria só o
+    # pedaço depois da última renovação/pausa.
+    #
+    # ativado_por_voz: True somente quando esta chamada foi iniciada
+    # pela detecção da frase de ativação (jarvis/pacotes/ativacao_voz),
+    # nunca pelo botão manual — controla só se a saudação de
+    # SAUDACAO_ATIVACAO_POR_VOZ é enviada logo após conectar (ver
+    # executar()). Passado pela janela, nunca calculado aqui.
+    def __init__(
+        self,
+        session_handle=None,
+        transcricao_inicial=None,
+        ativado_por_voz=False,
+    ):
         super().__init__()
 
         # Controla se a sessão continua em execução.
         self.ativo = True
+
+        self.ativado_por_voz = ativado_por_voz
+
+        # Setado só pelo despacho nativo de pausar_chamada, e
+        # consumido (voltando a False) por encerrar_apos_resposta —
+        # decide se o encerramento agendado por essa tool deve emitir
+        # solicitou_hibernacao (pausa) em vez de solicitou_encerramento
+        # (o padrão, encerramento de verdade).
+        self.hibernacao_solicitada = False
 
         # Token de retomada da conversa (session_resumption). Começa
         # com o que a janela passou e é atualizado a cada
@@ -1698,6 +1739,20 @@ class GeminiLiveWorker(QThread):
                             "'pode desligar', 'termine a chamada'."
                         ),
                     ),
+
+                    types.FunctionDeclaration(
+                        name="pausar_chamada",
+                        description=(
+                            "Pausa a chamada atual SEM encerrá-la de vez — a "
+                            "conversa fica pronta para continuar de onde "
+                            "parou quando o usuário chamar de novo pela "
+                            "frase de ativação, em vez de terminar. Use "
+                            "somente depois de perguntar se o usuário "
+                            "precisa de mais alguma coisa e ele confirmar "
+                            "que não precisa. Nunca use no lugar de "
+                            "encerrar_chamada."
+                        ),
+                    ),
         ]
 
         # Estende as tools nativas com as expostas por cada pacote
@@ -1744,9 +1799,9 @@ class GeminiLiveWorker(QThread):
 
         # Define identidade, personalidade, autenticação,
         # limites, regras de memória, visão e encerramento. O corpo
-        # (tudo menos o bloco de autenticação) mora em
-        # jarvis/nucleo/prompts/gemini_live_sistema.md — ver
-        # prompts.instrucao_sistema_corpo(), que já devolve o texto
+        # (tudo menos o bloco de autenticação) mora no sistema.md do
+        # perfil — dados/perfis/completo/sistema.md para o perfil
+        # padrão; ver prompts.instrucao_sistema_corpo(), que já devolve o texto
         # terminado nas duas quebras de linha que separam a instrução
         # do contexto de memórias que vem concatenado logo abaixo.
         instrucao_sistema = (
@@ -1855,7 +1910,7 @@ class GeminiLiveWorker(QThread):
             self.sessao = sessao
 
             self.status_recebido.emit(
-                "ALFRED conectado. Pode falar."
+                f"{obter_nome_jarvis()} conectado. Pode falar."
             )
 
             # Beep local (não depende do Gemini nem da rede) avisando
@@ -1942,6 +1997,33 @@ class GeminiLiveWorker(QThread):
             # vigiar_travamento() consulta esta lista para detectar
             # uma tarefa que morreu enquanto a chamada seguia ativa.
             self.tarefas_chamada = tarefas
+
+            # Chamada iniciada pela ativação por voz (não pelo botão
+            # manual): o usuário acabou de dizer a frase de ativação,
+            # então pede pro modelo cumprimentar agora — ver o
+            # comentário de SAUDACAO_ATIVACAO_POR_VOZ em
+            # jarvis/nucleo/prompts/__init__.py pro porquê disso não vale
+            # pra toda chamada. Enviado só depois de RECEPÇÃO já estar
+            # rodando (tarefas acima), senão a resposta do modelo não
+            # teria quem processasse.
+            if self.ativado_por_voz:
+                texto_saudacao = prompts.SAUDACAO_ATIVACAO_POR_VOZ
+
+                await self._enviar_para_sessao(
+                    self.sessao.send_client_content(
+                        turns=[
+                            types.Content(
+                                role="user",
+                                parts=[
+                                    types.Part(
+                                        text=texto_saudacao
+                                    )
+                                ],
+                            )
+                        ],
+                        turn_complete=True,
+                    )
+                )
 
             # Mantém a sessão viva até que parar() altere self.ativo.
             while self.ativo:
@@ -4193,6 +4275,26 @@ class GeminiLiveWorker(QThread):
 
                 encerrar_depois = True
 
+            elif nome == "pausar_chamada":
+                self.status_recebido.emit(
+                    "Chamada pausada — diga a frase de ativação para "
+                    "continuar..."
+                )
+
+                # Reaproveita o mesmo agendamento de encerrar_chamada
+                # (espera a fala terminar de tocar, depois avisa a
+                # janela) — só essa flag muda qual sinal
+                # encerrar_apos_resposta emite no final.
+                self.hibernacao_solicitada = True
+
+                resultado = (
+                    "Chamada pausada. Diga ao usuário, de forma breve "
+                    "e natural, que para falar com você de novo é só "
+                    f"dizer '{NOME_ATIVACAO}'."
+                )
+
+                encerrar_depois = True
+
             else:
                 resultado = (
                     "Função desconhecida. Nenhuma ação foi executada."
@@ -4242,8 +4344,13 @@ class GeminiLiveWorker(QThread):
     # antes de pedir que a interface finalize a chamada.
     async def encerrar_apos_resposta(self):
         """
-        Aguarda a resposta de despedida do ALFRED
-        e só depois solicita o encerramento à interface.
+        Aguarda a resposta de despedida do ALFRED e só depois avisa a
+        interface — solicitou_encerramento por padrão (encerramento
+        de verdade), ou solicitou_hibernacao quando foi pausar_chamada
+        que agendou esta espera (self.hibernacao_solicitada, setado só
+        por aquele branch do despacho nativo). A flag é consumida
+        (volta a False) aqui, pra não vazar num futuro encerramento
+        de verdade da mesma chamada.
         """
 
         try:
@@ -4252,7 +4359,13 @@ class GeminiLiveWorker(QThread):
             )
 
             if self.ativo:
-                self.solicitou_encerramento.emit()
+                if self.hibernacao_solicitada:
+                    self.hibernacao_solicitada = False
+
+                    self.solicitou_hibernacao.emit()
+
+                else:
+                    self.solicitou_encerramento.emit()
 
         except asyncio.CancelledError:
             pass

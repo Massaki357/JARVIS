@@ -56,6 +56,30 @@ def usar_provedor_openai():
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+# ============================================================
+# NOME DO JARVIS
+# ============================================================
+# Nome de identidade falado/exibido pelo assistente — cada usuário
+# pode trocar (tela principal, jarvis/ui/painel_nome.py, ou a tela de
+# configurações). Padrão "ALFRED", igual sempre foi.
+#
+# Mesmo valor cacheado na importação (compatibilidade/referência) que
+# PROVEDOR_IA logo acima — a decisão de verdade é sempre
+# obter_nome_jarvis(), que relê o .env do disco.
+NOME_JARVIS = (os.getenv("NOME_JARVIS", "ALFRED").strip() or "ALFRED")
+
+
+# Relê NOME_JARVIS direto do .env EM DISCO a cada chamada — mesmo
+# motivo e mesma técnica de usar_provedor_openai() logo acima: permite
+# trocar o nome (tela principal ou configurações) e a instrução de
+# sistema da PRÓXIMA chamada (jarvis/nucleo/prompts/_carregar) já usar
+# o nome novo, sem reiniciar o app. Nunca devolve vazio — um .env com
+# a variável ausente ou em branco cai no nome padrão "ALFRED".
+def obter_nome_jarvis():
+    valores = dotenv_values(CAMINHO_ENV) if CAMINHO_ENV.exists() else {}
+
+    return (valores.get("NOME_JARVIS") or "ALFRED").strip() or "ALFRED"
+
 # Controla se o gate de autenticação por palavra-chave (ver a seção
 # "AUTENTICAÇÃO" de instrucao_sistema, em jarvis/gemini/cliente_live.py)
 # é exigido dentro de uma chamada. Padrão True — o comportamento de
@@ -98,6 +122,16 @@ def config_schema():
             "rotulo": "Chave da API do Gemini (obrigatória para o app funcionar)",
             "sensivel": True,
             "obrigatoria": True,
+        },
+        {
+            "nome": "NOME_JARVIS",
+            "rotulo": (
+                "Nome de identidade do assistente (padrão: ALFRED — "
+                "vale já na próxima chamada; também editável direto "
+                "na tela principal)"
+            ),
+            "sensivel": False,
+            "obrigatoria": False,
         },
         {
             "nome": "EXIGIR_AUTENTICACAO",

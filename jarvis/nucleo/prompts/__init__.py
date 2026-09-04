@@ -31,6 +31,12 @@
 from datetime import datetime
 from pathlib import Path
 
+# Nome de identidade configurável (jarvis/nucleo/config.py::
+# obter_nome_jarvis, .env NOME_JARVIS, padrão "ALFRED") — usado por
+# _carregar() logo abaixo pra substituir toda ocorrência literal de
+# "ALFRED" nos .md desta pasta pelo nome que o usuário escolheu.
+from jarvis.nucleo.config import obter_nome_jarvis
+
 _PASTA = Path(__file__).resolve().parent
 
 
@@ -81,6 +87,24 @@ ANALISE_IMAGEM_PONTUAL = (
     "como base. Não chame nenhuma função visual. Não chute. Se a "
     "imagem não estiver clara, diga que não conseguiu ver bem. "
     "Explique de forma objetiva o que está vendo."
+)
+
+# Enviada por executar() logo depois de conectar — SOMENTE quando a
+# chamada foi iniciada pela ativação por voz (a frase configurada em
+# jarvis/pacotes/ativacao_voz/config.py::NOME_ATIVACAO), nunca pelo botão
+# manual. Isso é deliberado: uma saudação falada em TODA chamada já foi
+# tentada antes e removida por ser lenta demais (ver "Local 'call
+# started' beep" no CLAUDE.md — dependia de um round-trip completo só
+# pra dizer "Chamada iniciada."). Aqui a mesma lentidão existe, mas o
+# trade-off é diferente: o usuário literalmente acabou de chamar o
+# assistente pelo nome/frase de ativação, então uma resposta faz
+# sentido de novo — só que restrita a este caso específico, sem trazer
+# de volta o atraso pra toda chamada iniciada manualmente.
+SAUDACAO_ATIVACAO_POR_VOZ = (
+    "[SISTEMA] O usuário acabou de te chamar agora, dizendo a frase "
+    "de ativação por voz. Cumprimente-o brevemente, perguntando como "
+    "pode ajudar — por exemplo algo como 'Como posso ajudar?' — "
+    "antes de qualquer outra coisa."
 )
 
 
@@ -281,10 +305,30 @@ ROTEAMENTO_ETAPA2_INSTRUCAO = (
 # CLAUDE.md); aqui, a junção sempre insere o espaço ela mesma, então
 # esse tipo específico de erro não pode mais acontecer só por
 # esquecer um espaço no fim da linha.
-def _carregar(nome_arquivo):
-    linhas = (_PASTA / nome_arquivo).read_text(
-        encoding="utf-8"
-    ).split("\n")
+#
+# Depois de montar o texto, toda ocorrência literal de "ALFRED" (o
+# nome de identidade original, escrito à mão nos .md) é trocada pelo
+# nome configurado em NOME_JARVIS (.env) — é assim que "Seu nome é
+# ALFRED." e as demais menções ao nome viram o nome que o usuário
+# escolheu, sem precisar editar cada .md na mão. Aplicado aqui, uma
+# vez, em vez de em cada .md separadamente: cobre qualquer arquivo
+# futuro carregado por esta função automaticamente. Seguro como troca
+# literal (não regex) porque "ALFRED" não aparece como pedaço de outra
+# palavra em nenhum dos .md desta pasta (confirmado antes de fazer
+# esta troca).
+# Aplica a montagem do texto final a partir do conteúdo BRUTO de um
+# arquivo .md deste formato: descarta linhas em branco e cabeçalhos
+# "##" (navegação humana, nunca parte do texto enviado ao modelo),
+# junta o resto inserindo o espaço separador ela mesma, e troca
+# "ALFRED" pelo nome configurado.
+#
+# Separada de _carregar() porque o prompt de sistema não vem mais de
+# um arquivo desta pasta: ele mora no perfil ativo
+# (dados/perfis/<slug>/sistema.md, ver jarvis/nucleo/perfis/). As
+# duas origens precisam passar pela MESMA montagem, senão o texto que
+# chega ao modelo muda dependendo de onde o arquivo estava.
+def _montar_texto(texto_bruto):
+    linhas = str(texto_bruto or "").split("\n")
 
     partes = [
         linha.strip()
@@ -292,7 +336,15 @@ def _carregar(nome_arquivo):
         if linha.strip() and not linha.strip().startswith("##")
     ]
 
-    return "".join(parte + " " for parte in partes)
+    texto = "".join(parte + " " for parte in partes)
+
+    return texto.replace("ALFRED", obter_nome_jarvis())
+
+
+def _carregar(nome_arquivo):
+    return _montar_texto(
+        (_PASTA / nome_arquivo).read_text(encoding="utf-8")
+    )
 
 
 # Corpo principal da instrução de sistema (identidade, personalidade,
@@ -300,8 +352,23 @@ def _carregar(nome_arquivo):
 # o bloco de autenticação). Termina em "\n\n" de propósito: é o
 # separador visual entre a instrução e o contexto de memórias que
 # vem concatenado logo depois, em jarvis/gemini/cliente_live.py.
-def instrucao_sistema_corpo():
-    return _carregar("gemini_live_sistema.md") + "\n\n"
+#
+# O texto NÃO mora mais nesta pasta: ele é o sistema.md do perfil,
+# em dados/perfis/<slug>/sistema.md. O arquivo
+# gemini_live_sistema.md que ficava aqui foi MOVIDO, byte a byte, pra
+# dados/perfis/completo/sistema.md — o perfil padrão. Sem slug, esta
+# função devolve o corpo desse perfil padrão, que é exatamente o
+# texto que o projeto sempre enviou.
+#
+# O bloco de autenticação (gemini_live_autenticacao.md) continua
+# aqui de propósito: ele não é específico de perfil nenhum, é a trava
+# de segurança que vale para todos.
+def instrucao_sistema_corpo(slug_perfil=None):
+    from jarvis.nucleo import perfis
+
+    slug = slug_perfil or perfis.SLUG_PADRAO
+
+    return _montar_texto(perfis.texto_sistema(slug)) + "\n\n"
 
 
 # Data e hora local, injetada no fim da instrução de sistema. Vem
@@ -323,3 +390,61 @@ def contexto_data_hora():
 # em cliente_live.py, não aqui (este módulo só entrega o texto).
 def bloco_autenticacao():
     return _carregar("gemini_live_autenticacao.md")
+
+
+# ============================================================
+# PERFIS — jarvis/nucleo/perfis/geracao.py
+# Criação de um perfil a partir de uma descrição em texto livre.
+# ============================================================
+
+# Pedido enviado ao modelo na criação de um perfil. Três campos
+# preenchidos por geracao.py: {descricao} (o texto livre do usuário),
+# {catalogo} (nome + resumo de uma linha de TODAS as ferramentas
+# registradas, montado a partir do catálogo real do projeto) e
+# {nome_assistente}.
+#
+# A resposta é exigida em JSON com esquema fixo — não é uma sugestão
+# de formato, é validada em código: nome de ferramenta inexistente é
+# ERRO, nunca passa em silêncio (ver geracao.interpretar_resposta).
+#
+# Note o que este prompt NÃO faz: ele não sabe quais ferramentas são
+# sensíveis, e não deveria. A separação entre o que entra direto e o
+# que precisa da confirmação do usuário acontece DEPOIS, em código
+# (jarvis/nucleo/perfis/sensiveis.py). Pedir ao modelo que "não
+# escolha ferramenta perigosa" seria confiar a trava de segurança a
+# uma instrução de texto; do jeito que está, o modelo pode escolher o
+# que quiser que nada sensível entra sem o usuário aprovar item a
+# item.
+CRIACAO_PERFIL = (
+    "Você configura perfis de uso de um assistente de voz chamado "
+    "{nome_assistente}, que roda no computador do usuário.\n\n"
+    "Um PERFIL é formado por duas coisas: um prompt de sistema, que "
+    "define como o assistente se comporta naquele cenário, e o "
+    "subconjunto de ferramentas que ele pode usar ali.\n\n"
+    "O usuário descreveu o perfil que quer assim:\n\n"
+    "\"\"\"\n{descricao}\n\"\"\"\n\n"
+    "Estas são TODAS as ferramentas que existem no projeto. Você só "
+    "pode escolher nomes desta lista, copiados exatamente como estão "
+    "escritos aqui:\n\n"
+    "{catalogo}\n\n"
+    "Responda SOMENTE com um objeto JSON, sem texto antes ou depois, "
+    "com exatamente estes três campos:\n\n"
+    "- \"nome\": um nome curto de exibição para o perfil, no máximo 40 "
+    "caracteres, em português do Brasil. Sem aspas, sem emoji.\n"
+    "- \"ferramentas\": uma lista com os nomes das ferramentas que "
+    "esse perfil deve poder usar. Escolha só o que o cenário descrito "
+    "realmente precisa — um perfil focado é melhor que um perfil com "
+    "tudo. Se o cenário não pedir nenhuma ferramenta, devolva uma "
+    "lista vazia.\n"
+    "- \"prompt_sistema\": o texto do prompt de sistema desse perfil, "
+    "em português do Brasil, escrito na segunda pessoa (falando COM o "
+    "assistente, como em \"Você é...\"). Descreva o papel, o tom, o "
+    "que ele deve e o que não deve fazer nesse cenário, e como usar "
+    "as ferramentas escolhidas. Não repita a lista de ferramentas "
+    "como um índice: explique o comportamento. Organize em seções "
+    "usando linhas que comecem com \"## \" como título — essas linhas "
+    "são só navegação para quem lê o arquivo e não são enviadas ao "
+    "modelo depois.\n\n"
+    "Nunca invente um nome de ferramenta que não esteja na lista "
+    "acima."
+)

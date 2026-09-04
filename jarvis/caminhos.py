@@ -15,11 +15,27 @@ CAMINHO_ENV = RAIZ_PROJETO / ".env"
 # jarvis/nucleo/preferencias.py.
 CAMINHO_CONFIG_JSON = RAIZ_PROJETO / "config.json"
 
+# Pasta de código do projeto (jarvis/). Este arquivo mora dentro
+# dela, então é o próprio pai — nunca recalculado a partir da raiz.
+PASTA_JARVIS = Path(__file__).resolve().parent
+
 # Tudo que o app gera enquanto roda. Separado do código de propósito:
 # o que está em jarvis/ é fonte, o que está aqui é estado desta
 # máquina.
 PASTA_DADOS = RAIZ_PROJETO / "dados"
 PASTA_LOGS = PASTA_DADOS / "logs"
+
+# Perfis do jarvis: uma pasta autocontida por perfil
+# (dados/perfis/<slug>/), mais o índice leve dados/perfis/indice.json
+# que só existe pra popular o select da interface rapidamente. A pasta
+# de cada perfil é a fonte da verdade; o índice é derivado dela e
+# regravado a cada criação/edição/exclusão — ver jarvis/nucleo/perfis/.
+#
+# Fica em dados/, e não em jarvis/, porque um perfil criado pelo
+# usuário é estado gerado por esta máquina, não fonte do projeto — a
+# mesma regra que já vale para dados/memoria.json e dados/agenda.json,
+# que também são versionados apesar de morarem aqui.
+PASTA_PERFIS = PASTA_DADOS / "perfis"
 
 
 def garantir_pasta(caminho):
