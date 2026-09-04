@@ -29,6 +29,14 @@ from jarvis.gemini.cliente_live import GeminiLiveWorker
 # Provedor de IA ativo (.env, PROVEDOR_IA) — ver jarvis/nucleo/config.py.
 from jarvis.nucleo.config import usar_provedor_openai
 
+# Sinalizador genérico para abrir janelas extras fora da thread da
+# GUI (ver jarvis/nucleo/sinalizador.py) — os botões de configurações
+# e chat abaixo só EMITEM os mesmos sinais que os tools de voz
+# abrir_configuracoes/abrir_chat já emitem; quem efetivamente cria as
+# janelas continua sendo o slot conectado em main.py, nunca este
+# arquivo.
+from jarvis.nucleo.sinalizador import obter_sinalizador
+
 # Console de diagnóstico exibido ao lado do registro de atividade —
 # toda a lógica (captura de sys.stdout/sys.stderr, ponte de thread,
 # limite de linhas) mora no próprio módulo.
@@ -443,6 +451,39 @@ class MainWindow(QMainWindow):
             layout_visao
         )
 
+        # Layout horizontal para os botões de configurações e chat —
+        # os dois abrem janelas que já existem hoje só por voz
+        # (abrir_configuracoes/abrir_chat); estes botões só dão um
+        # segundo jeito de pedir a mesma coisa, sem depender do
+        # microfone nem de uma chamada ativa.
+        layout_extras = QHBoxLayout()
+
+        layout_extras.setSpacing(
+            10
+        )
+
+        # Botão que abre a tela de configurações do jarvis.
+        self.btn_configuracoes = QPushButton(
+            "CONFIGURAÇÕES"
+        )
+
+        # Botão que abre o chat de texto do jarvis.
+        self.btn_chat = QPushButton(
+            "CHAT"
+        )
+
+        layout_extras.addWidget(
+            self.btn_configuracoes
+        )
+
+        layout_extras.addWidget(
+            self.btn_chat
+        )
+
+        layout.addLayout(
+            layout_extras
+        )
+
         # Selects de microfone e alto-falante. A troca vale para a
         # PRÓXIMA chamada (um stream já aberto não muda de aparelho no
         # meio); a ativação por voz, que segura o microfone entre as
@@ -543,6 +584,16 @@ class MainWindow(QMainWindow):
         # Conecta o botão da câmera ao método analisar_camera.
         self.btn_camera.clicked.connect(
             self.analisar_camera
+        )
+
+        # Conecta os botões de configurações e chat aos métodos que
+        # só emitem o sinalizador — a mesma janela que a voz já abre.
+        self.btn_configuracoes.clicked.connect(
+            self.abrir_configuracoes
+        )
+
+        self.btn_chat.clicked.connect(
+            self.abrir_chat
         )
 
     # Adiciona uma nova mensagem ao registro de atividade.
@@ -920,6 +971,20 @@ class MainWindow(QMainWindow):
 
         # Chama o método público da thread responsável pela webcam.
         self.live_worker.solicitar_analise_camera()
+
+    # Abre a tela de configurações do jarvis — mesmo sinal que o tool
+    # de voz abrir_configuracoes já emite (jarvis/pacotes/configuracoes/),
+    # conectado em main.py ao slot que efetivamente cria a janela.
+    # Funciona com ou sem chamada ativa.
+    def abrir_configuracoes(self):
+        obter_sinalizador().solicitou_abrir_configuracoes.emit()
+
+    # Abre o chat de texto do jarvis — mesmo sinal que o tool de voz
+    # abrir_chat já emite (jarvis/pacotes/chat_jarvis/). Se não houver
+    # chamada ativa, a própria janela de chat avisa ao tentar enviar
+    # (ver ChatWindow / _obter_worker_ativo em main.py).
+    def abrir_chat(self):
+        obter_sinalizador().solicitou_abrir_chat.emit()
 
     # Evento executado automaticamente ao fechar a janela.
     # Garante que a thread não continue rodando em segundo plano.

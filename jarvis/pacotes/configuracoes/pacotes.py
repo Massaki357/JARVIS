@@ -20,6 +20,13 @@ import jarvis.pacotes.identificacao_visual.config as identificacao_visual_config
 import jarvis.pacotes.consulta_acoes.config as consulta_acoes_config
 import jarvis.pacotes.rede_jarvis.config as rede_jarvis_config
 
+# Não é um pacote de tools (jarvis/pacotes/) — é o motor de
+# roteamento hierárquico standalone (jarvis/roteamento_hierarquico/),
+# que também lê .env (GROQ_API_KEY, reaproveitada da seção
+# "Delegação de IA" — só os nomes de modelo de cada etapa aparecem
+# aqui de novo, ver config_schema() do módulo).
+import jarvis.roteamento_hierarquico.config as roteamento_hierarquico_config
+
 # Estes dois não são pacotes de tools (jarvis/pacotes/) — são módulos
 # centrais (jarvis/nucleo/) e de infraestrutura compartilhada
 # (jarvis/servicos/) que também leem variáveis do .env, e por isso
@@ -44,6 +51,10 @@ PACOTES_COM_CONFIG = [
     ("Cotação de Ações (Twelve Data)", consulta_acoes_config),
     ("Abrir Aplicativo (pastas extras)", abrir_aplicativo_config),
     ("Criar Arquivo (pastas permitidas)", criar_arquivo_config),
+    (
+        "Roteamento Hierárquico de Ferramentas (Groq)",
+        roteamento_hierarquico_config,
+    ),
     ("Gemini / Núcleo do ALFRED", nucleo_config),
     ("Email — Envio (SMTP)", email_remetente_config),
     ("Email — Leitura (IMAP)", email_leitor_config),

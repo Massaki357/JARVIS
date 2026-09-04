@@ -4,6 +4,7 @@
 # janela não conhece o nome de nenhuma variável de antemão.
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -20,24 +21,51 @@ from . import env_io
 from .pacotes import PACOTES_COM_CONFIG
 
 
-# Uma linha de campo: rótulo + QLineEdit. Para campos sensíveis,
-# adiciona um botão "Mostrar"/"Ocultar" ao lado — o campo começa
-# mascarado (EchoMode.Password) por padrão.
+# Uma linha de campo. Duas variantes, conforme a entrada do schema:
+#
+# - "opcoes" presente: campo de SELEÇÃO (QComboBox) — pra variáveis
+#   com um conjunto fixo e conhecido de valores válidos (ex:
+#   PROVEDOR_IA), em vez de texto livre onde um erro de digitação
+#   passaria despercebido até o app já estar rodando com o valor
+#   errado. Cada opção é (valor_salvo_no_env, rótulo_exibido).
+# - Caso contrário: QLineEdit, como sempre foi — campos sensíveis
+#   ganham um botão "Mostrar"/"Ocultar" ao lado, começando mascarados
+#   (EchoMode.Password).
 class _CampoConfig:
 
     def __init__(self, entrada, valor_atual):
         self.nome = entrada["nome"]
         self.sensivel = bool(entrada.get("sensivel", False))
+        self.opcoes = entrada.get("opcoes")
         self.valor_original = valor_atual or ""
+
+        self.widget_linha = QWidget()
+        layout_linha = QHBoxLayout(self.widget_linha)
+        layout_linha.setContentsMargins(0, 0, 0, 0)
+
+        if self.opcoes:
+            self.campo = QComboBox()
+
+            valor_normalizado = self.valor_original.strip().lower()
+            indice_selecionado = 0
+
+            for indice, (valor, rotulo) in enumerate(self.opcoes):
+                self.campo.addItem(rotulo, valor)
+
+                if valor.strip().lower() == valor_normalizado:
+                    indice_selecionado = indice
+
+            self.campo.setCurrentIndex(indice_selecionado)
+
+            layout_linha.addWidget(self.campo)
+
+            return
 
         self.campo = QLineEdit(self.valor_original)
 
         if self.sensivel:
             self.campo.setEchoMode(QLineEdit.EchoMode.Password)
 
-        self.widget_linha = QWidget()
-        layout_linha = QHBoxLayout(self.widget_linha)
-        layout_linha.setContentsMargins(0, 0, 0, 0)
         layout_linha.addWidget(self.campo)
 
         if self.sensivel:
@@ -54,10 +82,31 @@ class _CampoConfig:
             else QLineEdit.EchoMode.Password
         )
 
+    # O valor "original" de um campo de opções é normalizado contra
+    # a própria lista de opções antes de comparar — assim, um .env
+    # com "Gemini" (maiúscula) ou em branco não aparece como
+    # "alterado" só porque o usuário deixou o combo na opção que já
+    # equivalia ao valor real (mesma normalização de
+    # config.PROVEDOR_IA: .strip().lower()).
+    def _valor_original_normalizado(self):
+        if not self.opcoes:
+            return self.valor_original
+
+        valor_normalizado = self.valor_original.strip().lower()
+
+        for valor, _rotulo in self.opcoes:
+            if valor.strip().lower() == valor_normalizado:
+                return valor
+
+        return self.opcoes[0][0]
+
     def valor_alterado(self):
-        return self.campo.text() != self.valor_original
+        return self.valor_atual() != self._valor_original_normalizado()
 
     def valor_atual(self):
+        if self.opcoes:
+            return self.campo.currentData()
+
         return self.campo.text()
 
 

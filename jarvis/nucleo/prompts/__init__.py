@@ -204,6 +204,61 @@ CONSOLIDACAO_RESUMO_CONVERSA = (
 
 
 # ============================================================
+# ROTEAMENTO_HIERARQUICO — jarvis/roteamento_hierarquico/roteador.py
+# (Groq, chat/completions SEM ESTADO — motor de roteamento em duas
+# etapas, standalone, ainda não conectado a nenhum dos dois cérebros
+# de voz atuais). O catálogo curto em si (nome + resumo de cada
+# ferramenta) mora em jarvis/roteamento_hierarquico/catalogo.py, não
+# aqui — mesmo tratamento que as descrições de FunctionDeclaration já
+# recebem, explicitamente fora desta centralização (ver o topo deste
+# arquivo). O que mora aqui são só as duas instruções que ENVOLVEM
+# esse catálogo.
+# ============================================================
+
+# Etapa 1: prefixo FIXO (junto com {catalogo}, formatado uma única
+# vez por chamada — nunca o texto do usuário) para se beneficiar do
+# cache automático de prompt da Groq. Pede uma decisão binária:
+# responder direto (sem ferramenta nenhuma) ou apontar candidatas
+# pelo nome, num formato de marcador simples de analisar — nunca
+# JSON, que dependeria de um recurso da API (response_format) ainda
+# não confirmado ao vivo pra esse modelo.
+ROTEAMENTO_ETAPA1_INSTRUCAO = (
+    "Você é o roteador de ferramentas do ALFRED, um assistente "
+    "pessoal por voz. Abaixo está o catálogo de ferramentas "
+    "disponíveis, agrupado por categoria — cada uma com um resumo "
+    "curto do que faz (os detalhes completos e as regras de uso só "
+    "aparecem numa etapa seguinte, se for o caso).\n\n"
+    "{catalogo}\n\n"
+    "Se a mensagem do usuário puder ser respondida sem usar nenhuma "
+    "dessas ferramentas, responda normalmente, em português do "
+    "Brasil, como o ALFRED responderia.\n\n"
+    "Se a mensagem precisar de uma ou mais dessas ferramentas, NÃO "
+    "responda normalmente — responda SOMENTE com uma linha no "
+    "formato abaixo, sem mais nada antes ou depois:\n"
+    "FERRAMENTAS: nome_da_ferramenta, outro_nome\n\n"
+    "Use no máximo 3 nomes, e somente nomes que existem no catálogo "
+    "acima, exatamente como escritos. Nunca invente um nome. Na "
+    "dúvida entre responder direto ou apontar uma ferramenta, "
+    "prefira responder direto."
+)
+
+# Etapa 2: só é montada (e só é chamada) quando a etapa 1 apontou
+# candidatas. {ferramentas} aqui é a lista de nomes candidatos, só
+# pra dar contexto ao modelo sobre por que aquele schema específico
+# foi carregado — o schema completo em si vai no parâmetro "tools" da
+# chamada, não neste texto.
+ROTEAMENTO_ETAPA2_INSTRUCAO = (
+    "Você é o ALFRED, um assistente pessoal por voz. Com base no "
+    "pedido do usuário, monte a chamada de função apropriada dentre "
+    "estas ferramentas: {ferramentas}. Preencha os parâmetros com "
+    "exatamente o que o usuário disse, sem inventar nem completar "
+    "informação que faltou. Se, ao ver os detalhes completos, "
+    "nenhuma dessas ferramentas realmente servir para o pedido, "
+    "responda normalmente em texto em vez de chamar uma função."
+)
+
+
+# ============================================================
 # GEMINI LIVE — instrução de sistema principal
 # ============================================================
 # As duas peças mais longas do projeto ficam em arquivos .md ao lado

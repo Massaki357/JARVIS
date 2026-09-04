@@ -1,5 +1,7 @@
 import os
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
+
+from jarvis.caminhos import CAMINHO_ENV
 
 load_dotenv()
 
@@ -15,11 +17,41 @@ load_dotenv()
 #
 # Qualquer valor diferente de "openai" cai no Gemini, de propósito: um
 # .env com erro de digitação não deve trocar de provedor sozinho.
+#
+# Este valor é o lido na IMPORTAÇÃO do módulo (início do app) — mantido
+# só como referência/compatibilidade. A decisão de verdade sobre qual
+# worker usar é sempre feita por usar_provedor_openai() logo abaixo,
+# que relê o .env do disco a cada chamada, não este valor cacheado.
 PROVEDOR_IA = os.getenv("PROVEDOR_IA", "gemini").strip().lower()
 
 
+# Relê PROVEDOR_IA direto do arquivo .env EM DISCO a cada chamada, em
+# vez de usar o valor cacheado acima (fixado na importação do módulo,
+# ou seja, na abertura do app). Isso é o que permite trocar o cérebro
+# de voz na tela de configurações (jarvis/pacotes/configuracoes/) e a
+# PRÓXIMA chamada iniciada (jarvis/ui/janela_principal.py::
+# _classe_do_worker, chamado só no início de cada chamada) já usar o
+# provedor novo, sem precisar fechar e reabrir o app inteiro.
+#
+# set_key() (usado por jarvis/pacotes/configuracoes/env_io.py pra
+# salvar) só escreve no arquivo .env — nunca atualiza os.environ do
+# processo já em execução — então ler de os.getenv aqui devolveria
+# sempre o valor antigo. dotenv_values(CAMINHO_ENV) lê o arquivo do
+# zero toda vez, contornando esse cache (mesma função que
+# env_io.ler_valores() já usa pra popular a própria tela).
+#
+# Isto é seguro só porque a leitura acontece sempre ENTRE chamadas —
+# nenhuma sessão de voz já em andamento troca de provedor sozinha no
+# meio (o worker inteiro é recriado do zero a cada chamada). Não é uma
+# terceira porta de entrada pra OpenAI: continua sendo só esta mesma
+# variável de .env que já decidia isso, agora só lida num momento
+# diferente.
 def usar_provedor_openai():
-    return PROVEDOR_IA == "openai"
+    valores = dotenv_values(CAMINHO_ENV) if CAMINHO_ENV.exists() else {}
+
+    valor = (valores.get("PROVEDOR_IA") or "gemini").strip().lower()
+
+    return valor == "openai"
 
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -79,11 +111,23 @@ def config_schema():
         {
             "nome": "PROVEDOR_IA",
             "rotulo": (
-                "Cérebro de voz ativo: 'gemini' ou 'openai' "
-                "(padrão: gemini — exige reiniciar o app)"
+                "Cérebro de voz ativo (vale já na próxima chamada, "
+                "sem precisar reiniciar o app)"
             ),
             "sensivel": False,
             "obrigatoria": False,
+            # "opcoes": campo de seleção em vez de texto livre — só
+            # os dois valores que usar_provedor_openai() realmente
+            # reconhece. A primeira opção ("gemini") é também o
+            # fallback real do os.getenv(..., "gemini") logo acima:
+            # se o valor salvo no .env não bater com nenhuma opção
+            # (variável ausente, ou digitada errado antes desta tela
+            # existir), a tela seleciona esta primeira opção — o
+            # mesmo comportamento que o app já teria em runtime.
+            "opcoes": [
+                ("gemini", "Gemini"),
+                ("openai", "OpenAI"),
+            ],
         },
         {
             "nome": "TIMEOUT_INATIVIDADE_SEGUNDOS",
