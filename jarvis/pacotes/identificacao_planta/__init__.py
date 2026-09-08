@@ -10,7 +10,7 @@ from . import plantnet_client
 #
 # Diferença deste pacote em relação aos outros: identificar_planta
 # não tem parâmetros que o Gemini preenche — a imagem vem de uma
-# captura de câmera feita pelo CLIENTE (jarvis/gemini/cliente_live.py)
+# captura de câmera feita pelo CLIENTE (jarvis/cerebro/gemini/cliente_live.py)
 # antes de chamar despachar(), porque só o cliente sabe capturar um
 # frame (reaproveitando jarvis/servicos/visao/captura_camera.py). despachar() aqui
 # espera argumentos = {"imagem_bytes": <bytes JPEG>}, nunca vindo do

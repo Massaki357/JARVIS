@@ -16,6 +16,7 @@ import jarvis.pacotes.criar_arquivo.config as criar_arquivo_config
 import jarvis.pacotes.delegacao_ia.config as delegacao_ia_config
 import jarvis.pacotes.identificacao_planta.config as identificacao_planta_config
 import jarvis.pacotes.memoria_obsidian.config as memoria_obsidian_config
+import jarvis.pacotes.descricao_visual.config as descricao_visual_config
 import jarvis.pacotes.identificacao_visual.config as identificacao_visual_config
 import jarvis.pacotes.consulta_acoes.config as consulta_acoes_config
 import jarvis.pacotes.rede_jarvis.config as rede_jarvis_config
@@ -34,6 +35,10 @@ import jarvis.roteamento_hierarquico.config as roteamento_hierarquico_config
 # configurações cobria só pacotes de tools — GEMINI_API_KEY e as
 # variáveis de email nunca tinham aparecido nela.
 import jarvis.nucleo.config as nucleo_config
+
+# Também não é pacote de tools: é o cérebro de voz local
+# (jarvis/cerebro/voz_local/), escolhido por PROVEDOR_IA=local.
+import jarvis.cerebro.voz_local.config as voz_local_config
 import jarvis.servicos.email.remetente as email_remetente_config
 import jarvis.servicos.email.leitor as email_leitor_config
 
@@ -46,6 +51,7 @@ PACOTES_COM_CONFIG = [
     ("Comandos Administrativos", admin_terminal_config),
     ("Identificação de Plantas (Pl@ntNet)", identificacao_planta_config),
     ("Segunda Opinião Visual (Mistral)", identificacao_visual_config),
+    ("Descrição de Tela e Câmera (Mistral)", descricao_visual_config),
     ("Ativação por Voz (Vosk, 100% local)", ativacao_voz_config),
     ("Memória (vault do Obsidian)", memoria_obsidian_config),
     ("Cotação de Ações (Twelve Data)", consulta_acoes_config),
@@ -56,6 +62,7 @@ PACOTES_COM_CONFIG = [
         roteamento_hierarquico_config,
     ),
     ("Gemini / Núcleo do ALFRED", nucleo_config),
+    ("Servidor de Voz Local (alfred-server, MQTT)", voz_local_config),
     ("Email — Envio (SMTP)", email_remetente_config),
     ("Email — Leitura (IMAP)", email_leitor_config),
 ]

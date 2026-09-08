@@ -1,6 +1,6 @@
 # Catálogo curto das ferramentas de pacote (as 45 registradas em
 # jarvis/nucleo/registro_pacotes.py — NUNCA as 15 nativas de
-# jarvis/gemini/cliente_live.py, que dependem de estado de sessão de
+# jarvis/cerebro/gemini/cliente_live.py, que dependem de estado de sessão de
 # um GeminiLiveWorker vivo e não fazem sentido despachadas por uma
 # chamada de texto sem sessão).
 #
@@ -168,6 +168,19 @@ CATALOGO_CURTO = {
     ),
 
     # --- visao_camera ---
+    "descrever_tela": (
+        "visao_camera",
+        "Olha a tela do computador e descreve em voz alta o que "
+        "está aparecendo nela, incluindo textos e mensagens de "
+        "erro. Use quando pedirem para ver, olhar, conferir ou ler "
+        "a tela.",
+    ),
+    "descrever_camera": (
+        "visao_camera",
+        "Olha pela webcam e descreve o que está sendo mostrado na "
+        "frente dela. Use quando pedirem para ver, olhar ou "
+        "conferir a câmera.",
+    ),
     "identificar_planta": (
         "visao_camera",
         "Identifica a espécie de uma planta a partir de uma foto "

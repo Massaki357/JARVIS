@@ -45,6 +45,50 @@ MODELO_GROQ_ETAPA2 = os.getenv(
     "openai/gpt-oss-20b",
 )
 
+# Tentativas por chamada quando a Groq responde 429 (rate limit).
+# Não é para erro genérico: 429 é o único caso em que repetir tem
+# sentido, porque o próprio servidor diz que a janela vai reabrir.
+#
+# Medido ao vivo neste projeto: o tier gratuito do openai/gpt-oss-20b
+# tem teto de 8000 tokens por MINUTO, e cada chamada da etapa 1 custa
+# ~1450 tokens (o catálogo inteiro vai no prompt toda vez) — ou seja,
+# ~5 turnos por minuto antes de estourar, o que um ritmo normal de
+# conversa ultrapassa fácil. O corpo do 429 vem com "Please try again
+# in 975ms" e o cabeçalho retry-after, então a janela reabre em ~1s:
+# repetir resolve, esperar o usuário repetir a frase não.
+TENTATIVAS_RATE_LIMIT = 3
+
+# Tentativas quando a Groq responde 400 porque o MODELO emitiu uma
+# chamada de ferramenta numa etapa que não declarou ferramenta alguma
+# ("Tool choice is none, but model called a tool"). É o único 4xx que
+# vale repetir: o resultado varia entre chamadas idênticas, então a
+# tentativa seguinte quase sempre traz o texto esperado. Ver
+# roteador._e_chamada_de_ferramenta_indevida.
+#
+# 2, e não mais, POR CAUSA DO TETO DE TOKENS. Cada tentativa da etapa 1
+# custa ~1,8k tokens contra os 8000 TPM do tier gratuito, então repetir
+# à toa troca um erro por outro: numa medição de 5 turnos com 3
+# tentativas, o único que falhou foi por 429 — esgotou o orçamento de
+# rate limit que as repetições ajudaram a consumir.
+#
+# Duas basta porque a repetição é só a primeira linha de defesa: quem
+# de fato resolve é o plano B da etapa 1 (refazer sem o histórico, que
+# é o gatilho medido), e ele ainda é MAIS BARATO que uma repetição
+# normal, por não reenviar o histórico. Ver
+# roteador._e_chamada_de_ferramenta_indevida e processar_turno.
+TENTATIVAS_TOOL_CALL_INDEVIDA = 2
+
+# Espera base entre tentativas, em segundos, quando o servidor NÃO
+# manda retry-after. Cresce a cada tentativa (1s, 2s, 4s...). Quando
+# ele manda, o valor dele é respeitado — ninguém adivinha melhor que o
+# próprio servidor quando a janela reabre.
+ESPERA_BASE_RATE_LIMIT = 1.0
+
+# Teto da espera de uma tentativa. Existe porque retry-after é
+# controlado pelo servidor: um valor absurdo travaria o turno de voz
+# por muito mais tempo do que vale a pena esperar falando.
+ESPERA_MAXIMA_RATE_LIMIT = 5.0
+
 # Quantas ferramentas candidatas a etapa 1 pode apontar de uma vez.
 # Acima disso, o roteador corta pelas 3 primeiras — nunca manda um
 # schema completo de mais que isso pra etapa 2.

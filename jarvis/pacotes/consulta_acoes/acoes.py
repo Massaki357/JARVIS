@@ -2,7 +2,7 @@
 Consulta de cotações e histórico de preços de ações via Twelve Data API.
 
 Usada como ferramenta de voz para o consultor de investimentos do ALFRED
-(ver jarvis/openai_realtime/cliente_realtime.py). Os retornos já vêm resumidos e
+(ver jarvis/cerebro/openai_realtime/cliente_realtime.py). Os retornos já vêm resumidos e
 estruturados, nunca o JSON bruto da API, para não desperdiçar tokens
 no contexto do modelo.
 """

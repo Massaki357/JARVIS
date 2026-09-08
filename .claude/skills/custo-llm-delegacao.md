@@ -7,7 +7,7 @@ description: Política atual de quando o Jarvis deve delegar uma tarefa de texto
 
 Este documento reflete o estado **atual** do roteador em `jarvis/pacotes/delegacao_ia/roteador.py` e
 da seção `# DELEGAÇÃO DE TAREFAS` do `instrucao_sistema` em
-`jarvis/gemini/cliente_live.py`. Releia esses dois arquivos antes de usar esta skill como
+`jarvis/cerebro/gemini/cliente_live.py`. Releia esses dois arquivos antes de usar esta skill como
 referência — a política já mudou uma vez neste projeto (havia um terceiro tipo,
 `raciocinio_complexo`→OpenAI, removido) e pode mudar de novo.
 

@@ -298,7 +298,7 @@ def main():
     # Entrega a transcrição de cada resposta falada do Gemini pra
     # janela de chat, se ela estiver aberta — emitido de dentro do
     # loop assíncrono do worker (thread de fundo), ver
-    # GeminiLiveWorker.receber_audio em jarvis/gemini/cliente_live.py.
+    # GeminiLiveWorker.receber_audio em jarvis/cerebro/gemini/cliente_live.py.
     obter_sinalizador().resposta_texto_recebida.connect(
         _repassar_resposta_texto
     )

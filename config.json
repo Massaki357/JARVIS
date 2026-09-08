@@ -2,7 +2,7 @@
   "config": [
     {
       "interrupcao": true,
-      "microfone": "",
+      "microfone": "Microfone (HyperX Cloud Flight for PS)",
       "alto_falante": "",
       "perfil_ativo": ""
     }

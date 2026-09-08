@@ -57,6 +57,7 @@ sys.stdout = io.TextIOWrapper(
     sys.stdout.buffer, encoding="utf-8", errors="replace"
 )
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -118,6 +119,28 @@ def auditar_janela(janela, nome_janela, app, achados, inconclusivos):
         # Widget interno criado pelo próprio Qt (o popup do QComboBox,
         # por exemplo) não é widget do app.
         if widget.width() < 2 or widget.height() < 2:
+            continue
+
+        # Widget de EXIBIÇÃO, não de interação: transparente ao mouse E
+        # sem foco por teclado. O usuário não tem como interagir com
+        # ele, então "mudar de aparência ao desabilitar" não quer dizer
+        # nada — não existe estado desabilitado perceptível para algo
+        # que nunca foi habilitado no sentido de receber ação.
+        #
+        # O caso concreto é o chat sobreposto à esfera
+        # (jarvis/ui/painel_chat_sobreposto.py): é um QTextEdit somente
+        # leitura, WA_TransparentForMouseEvents e NoFocus, e ainda por
+        # cima começa vazio — então nem cor de texto diferente teria o
+        # que recolorir.
+        #
+        # A regra é por PROPRIEDADE, nunca por nome de widget: se
+        # alguém tornar esse painel interativo um dia, os dois
+        # atributos mudam e ele volta a ser auditado sozinho. Uma lista
+        # de exceções por nome é que apodreceria.
+        if (
+            widget.testAttribute(Qt.WA_TransparentForMouseEvents)
+            and widget.focusPolicy() == Qt.NoFocus
+        ):
             continue
 
         nome_objeto = widget.objectName() or "(sem objectName)"

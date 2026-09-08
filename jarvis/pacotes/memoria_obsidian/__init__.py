@@ -196,7 +196,7 @@ def despachar(nome_funcao, argumentos):
 
 
 # Contexto inicial leve da sessão: só as notas mais recentes, não
-# tudo. Chamado por jarvis/gemini/cliente_live.py ao montar a
+# tudo. Chamado por jarvis/cerebro/gemini/cliente_live.py ao montar a
 # instrucao_sistema.
 def contexto_inicial():
     return busca.contexto_inicial()

@@ -23,6 +23,11 @@ from . import config
 
 _ENDPOINT = "https://api.mistral.ai/v1/chat/completions"
 
+# Nome legível do provedor, usado nas mensagens devolvidas ao cérebro.
+# Existe desde que a segunda opinião deixou de ser sempre a Mistral —
+# ver gemini_vision_client.py e config.provedor_visao().
+NOME_PROVEDOR = "Mistral"
+
 
 # Envia a imagem (bytes JPEG já em memória — nunca gravada em disco)
 # + a pergunta exata que o usuário fez pro modelo de visão atual da
@@ -92,9 +97,19 @@ def consultar(imagem_bytes, pergunta):
         )
 
     if resposta.status_code == 429:
-        # O tier gratuito da Mistral tem poucas requisições por
-        # minuto — vale tratar isso como um caso esperado, não uma
-        # falha genérica.
+        # Distingue "acabou a cota" de "rápido demais". Quando o
+        # próprio cabeçalho diz que o limite por minuto é 0, chamar
+        # isso de "limite por minuto" mandaria esperar por algo que
+        # não vai reabrir sozinho — foi exatamente o que aconteceu com
+        # a chave deste projeto.
+        limite = resposta.headers.get("x-ratelimit-limit-req-minute")
+
+        if limite is not None and limite.strip() in ("0", "0.0"):
+            return False, _mensagem_indisponivel(
+                "a chave da Mistral está sem cota disponível "
+                "(limite por minuto zerado, não é espera passageira)"
+            )
+
         return False, _mensagem_indisponivel(
             "limite de requisições por minuto da Mistral atingido "
             "(comum no tier gratuito)"
@@ -118,4 +133,7 @@ def consultar(imagem_bytes, pergunta):
 
 
 def _mensagem_indisponivel(motivo):
-    return prompts.VISAO_INDISPONIVEL.format(motivo=motivo)
+    return prompts.VISAO_INDISPONIVEL.format(
+        provedor=NOME_PROVEDOR,
+        motivo=motivo,
+    )

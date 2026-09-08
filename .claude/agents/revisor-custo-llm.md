@@ -1,6 +1,6 @@
 ---
 name: revisor-custo-llm
-description: Revisa mudanças em jarvis/pacotes/delegacao_ia/ (roteador, provedores, __init__) e na seção "# DELEGAÇÃO DE TAREFAS" da instrucao_sistema em jarvis/gemini/cliente_live.py, checando que a política de uso mínimo da OpenAI não foi enfraquecida. Use depois de qualquer alteração em jarvis/pacotes/delegacao_ia/ ou no texto de instrucao_sistema relacionado a delegação.
+description: Revisa mudanças em jarvis/pacotes/delegacao_ia/ (roteador, provedores, __init__) e na seção "# DELEGAÇÃO DE TAREFAS" da instrucao_sistema em jarvis/cerebro/gemini/cliente_live.py, checando que a política de uso mínimo da OpenAI não foi enfraquecida. Use depois de qualquer alteração em jarvis/pacotes/delegacao_ia/ ou no texto de instrucao_sistema relacionado a delegação.
 tools: Read, Grep, Glob
 model: inherit
 ---
@@ -34,7 +34,7 @@ frase usados para treinar a distinção no `instrucao_sistema`.
 
 1. **Nenhum caminho de código novo chama a OpenAI diretamente**, fora de
    `_delegar_segunda_opiniao()` em `jarvis/pacotes/delegacao_ia/roteador.py` — nem em
-   `jarvis/gemini/cliente_live.py`, nem em outro pacote, nem um novo tipo de tarefa
+   `jarvis/cerebro/gemini/cliente_live.py`, nem em outro pacote, nem um novo tipo de tarefa
    mapeado pra `provedores.consultar_openai` dentro do caminho genérico
    (`MAPA_PROVEDOR_PRINCIPAL`/`MAPA_PROVEDOR_FALLBACK`).
 

@@ -52,7 +52,7 @@ class SinalizadorInterfacesExtras(QObject):
     # Diferente dos três sinais acima (que só pedem pra abrir uma
     # janela, sem carregar dado nenhum): este carrega o texto
     # transcrito da resposta falada do Gemini, emitido por
-    # GeminiLiveWorker.receber_audio() (jarvis/gemini/cliente_live.py)
+    # GeminiLiveWorker.receber_audio() (jarvis/cerebro/gemini/cliente_live.py)
     # sempre que um turno de resposta termina. Passa pelo
     # sinalizador — em vez de ser um Signal só da instância do
     # worker — de propósito: GeminiLiveWorker é recriado a cada

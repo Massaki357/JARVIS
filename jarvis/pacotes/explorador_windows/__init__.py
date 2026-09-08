@@ -14,7 +14,7 @@ from . import selecao
 # obter_function_declarations() retorna lista vazia e despachar()
 # nunca reconhece nada — o pacote segue o contrato pra ficar
 # consistente com o resto do projeto, mas obter_arquivo_selecionado()
-# é chamado diretamente pelo cliente (jarvis/gemini/cliente_live.py),
+# é chamado diretamente pelo cliente (jarvis/cerebro/gemini/cliente_live.py),
 # igual capturar_camera_bytes() já é. Justamente por não expor tools,
 # este pacote NÃO precisa entrar em PACOTES_REGISTRADOS — ver
 # docs/INTEGRATION.md, seção "explorador_windows".

@@ -116,6 +116,15 @@ class JanelaPerfil(QWidget):
         # da página de confirmação.
         self._sugestao = None
 
+        # Nomes que existem no cérebro de voz ativo, e o rótulo dele.
+        # Lidos UMA vez por abertura de página (o .env é lido a cada
+        # consulta; 61 consultas por lista seria desperdício), e
+        # relidos sempre que uma página é aberta — trocar o provedor
+        # no painel da tela inicial passa a valer na próxima vez que
+        # esta janela montar uma lista.
+        self._nomes_do_cerebro = set()
+        self._rotulo_cerebro = ""
+
         # Thread da chamada ao modelo. Guardada como atributo pra não
         # ser coletada pelo garbage collector enquanto ainda roda.
         self._gerador = None
@@ -494,6 +503,12 @@ class JanelaPerfil(QWidget):
         )
         layout.addWidget(self._aviso_inventadas)
 
+        self._aviso_cerebro_confirmacao = self._texto_apoio("")
+        self._aviso_cerebro_confirmacao.setStyleSheet(
+            f"color: {ACCENT_BRILHO}; font-size: 10px;"
+        )
+        layout.addWidget(self._aviso_cerebro_confirmacao)
+
         self._rotulo_comuns = self._rotulo_secao("")
         layout.addWidget(self._rotulo_comuns)
 
@@ -557,6 +572,17 @@ class JanelaPerfil(QWidget):
         else:
             self._aviso_inventadas.setText("")
 
+        self._reler_cerebro_ativo()
+
+        resumo_cerebro = self._resumo_indisponiveis(
+            sugestao["ferramentas"]
+        )
+
+        self._aviso_cerebro_confirmacao.setText(
+            f"Cérebro atual: {self._rotulo_cerebro}."
+            + (f"\n{resumo_cerebro}" if resumo_cerebro else "")
+        )
+
         comuns, sensiveis = perfis.separar(sugestao["ferramentas"])
 
         self._rotulo_comuns.setText(
@@ -567,7 +593,8 @@ class JanelaPerfil(QWidget):
 
         for nome in comuns:
             linha = QListWidgetItem(
-                f"{nome}  —  {perfis.resumo_de(nome)}"
+                f"{nome}  —  {self._sufixo_cerebro(nome)}"
+                f"{perfis.resumo_de(nome)}"
             )
             linha.setData(Qt.ItemDataRole.UserRole, nome)
 
@@ -592,7 +619,8 @@ class JanelaPerfil(QWidget):
 
         for nome in sensiveis:
             item = QListWidgetItem(
-                f"{nome}  —  {perfis.motivo_de(nome)}"
+                f"{nome}  —  {self._sufixo_cerebro(nome)}"
+                f"{perfis.motivo_de(nome)}"
             )
             item.setData(Qt.ItemDataRole.UserRole, nome)
             item.setFlags(
@@ -701,6 +729,14 @@ class JanelaPerfil(QWidget):
 
         self._aviso_ferramentas = self._texto_apoio("")
         layout.addWidget(self._aviso_ferramentas)
+
+        # Cérebro ativo + quais marcadas ele não tem. Fica ACIMA da
+        # lista, junto do contador, para ser lido sem rolar.
+        self._aviso_cerebro = self._texto_apoio("")
+        self._aviso_cerebro.setStyleSheet(
+            f"color: {ACCENT_BRILHO}; font-size: 10px;"
+        )
+        layout.addWidget(self._aviso_cerebro)
 
         self._lista_ferramentas = QListWidget()
         self._lista_ferramentas.setStyleSheet(_ESTILO_LISTA)
@@ -858,6 +894,8 @@ class JanelaPerfil(QWidget):
         Preenche a lista com TODAS as ferramentas do projeto,
         agrupadas por categoria, marcando as que o perfil já tem.
         """
+        self._reler_cerebro_ativo()
+
         marcadas = set(perfis.ferramentas_efetivas(perfil))
 
         # Popular a lista dispara itemChanged em cada setCheckState;
@@ -910,11 +948,57 @@ class JanelaPerfil(QWidget):
 
         self._atualizar_contagem_ferramentas()
 
+    def _reler_cerebro_ativo(self):
+        usar_openai = perfis.cerebro_atual_usa_openai()
+
+        self._nomes_do_cerebro = perfis.nomes_do_cerebro(usar_openai)
+        self._rotulo_cerebro = perfis.nome_do_cerebro(usar_openai)
+
+    def _fora_do_cerebro(self, nome):
+        """
+        Se a ferramenta NÃO existe no cérebro de voz ativo.
+
+        São 12 das 61 (e-mail inteiro e envio de capturas), todas
+        nativas do Gemini que o OpenAI Realtime não tem. Em tempo de
+        execução isso é silencioso de propósito — o filtro do perfil
+        simplesmente não a encontra na lista daquele cliente. Aqui,
+        na montagem do perfil, o silêncio seria armadilha: o usuário
+        marcaria a caixa e só descobriria conversando.
+        """
+        return bool(self._nomes_do_cerebro) and (
+            nome not in self._nomes_do_cerebro
+        )
+
+    def _sufixo_cerebro(self, nome):
+        """Marca que vai no texto do item, ou string vazia."""
+        if self._fora_do_cerebro(nome):
+            return f"[não existe no {self._rotulo_cerebro}] "
+
+        return ""
+
+    def _resumo_indisponiveis(self, nomes):
+        """
+        Linha de resumo das ferramentas marcadas que o cérebro ativo
+        não tem. String vazia quando está tudo disponível.
+        """
+        fora = [nome for nome in nomes if self._fora_do_cerebro(nome)]
+
+        if not fora:
+            return ""
+
+        return (
+            f"⚠ {len(fora)} destas não existem no {self._rotulo_cerebro} "
+            "e serão ignoradas na chamada: " + ", ".join(fora)
+        )
+
     def _item_ferramenta(self, entrada, marcadas):
         nome = entrada["nome"]
         obrigatoria = nome in perfis.FERRAMENTAS_SEMPRE_ATIVAS
 
-        item = QListWidgetItem(f"{nome}  —  {entrada['resumo']}")
+        item = QListWidgetItem(
+            f"{nome}  —  {self._sufixo_cerebro(nome)}"
+            f"{entrada['resumo']}"
+        )
         item.setData(Qt.ItemDataRole.UserRole, nome)
 
         if obrigatoria:
@@ -977,6 +1061,16 @@ class JanelaPerfil(QWidget):
             texto += f" ({sensiveis} SENSÍVEIS)"
 
         self._rotulo_ferramentas.setText(texto)
+
+        # Resumo do que está marcado mas não existe no cérebro ativo.
+        # Atualizado a cada marcação, não só na abertura: marcar
+        # ler_emails com o OpenAI ativo avisa na hora.
+        resumo = self._resumo_indisponiveis(marcadas)
+
+        self._aviso_cerebro.setText(
+            f"Cérebro atual: {self._rotulo_cerebro}."
+            + (f"\n{resumo}" if resumo else "")
+        )
 
     def _ferramentas_marcadas(self):
         marcadas = []

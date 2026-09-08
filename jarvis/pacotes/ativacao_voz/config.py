@@ -17,7 +17,7 @@ load_dotenv()
 # Esta MESMA frase serve dois propósitos agora: (1) inicia uma
 # chamada nova a partir do modo ocioso (como sempre foi) e (2) retoma
 # uma chamada PAUSADA por voz (ver a tool pausar_chamada em
-# jarvis/gemini/cliente_live.py / jarvis/openai_realtime/cliente_realtime.py) —
+# jarvis/cerebro/gemini/cliente_live.py / jarvis/cerebro/openai_realtime/cliente_realtime.py) —
 # o app não distingue os dois casos aqui, quem decide é
 # MainWindow.iniciar_chamada_por_voz, que resume a conversa
 # automaticamente sempre que já existir um session_handle guardado.

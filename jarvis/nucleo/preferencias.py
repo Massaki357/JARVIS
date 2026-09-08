@@ -19,6 +19,13 @@ from jarvis.caminhos import CAMINHO_CONFIG_JSON
 _CAMINHO_CONFIG = CAMINHO_CONFIG_JSON
 
 
+# ATENÇÃO ao ligar isto (config.json -> "interrupcao": true): vale
+# para o cérebro do Gemini E para o local, e nos dois EXIGE FONE DE
+# OUVIDO. Não existe cancelamento de eco acústico no projeto, então em
+# caixas de som o microfone capta a própria voz do assistente e ele se
+# interrompe sozinho. No modo local isso foi medido: o Silero vê fala
+# em 68% a 82% dos blocos de uma resposta do servidor, e continua
+# vendo a -24 dB — atenuar não ajuda, porque fala baixa é fala.
 def interrupcao_ativa():
     """
     Lê config[0]["interrupcao"] de config.json. Se o arquivo não

@@ -5,7 +5,7 @@
 # pro fallback de checar se há algo selecionado na Área de Trabalho
 # em si (ver desktop.py). Usado pelo fluxo "envie este arquivo que
 # eu selecionei" de preparar_email (ver
-# jarvis/gemini/cliente_live.py). Depende de pywin32 (win32com/
+# jarvis/cerebro/gemini/cliente_live.py). Depende de pywin32 (win32com/
 # win32gui), só funciona no Windows.
 import win32com.client
 import win32gui

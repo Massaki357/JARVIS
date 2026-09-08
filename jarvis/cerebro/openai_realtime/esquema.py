@@ -79,27 +79,43 @@ def converter_declaracao(declaracao):
 # Todas as ferramentas: as nativas do cliente (recebidas prontas, no
 # mesmo formato de FunctionDeclaration usado pelo Gemini) seguidas das
 # de cada pacote registrado.
-def montar_ferramentas(declaracoes_nativas, pacotes_registrados):
-    ferramentas = []
+def montar_ferramentas(
+    declaracoes_nativas,
+    pacotes_registrados,
+    filtro=None,
+):
+    """
+    Converte as declarações (no formato do Gemini) para o formato da
+    Realtime API.
 
-    for declaracao in declaracoes_nativas:
-        convertida = converter_declaracao(declaracao)
-
-        if convertida:
-            ferramentas.append(convertida)
+    `filtro`, quando informado, recebe a lista COMPLETA de declarações
+    e devolve o subconjunto que deve ir para a sessão — é assim que o
+    perfil ativo entra aqui, sem este módulo precisar saber que
+    perfis existem. Aplicado ANTES da conversão, de propósito:
+    converter uma ferramenta para depois jogá-la fora seria trabalho
+    à toa, e o filtro trabalha sobre os mesmos objetos que o cliente
+    Gemini filtra, então a regra é literalmente a mesma nos dois
+    provedores.
+    """
+    declaracoes = list(declaracoes_nativas)
 
     for pacote in pacotes_registrados:
         try:
-            declaracoes = pacote.obter_function_declarations()
+            declaracoes.extend(pacote.obter_function_declarations())
 
         except Exception:
             continue
 
-        for declaracao in declaracoes:
-            convertida = converter_declaracao(declaracao)
+    if filtro is not None:
+        declaracoes = filtro(declaracoes)
 
-            if convertida:
-                ferramentas.append(convertida)
+    ferramentas = []
+
+    for declaracao in declaracoes:
+        convertida = converter_declaracao(declaracao)
+
+        if convertida:
+            ferramentas.append(convertida)
 
     return ferramentas
 

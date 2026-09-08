@@ -120,6 +120,13 @@ _VISAO_E_CAMERA = {
     "abrir_camera",
     "identificar_planta",
     "consultar_segunda_opiniao_visual",
+    # Mesmo motivo dos dois acima, e ainda mais forte no caso da
+    # tela: capturam E mandam a imagem pra uma API de terceiro
+    # (Mistral). São as equivalentes de analisar_tela/analisar_camera
+    # no catálogo genérico — não seria coerente marcar as nativas e
+    # deixar estas de fora.
+    "descrever_tela",
+    "descrever_camera",
 }
 
 # --- Entrada cega no sistema --------------------------------------

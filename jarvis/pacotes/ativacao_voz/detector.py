@@ -59,7 +59,7 @@ _parar_evento = threading.Event()
 # Callback registrado por iniciar() (chamado uma única vez, em
 # main.py) — guardado à parte do ciclo de vida do stream, pra
 # que pausar()/retomar() (chamados por GeminiLiveWorker a cada
-# chamada, ver jarvis/gemini/cliente_live.py) não precisem recebê-lo de
+# chamada, ver jarvis/cerebro/gemini/cliente_live.py) não precisem recebê-lo de
 # novo a cada vez. Chamado numa thread de fundo (nunca a thread da
 # GUI) — quem registra o callback é responsável por só fazer coisas
 # thread-safe dentro dele (ex: emitir um Signal do sinalizador).
@@ -295,7 +295,7 @@ def pausar():
 
 
 # Volta a escutar — chamado por GeminiLiveWorker quando uma chamada
-# termina (ver o cleanup em executar(), jarvis/gemini/cliente_live.py).
+# termina (ver o cleanup em executar(), jarvis/cerebro/gemini/cliente_live.py).
 # Reaproveita o callback já registrado por iniciar() e o modelo já
 # carregado em memória (_obter_modelo() só recarrega se necessário).
 # Idempotente.

@@ -12,7 +12,7 @@ from . import detector
 # segue o contrato pra ficar consistente com o resto do projeto
 # (mesmo caso de explorador_windows), mas iniciar()/pausar()/
 # retomar() são chamados diretamente por main.py e por
-# GeminiLiveWorker (jarvis/gemini/cliente_live.py), nunca via
+# GeminiLiveWorker (jarvis/cerebro/gemini/cliente_live.py), nunca via
 # despachar(). Por não expor tools, este pacote NÃO entra em
 # PACOTES_REGISTRADOS — ver docs/INTEGRATION.md, seção "ativacao_voz".
 # ============================================================

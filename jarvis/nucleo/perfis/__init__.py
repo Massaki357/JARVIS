@@ -42,6 +42,8 @@ from .armazenamento import (
     existe,
     ferramentas_editaveis,
     ferramentas_efetivas,
+    filtrar_declaracoes,
+    preparar_chamada,
     gerar_slug,
     listar_perfis,
     normalizar_ferramentas,
@@ -66,6 +68,9 @@ from .sensiveis import (
 )
 from .catalogo_ferramentas import (
     FERRAMENTAS_SEMPRE_ATIVAS,
+    cerebro_atual_usa_openai,
+    nome_do_cerebro,
+    nomes_do_cerebro,
     catalogo_completo,
     nomes_disponiveis,
     resumo_de,
@@ -74,6 +79,11 @@ from .catalogo_ferramentas import (
 from .migracao import garantir_perfil_padrao
 
 __all__ = [
+    "nomes_do_cerebro",
+    "nome_do_cerebro",
+    "cerebro_atual_usa_openai",
+    "preparar_chamada",
+    "filtrar_declaracoes",
     "verificar_classificacao",
     "separar",
     "motivo_de",

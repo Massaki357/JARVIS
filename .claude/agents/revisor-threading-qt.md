@@ -1,6 +1,6 @@
 ---
 name: revisor-threading-qt
-description: Revisa mudanças em código que envolve GeminiLiveWorker (QThread), Signals/Slots, ou qualquer chamada a widgets/classes Qt fora da thread principal da GUI. Use depois de editar jarvis/gemini/cliente_live.py, jarvis/ui/janela_principal.py, ou qualquer código de pacote que precise "falar" com a UI ou usar QFileDialog/QObject a partir de uma thread de fundo.
+description: Revisa mudanças em código que envolve GeminiLiveWorker (QThread), Signals/Slots, ou qualquer chamada a widgets/classes Qt fora da thread principal da GUI. Use depois de editar jarvis/cerebro/gemini/cliente_live.py, jarvis/ui/janela_principal.py, ou qualquer código de pacote que precise "falar" com a UI ou usar QFileDialog/QObject a partir de uma thread de fundo.
 tools: Read, Grep, Glob
 model: inherit
 ---
@@ -11,7 +11,7 @@ coisa fora do escopo abaixo.
 
 ## Contexto do projeto
 
-`GeminiLiveWorker` (`jarvis/gemini/cliente_live.py`) é um `QThread` que roda seu próprio
+`GeminiLiveWorker` (`jarvis/cerebro/gemini/cliente_live.py`) é um `QThread` que roda seu próprio
 loop `asyncio` numa thread separada da GUI. `MainWindow` (`jarvis/ui/janela_principal.py`) é
 a `QMainWindow` que roda na thread principal do Qt. A única forma sancionada de o
 worker se comunicar de volta com a GUI é via `Signal`/`.emit(...)`, conectados uma vez

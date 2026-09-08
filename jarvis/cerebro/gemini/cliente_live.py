@@ -153,7 +153,7 @@ from jarvis.pacotes import memoria_obsidian
 # A lista dos pacotes de tools agora mora em
 # jarvis/nucleo/registro_pacotes.py, não mais aqui — ver o docstring
 # daquele arquivo e docs/INTEGRATION.md. Dois motivos: o provedor
-# OpenAI Realtime (jarvis/openai_realtime/cliente_realtime.py) precisa
+# OpenAI Realtime (jarvis/cerebro/openai_realtime/cliente_realtime.py) precisa
 # da MESMA lista, e importá-la deste arquivo arrastaria a sessão
 # Gemini inteira junto; e com ela fora daqui, registrar um pacote novo
 # deixou de tocar em qualquer um dos três arquivos do curso.
@@ -164,9 +164,15 @@ from jarvis.pacotes import memoria_obsidian
 # TOOLS_SILENCIOSAS: tools em que a resposta falada atrapalha (ação na
 # tela do usuário) — o áudio do turno é descartado
 # (silenciar_audio_ate_fim_turno).
+# TOOLS_QUE_PRECISAM_DE_IMAGEM: tools que não recebem a imagem do
+# modelo — o cliente captura e injeta imagem_bytes em args antes de
+# despachar; o valor diz de onde capturar ("tela" ou "camera").
+from jarvis.nucleo import perfis
+
 from jarvis.nucleo.registro_pacotes import (
     PACOTES_REGISTRADOS,
     TOOLS_QUE_CAPTURAM_SOZINHAS,
+    TOOLS_QUE_PRECISAM_DE_IMAGEM,
     TOOLS_SILENCIOSAS,
 )
 
@@ -494,11 +500,24 @@ class GeminiLiveWorker(QThread):
         session_handle=None,
         transcricao_inicial=None,
         ativado_por_voz=False,
+        slug_perfil=None,
     ):
         super().__init__()
 
         # Controla se a sessão continua em execução.
         self.ativo = True
+
+        # Perfil que vale para ESTA chamada — prompt de sistema e
+        # subconjunto de ferramentas. Resolvido AGORA, na construção
+        # do worker (que acontece no clique de INICIAR CHAMADA), e
+        # nunca relido depois: é isso que garante que trocar de perfil
+        # na tela não mexe numa chamada já em andamento.
+        #
+        # A janela passa o slug explicitamente ao reconectar (go_away)
+        # ou retomar uma pausa, para a conversa continuar com o mesmo
+        # perfil com que começou. None = chamada nova, usa o perfil
+        # ativo de agora.
+        self.slug_perfil = slug_perfil or perfis.perfil_ativo()
 
         self.ativado_por_voz = ativado_por_voz
 
@@ -1768,6 +1787,38 @@ class GeminiLiveWorker(QThread):
                 pacote.obter_function_declarations()
             )
 
+        # Resolve o perfil desta chamada de uma vez:
+        # ferramentas permitidas, texto do prompt e um
+        # aviso se algo deu errado. FALHA FECHADA — um
+        # perfil ilegível deixa a chamada SEM ferramentas,
+        # nunca com todas (ver perfis.preparar_chamada).
+        perfil_da_chamada = await asyncio.to_thread(
+            perfis.preparar_chamada,
+            self.slug_perfil,
+        )
+
+        # Um perfil que não carrega é reportado à INTERFACE, não só ao
+        # console: ninguém está olhando o terminal durante uma chamada
+        # de verdade. erro_recebido cai no registro de atividade e no
+        # painel de console da janela.
+        if perfil_da_chamada["aviso"]:
+            self.erro_recebido.emit(perfil_da_chamada["aviso"])
+
+        # A lista completa montada acima é reduzida ao que
+        # o perfil permite. O perfil padrão devolve a
+        # lista intacta, então o comportamento de sempre é
+        # o caso trivial disto, não um desvio.
+        function_declarations = perfis.filtrar_declaracoes(
+            function_declarations,
+            perfil_da_chamada["permitidas"],
+        )
+
+        print(
+            f"[PERFIL] {self.slug_perfil}: "
+            f"{len(function_declarations)} ferramentas nesta "
+            "chamada."
+        )
+
         tools = [
             types.Tool(
                 function_declarations=function_declarations
@@ -1806,7 +1857,9 @@ class GeminiLiveWorker(QThread):
         # do contexto de memórias que vem concatenado logo abaixo.
         instrucao_sistema = (
             bloco_autenticacao
-            + prompts.instrucao_sistema_corpo()
+            + prompts.instrucao_sistema_corpo(
+                texto_bruto=perfil_da_chamada["prompt_bruto"]
+            )
             # Data/hora local do MOMENTO em que a chamada começa — é
             # o que permite ao modelo entender "amanhã" e "sexta" ao
             # criar um evento de agenda. Vem do JARVIS COMPLETO.
@@ -3541,10 +3594,14 @@ class GeminiLiveWorker(QThread):
             # ser injetada em args antes de despachar() para o
             # pacote. Ver jarvis/pacotes/identificacao_planta/__init__.py,
             # jarvis/pacotes/identificacao_visual/__init__.py e docs/INTEGRATION.md.
-            if nome in (
-                "identificar_planta",
-                "consultar_segunda_opiniao_visual",
-            ):
+            if nome in TOOLS_QUE_PRECISAM_DE_IMAGEM:
+                # De onde capturar: "tela" ou "camera". Antes isto era
+                # sempre a câmera, porque as duas únicas tools da lista
+                # eram de câmera — descrever_tela entrou depois e
+                # precisa da TELA, então a origem passou a vir da
+                # própria lista em vez de ficar implícita aqui.
+                origem_imagem = TOOLS_QUE_PRECISAM_DE_IMAGEM[nome]
+
                 # MUTEX REAL FALTANDO, corrigido aqui — ver
                 # _mutex_funcao_visual. Se ocupado, preenche
                 # resultado_pacote diretamente (pulando o despacho pro
@@ -3558,15 +3615,24 @@ class GeminiLiveWorker(QThread):
 
                     else:
                         self.status_recebido.emit(
-                            "Capturando imagem da câmera para identificar a "
-                            "planta..."
-                            if nome == "identificar_planta"
-                            else "Capturando imagem da câmera para a segunda "
-                            "opinião visual..."
+                            "Capturando imagem da tela..."
+                            if origem_imagem == "tela"
+                            else "Capturando imagem da câmera..."
+                        )
+
+                        # capturar_monitor_do_cursor_bytes, e não
+                        # capturar_tela_bytes: em monitor duplo, "olha
+                        # minha tela" quer dizer o monitor que o usuário
+                        # está olhando. Mesma função que analisar_tela
+                        # já usa.
+                        captura = (
+                            capturar_monitor_do_cursor_bytes
+                            if origem_imagem == "tela"
+                            else capturar_camera_bytes
                         )
 
                         args["imagem_bytes"] = await asyncio.to_thread(
-                            capturar_camera_bytes
+                            captura
                         )
 
             # Mesma ideia acima, mas só pra dar visibilidade — não

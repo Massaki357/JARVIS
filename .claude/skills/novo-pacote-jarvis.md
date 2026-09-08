@@ -7,7 +7,7 @@ description: Passo a passo para criar um novo pacote de tools isolado no projeto
 
 Use este passo a passo sempre que uma nova capacidade for adicionada ao jarvis por voz
 (ex: um novo provedor de LLM, uma nova integração de hardware, um novo canal de
-comunicação). O objetivo é que `jarvis/gemini/cliente_live.py` — um dos três arquivos
+comunicação). O objetivo é que `jarvis/cerebro/gemini/cliente_live.py` — um dos três arquivos
 temporários vindos do curso — nunca ganhe lógica de negócio nova, só os três pontos de contato do
 contrato padrão.
 
@@ -17,7 +17,7 @@ pode ter mudado desde a última vez que você criou um pacote.
 ## 1. Estrutura do pacote
 
 Crie uma pasta nova dentro de `jarvis/pacotes/` (irmã de `rede_jarvis/`,
-`casa_inteligente/`, `delegacao_ia/`), nunca dentro de `jarvis/gemini/`,
+`casa_inteligente/`, `delegacao_ia/`), nunca dentro de `jarvis/cerebro/gemini/`,
 `jarvis/ui/` ou `jarvis/servicos/`. Dentro
 dela, no mínimo:
 
@@ -89,7 +89,7 @@ wiring extra):
   aplica aqui; a referência é `jarvis/pacotes/rede_jarvis/config.py` (`WHITELIST_APPS`,
   `PASTAS_PERMITIDAS_BUSCA`).
 
-## 3. Wiring no cliente (`jarvis/gemini/cliente_live.py`)
+## 3. Wiring no cliente (`jarvis/cerebro/gemini/cliente_live.py`)
 
 Exatamente três pontos de contato — nada além disso deve mudar neste arquivo:
 

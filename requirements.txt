@@ -18,3 +18,9 @@ discord.py
 vosk
 openai
 ddgs
+# Detecção de fala do modo local (Silero VAD). Só o onnxruntime:
+# o pacote silero-vad do PyPI exige torch+torchaudio (~250 MB) mesmo
+# no caminho ONNX, para rodar um modelo de 1,2 MB. O modelo em si é
+# baixado e fica em cache na primeira chamada, como o do Vosk —
+# ver jarvis/cerebro/voz_local/vad_silero.py.
+onnxruntime

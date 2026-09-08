@@ -3,8 +3,8 @@
 # entrando na tela de configurações. Esse nome é o que aparece em
 # TUDO: instrução de sistema (jarvis/nucleo/prompts/, "Seu nome é
 # <nome>." e as demais menções), o status falado/exibido ("<nome>
-# conectado. Pode falar." — jarvis/gemini/cliente_live.py e
-# jarvis/openai_realtime/cliente_realtime.py), e a própria tela
+# conectado. Pode falar." — jarvis/cerebro/gemini/cliente_live.py e
+# jarvis/cerebro/openai_realtime/cliente_realtime.py), e a própria tela
 # principal (título da janela, rótulo lateral, texto desenhado no
 # centro da esfera — ver jarvis/ui/janela_principal.py::
 # _aplicar_nome_novo e jarvis/ui/visualizador_alfred.py::definir_nome).

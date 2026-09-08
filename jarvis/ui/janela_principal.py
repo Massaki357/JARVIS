@@ -29,10 +29,10 @@ from PySide6.QtWidgets import (
 
 # Importa a thread responsável pela conexão com o Gemini Live.
 # Essa classe cuida do áudio, da visão e da comunicação em tempo real.
-from jarvis.gemini.cliente_live import GeminiLiveWorker
+from jarvis.cerebro.gemini.cliente_live import GeminiLiveWorker
 
 # Provedor de IA ativo (.env, PROVEDOR_IA) — ver jarvis/nucleo/config.py.
-from jarvis.nucleo.config import usar_provedor_openai
+from jarvis.nucleo.config import provedor_ativo
 
 # Sinalizador genérico para abrir janelas extras fora da thread da
 # GUI (ver jarvis/nucleo/sinalizador.py) — os botões de configurações
@@ -69,6 +69,7 @@ from jarvis.nucleo.config import obter_nome_jarvis
 # (QPainter, cache de fundo/esfera, FPS adaptativo) mora no próprio
 # módulo; aqui ela é só instanciada, posicionada e alimentada por
 # definir_status/definir_ativo/definir_nivel_audio.
+from jarvis.ui.painel_chat_sobreposto import PainelChatSobreposto
 from jarvis.ui.visualizador_alfred import VisualizadorAlfred
 
 # Identidade visual compartilhada por todas as janelas do app (ver
@@ -79,18 +80,28 @@ from jarvis.ui.visualizador_alfred import VisualizadorAlfred
 from jarvis.ui.estilo import ESTILO_GLOBAL
 
 
-# Devolve a CLASSE de worker do provedor configurado. Os dois workers
-# expõem a mesma API pública (sinais, construtor e métodos), então
-# daqui para baixo a janela não precisa saber qual deles está rodando.
+# Devolve a CLASSE de worker do provedor configurado. Os TRÊS workers
+# (Gemini Live, OpenAI Realtime e servidor local) expõem a mesma API
+# pública (sinais, construtor e métodos), então daqui para baixo a
+# janela não precisa saber qual deles está rodando. Esta função é o
+# ÚNICO ponto do projeto que escolhe entre eles.
 #
-# O import da OpenAI é feito aqui dentro, e não no topo do arquivo, de
-# propósito: quem usa o Gemini não precisa ter o pacote openai
-# instalado nem pagar o custo de importá-lo a cada abertura do app.
+# Os imports da OpenAI e do servidor local são feitos aqui dentro, e
+# não no topo do arquivo, de propósito: quem usa o Gemini não precisa
+# ter o pacote openai instalado nem pagar o custo de importar o que
+# não vai usar a cada abertura do app.
 def _classe_do_worker():
-    if usar_provedor_openai():
-        from jarvis.openai_realtime import OpenAIRealtimeWorker
+    provedor = provedor_ativo()
+
+    if provedor == "openai":
+        from jarvis.cerebro.openai_realtime import OpenAIRealtimeWorker
 
         return OpenAIRealtimeWorker
+
+    if provedor == "local":
+        from jarvis.cerebro.voz_local import VozLocalWorker
+
+        return VozLocalWorker
 
     return GeminiLiveWorker
 
@@ -150,6 +161,13 @@ class MainWindow(QMainWindow):
         # continuar (senão o resumo salvo no fim teria só o trecho
         # depois da última renovação/pausa).
         self.transcricao_preservada = []
+
+        # Perfil da chamada em andamento. Sobrevive SÓ a uma reconexão
+        # automática ou a uma retomada de pausa, do mesmo jeito que
+        # session_handle e transcricao_preservada: a conversa continua,
+        # então tem que continuar com o perfil com que começou.
+        # None = a próxima chamada resolve o perfil ativo de então.
+        self.slug_perfil_chamada = None
 
         # Distinguem uma QUEDA de conexão (deve reabrir sozinho,
         # preservando a conversa) de um encerramento pedido pelo
@@ -579,6 +597,18 @@ class MainWindow(QMainWindow):
         # voz do ALFRED (sinal nivel_audio do worker).
         self.visualizador = VisualizadorAlfred()
 
+        # Chat translúcido POR CIMA da esfera: mostra em texto o que o
+        # assistente respondeu, sem tapar a animação. É filho do
+        # visualizador e fica fora de qualquer layout de propósito —
+        # num layout ele roubaria espaço da esfera, que é o único
+        # widget da janela com peso de expansão. Toda a lógica
+        # (posicionamento, transparência, conexão com o sinalizador)
+        # mora em jarvis/ui/painel_chat_sobreposto.py; aqui ele só é
+        # criado, como o painel de console e o de dispositivos.
+        self.chat_sobreposto = PainelChatSobreposto(
+            self.visualizador
+        )
+
         # Coluna da direita: o console de diagnóstico. Ele duplica
         # sys.stdout/sys.stderr, então mostra em tempo real tudo que
         # antes só aparecia no terminal — interrupções de fala,
@@ -749,12 +779,16 @@ class MainWindow(QMainWindow):
             self.transcricao_preservada = []
             self.ativado_por_voz = False
 
+            # Chamada nova pelo botão usa o perfil que estiver
+            # selecionado AGORA na tela de perfis.
+            self.slug_perfil_chamada = None
+
             self.iniciar_chamada()
 
         # Se já existe worker, solicita o encerramento.
         else:
             # [DIAGNÓSTICO DE CONGELAMENTO — ver DEBUG_TIMING_CONGELAMENTO
-            # em jarvis/gemini/cliente_live.py] self.live_worker só é
+            # em jarvis/cerebro/gemini/cliente_live.py] self.live_worker só é
             # zerado (ver chamada_finalizada) quando o sinal
             # chamada_encerrada dispara, e esse sinal só dispara quando
             # GeminiLiveWorker.executar() retorna por completo — se a
@@ -840,6 +874,14 @@ class MainWindow(QMainWindow):
         # própria, um encerramento manual.
         self.encerramento_manual = False
 
+        # O chat sobre a esfera começa vazio a cada chamada: mostrar as
+        # respostas da conversa anterior por cima de uma chamada nova
+        # daria a impressão de que o assistente acabou de dizer aquilo.
+        # Numa RECONEXÃO automática o efeito é o mesmo de sempre — a
+        # conversa continua, mas o texto já lido some da tela, que é
+        # melhor do que o contrário.
+        self.chat_sobreposto.limpar()
+
         # A esfera entra em modo animado de "conectado".
         self.visualizador.definir_ativo(
             True
@@ -853,6 +895,7 @@ class MainWindow(QMainWindow):
             session_handle=self.session_handle,
             transcricao_inicial=self.transcricao_preservada,
             ativado_por_voz=self.ativado_por_voz,
+            slug_perfil=self.slug_perfil_chamada,
         )
 
         # Consumido: só vale para ESTA chamada que está sendo criada
@@ -1002,8 +1045,16 @@ class MainWindow(QMainWindow):
                 self.live_worker.transcricao_conversa
             )
 
+            # A conversa continua no worker seguinte, então o perfil
+            # dela vai junto — sem isto, uma reconexão no meio da
+            # chamada releria o perfil ativo e trocaria o
+            # comportamento do jarvis no meio de uma conversa que o
+            # usuário não pediu para trocar.
+            self.slug_perfil_chamada = self.live_worker.slug_perfil
+
         else:
             self.transcricao_preservada = []
+            self.slug_perfil_chamada = None
 
         # Remove a referência da thread encerrada.
         self.live_worker = None

@@ -135,7 +135,7 @@ def iniciar_discord_jarvis():
 # caminho_anexo é opcional e não vem da tool de voz padrão
 # (enviar_dm_discord não expõe esse parâmetro pro Gemini) — existe
 # só pra outras tools nativas do cliente (ex: enviar_print_discord_dm
-# em jarvis/gemini/cliente_live.py) chamarem esta MESMA função direto,
+# em jarvis/cerebro/gemini/cliente_live.py) chamarem esta MESMA função direto,
 # reaproveitando toda a resolução de contato e envio já implementados
 # aqui, em vez de duplicar essa lógica pra mandar um arquivo.
 def enviar_dm_discord(nome_amigo, texto, caminho_anexo=None):
@@ -216,7 +216,7 @@ def enviar_dm_discord(nome_amigo, texto, caminho_anexo=None):
 # caminho_anexo é opcional e não vem da tool de voz padrão
 # (enviar_mensagem_discord não expõe esse parâmetro pro Gemini) —
 # existe só pra outra tool nativa do cliente (enviar_captura_discord_canal
-# em jarvis/gemini/cliente_live.py) chamar esta MESMA função direto,
+# em jarvis/cerebro/gemini/cliente_live.py) chamar esta MESMA função direto,
 # reaproveitando toda a resolução de canal já implementada aqui, em
 # vez de duplicar essa lógica pra mandar um arquivo — mesmo padrão já
 # usado por enviar_dm_discord/caminho_anexo acima. A camada mais baixa

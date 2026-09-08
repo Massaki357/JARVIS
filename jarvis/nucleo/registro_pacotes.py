@@ -1,13 +1,13 @@
 """
 A lista PACOTES_REGISTRADOS — o registro único dos pacotes de tools.
 
-Antes ela morava dentro de jarvis/gemini/cliente_live.py, e adicionar
+Antes ela morava dentro de jarvis/cerebro/gemini/cliente_live.py, e adicionar
 um pacote novo exigia editar aquele arquivo (um dos três arquivos do
 projeto do curso, que devem ser tocados o mínimo possível). Ela saiu
 de lá por dois motivos:
 
 1. Passou a existir um SEGUNDO cérebro de voz — o provedor OpenAI
-   Realtime (jarvis/openai_realtime/cliente_realtime.py) — e os dois
+   Realtime (jarvis/cerebro/openai_realtime/cliente_realtime.py) — e os dois
    precisam da mesma lista. O cliente OpenAI não pode importar
    cliente_live.py só pra pegar a lista (seria arrastar a sessão
    Gemini inteira junto), e cliente_live.py também não pode importar
@@ -50,8 +50,11 @@ from jarvis.pacotes import configuracoes
 # de despachar() — ver docs/INTEGRATION.md.
 from jarvis.pacotes import identificacao_planta
 
-# Segunda opinião visual independente (Mistral). Mesma exceção de
+# Segunda opinião visual independente (Mistral ou Gemini — quem
+# responde é sempre o provedor OPOSTO ao cérebro de voz ativo, ver
+# jarvis/pacotes/identificacao_visual/config.py). Mesma exceção de
 # identificacao_planta.
+from jarvis.pacotes import descricao_visual
 from jarvis.pacotes import identificacao_visual
 
 # Janelas de chat de texto e envio de arquivo, ligadas à MESMA sessão
@@ -122,6 +125,7 @@ PACOTES_REGISTRADOS = [
     admin_terminal,
     configuracoes,
     identificacao_planta,
+    descricao_visual,
     identificacao_visual,
     chat_jarvis,
     discord_jarvis,
@@ -165,3 +169,32 @@ TOOLS_SILENCIOSAS = (
     "escrever_no_campo_ativo",
     "clicar_elemento_visual",
 )
+
+
+# Tools que NÃO recebem a imagem do modelo: quem captura é o CLIENTE,
+# que injeta imagem_bytes em args logo antes de despachar. O valor diz
+# de ONDE capturar ("tela" ou "camera") — cada cliente resolve isso com
+# a própria função de captura.
+#
+# Isto vive aqui, e não dentro de cada cliente, por causa de um BUG
+# REAL: descrever_tela/descrever_camera (jarvis/pacotes/descricao_visual/)
+# nasceram para o cérebro local e só o cliente local aprendeu a
+# alimentá-las. Mas o pacote está em PACOTES_REGISTRADOS, que é
+# global — então os três cérebros DECLARAM as duas tools, e nos
+# workers do Gemini e da OpenAI elas falhavam SEMPRE, com "nenhuma
+# imagem foi capturada". Sintoma relatado: pedir para o jarvis olhar
+# a tela e ele responder que deu erro ao acessar a câmera e ver a
+# tela — o modelo escolhia descrever_tela (que quebra) em vez da
+# nativa analisar_tela (que funciona), e não tinha como saber a
+# diferença.
+#
+# Com a lista aqui, registrar um pacote que precise de imagem passa a
+# ser uma linha só, e nenhum cliente pode ficar para trás em silêncio.
+# Não confundir com TOOLS_QUE_CAPTURAM_SOZINHAS: lá o pacote captura
+# por dentro e o cliente só segura o mutex em volta do despacho.
+TOOLS_QUE_PRECISAM_DE_IMAGEM = {
+    "identificar_planta": "camera",
+    "consultar_segunda_opiniao_visual": "camera",
+    "descrever_tela": "tela",
+    "descrever_camera": "camera",
+}

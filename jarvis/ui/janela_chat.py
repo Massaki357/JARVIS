@@ -2,7 +2,7 @@
 # na MESMA sessão Gemini Live já em andamento (não uma conversa
 # separada) através da ponte thread-safe exposta pelo worker
 # (GeminiLiveWorker.enviar_texto_da_ui/enviar_imagem_da_ui em
-# jarvis/gemini/cliente_live.py) — ver docs/INTEGRATION.md, seção
+# jarvis/cerebro/gemini/cliente_live.py) — ver docs/INTEGRATION.md, seção
 # "chat_jarvis", pra como essa ponte funciona por dentro.
 from PySide6.QtWidgets import (
     QLineEdit,

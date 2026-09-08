@@ -42,7 +42,7 @@ ORIGEM_NATIVA_AMBOS = "nativa_ambos"
 
 
 # Ferramentas nativas do cliente Gemini Live
-# (jarvis/gemini/cliente_live.py, function_declarations_nativas).
+# (jarvis/cerebro/gemini/cliente_live.py, function_declarations_nativas).
 # nome -> (categoria, resumo de uma linha)
 NATIVAS_GEMINI = {
     "analisar_tela": (
@@ -123,7 +123,7 @@ NATIVAS_GEMINI = {
 
 
 # Ferramentas nativas do cliente OpenAI Realtime
-# (jarvis/openai_realtime/cliente_realtime.py,
+# (jarvis/cerebro/openai_realtime/cliente_realtime.py,
 # FUNCTION_DECLARATIONS_NATIVAS). Subconjunto das de cima — os
 # resumos são reaproveitados de NATIVAS_GEMINI, não reescritos.
 NOMES_NATIVAS_OPENAI = (
@@ -282,6 +282,41 @@ def resumo_de(nome):
     return ""
 
 
+def nome_do_cerebro(usar_openai):
+    """Rótulo do provedor de voz, para a interface."""
+    return "OpenAI Realtime" if usar_openai else "Gemini Live"
+
+
+def nomes_do_cerebro(usar_openai):
+    """
+    Nomes de ferramenta que EXISTEM no cérebro informado.
+
+    O Gemini oferece as 61 (16 nativas + 45 de pacote); o OpenAI
+    Realtime oferece 49, porque só 4 das nativas existem lá. As de
+    pacote são idênticas nos dois — elas não dependem do provedor.
+
+    Isto é informação para a INTERFACE avisar antes, na hora de montar
+    o perfil. Em tempo de execução nada consulta esta função: lá o
+    filtro do perfil intersecta por nome sobre a lista que o próprio
+    cliente montou, e uma ferramenta ausente simplesmente não aparece
+    (ver perfis.filtrar_declaracoes).
+    """
+    if not usar_openai:
+        return nomes_disponiveis()
+
+    return set(NOMES_NATIVAS_OPENAI) | set(nomes_de_pacotes())
+
+
+def cerebro_atual_usa_openai():
+    """
+    Lê o PROVEDOR_IA do .env. Fica aqui, e não na tela, para a tela
+    ler UMA vez ao montar a lista em vez de 61 vezes, uma por item.
+    """
+    from jarvis.nucleo.config import usar_provedor_openai
+
+    return usar_provedor_openai()
+
+
 def verificar_catalogo():
     """
     Confere o pedaço escrito à mão deste módulo contra a realidade,
@@ -308,7 +343,7 @@ def verificar_catalogo():
     tudo_certo = True
 
     try:
-        from jarvis.openai_realtime.cliente_realtime import (
+        from jarvis.cerebro.openai_realtime.cliente_realtime import (
             FUNCTION_DECLARATIONS_NATIVAS,
         )
 

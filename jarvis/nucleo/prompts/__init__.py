@@ -41,7 +41,7 @@ _PASTA = Path(__file__).resolve().parent
 
 
 # ============================================================
-# GEMINI LIVE — jarvis/gemini/cliente_live.py
+# GEMINI LIVE — jarvis/cerebro/gemini/cliente_live.py
 # Prompts pontuais enviados via send_client_content durante a sessão
 # (a instrução de sistema completa fica no fim deste arquivo).
 # ============================================================
@@ -76,7 +76,7 @@ CRUZAMENTO_SEGUNDA_OPINIAO = (
 # Retomada de controle: você ficou temporariamente indisponível e o
 # cérebro reserva (outra IA) conduziu a conversa em seu lugar por um
 # tempo — usado por _anunciar_retomada_gemini em
-# jarvis/gemini/cliente_live.py, quando você volta a responder no
+# jarvis/cerebro/gemini/cliente_live.py, quando você volta a responder no
 # meio de uma chamada. Deliberadamente NÃO pede pra repetir isso em
 # voz alta (diferente de ANUNCIO_ESPONTANEO): o usuário já ouviu essa
 # parte da conversa de verdade, através do reserva — só o contexto
@@ -162,21 +162,59 @@ DELEGACAO_SEGUNDA_OPINIAO_RESULTADO = (
 
 
 # ============================================================
+# DESCRICAO_VISUAL — jarvis/pacotes/descricao_visual/
+# (descreve tela/câmera em texto, para o modo de voz local)
+# ============================================================
+
+# Instrução de sistema da chamada de visão. Pede descrição objetiva
+# porque o texto devolvido é falado de volta ao usuário: uma resposta
+# longa demais vira um monólogo que ele não pediu.
+DESCRICAO_VISUAL_INSTRUCAO = (
+    "Você descreve imagens para alguém que não pode vê-las, e sua "
+    "descrição será lida em voz alta. Responda em português do "
+    "Brasil, de forma direta e objetiva, em no máximo três frases. "
+    "Descreva o que realmente aparece na imagem, sem especular sobre "
+    "o que não dá para ver. Se houver texto relevante na imagem, "
+    "leia-o. Não comece com 'a imagem mostra' — vá direto ao ponto."
+)
+
+# Pergunta usada quando o usuário só pediu para olhar, sem perguntar
+# nada específico.
+DESCRICAO_VISUAL_PERGUNTA_PADRAO = (
+    "Descreva o que está aparecendo nesta {origem} agora."
+)
+
+# Devolvido quando a consulta falha. Diferente da convenção de
+# identificacao_visual (que instrui o cérebro a responder com a
+# própria visão): aqui a descrição É a resposta do turno, então não
+# há visão própria para usar como alternativa — a falha precisa ser
+# dita ao usuário.
+DESCRICAO_VISUAL_INDISPONIVEL = (
+    "Não consegui ver a {origem} agora porque {motivo}."
+)
+
+
+# ============================================================
 # IDENTIFICACAO_VISUAL — jarvis/pacotes/identificacao_visual/
 # mistral_vision_client.py (Mistral, com entrada de imagem)
 # ============================================================
 
 # Pergunta padrão quando o usuário não deu uma pergunta específica —
-# essa sim é enviada de verdade pra Mistral, junto com a imagem (as
-# outras duas constantes desta seção voltam pro Gemini como tool
-# result).
+# essa sim é enviada de verdade ao provedor de visão, junto com a
+# imagem (as outras duas constantes desta seção voltam pro cérebro
+# como tool result).
 VISAO_PERGUNTA_PADRAO = "O que é isso na imagem?"
 
-# Texto devolvido ao Gemini quando a consulta à Mistral falha por
-# qualquer motivo — instrui a responder só com a própria visão.
+# Texto devolvido ao cérebro quando a consulta de segunda opinião
+# falha por qualquer motivo — instrui a responder só com a própria
+# visão. {provedor} porque a fonte deixou de ser fixa: quem responde
+# é o provedor oposto ao cérebro de voz ativo (Mistral no modo Gemini,
+# Gemini nos modos openai/local), a menos que DESCRICAO_VISUAL_PROVEDOR
+# force um — ver jarvis/pacotes/identificacao_visual/config.py. Dizer o
+# nome errado seria pior do que não dizer nenhum.
 VISAO_INDISPONIVEL = (
-    "Não foi possível obter uma segunda opinião da Mistral "
-    "({motivo}). Responda usando só sua própria visão e avise "
+    "Não foi possível obter uma segunda opinião ({provedor}: "
+    "{motivo}). Responda usando só sua própria visão e avise "
     "o usuário que não conseguiu confirmar com uma segunda "
     "fonte desta vez."
 )
@@ -207,7 +245,7 @@ CONSOLIDACAO_RESUMO_ARQUIVO = (
 # conversa de uma chamada que acabou), pra virar uma memória
 # pesquisável numa chamada futura ("como estava aquela conversa
 # sobre..."). Usado por consolidacao.salvar_resumo_conversa, chamado
-# de jarvis/gemini/cliente_live.py no fim de executar(). Formato de
+# de jarvis/cerebro/gemini/cliente_live.py no fim de executar(). Formato de
 # resposta fixo (TÍTULO/RESUMO) pra poder ser separado por código sem
 # ambiguidade — nunca confiar no modelo pra devolver JSON aqui, texto
 # simples com um marcador é mais robusto contra pequenas variações.
@@ -351,7 +389,7 @@ def _carregar(nome_arquivo):
 # limites, memória, visão, delegação, encerramento — tudo que não é
 # o bloco de autenticação). Termina em "\n\n" de propósito: é o
 # separador visual entre a instrução e o contexto de memórias que
-# vem concatenado logo depois, em jarvis/gemini/cliente_live.py.
+# vem concatenado logo depois, em jarvis/cerebro/gemini/cliente_live.py.
 #
 # O texto NÃO mora mais nesta pasta: ele é o sistema.md do perfil,
 # em dados/perfis/<slug>/sistema.md. O arquivo
@@ -363,12 +401,22 @@ def _carregar(nome_arquivo):
 # O bloco de autenticação (gemini_live_autenticacao.md) continua
 # aqui de propósito: ele não é específico de perfil nenhum, é a trava
 # de segurança que vale para todos.
-def instrucao_sistema_corpo(slug_perfil=None):
+def instrucao_sistema_corpo(slug_perfil=None, texto_bruto=None):
+    # texto_bruto vem preenchido quando quem chama já resolveu o
+    # perfil (perfis.preparar_chamada, usado pelos dois clientes de
+    # voz): assim o arquivo é lido UMA vez por chamada, e o caminho de
+    # falha — perfil ilegível caindo para o prompt do padrão — fica
+    # num lugar só, em vez de repetido aqui.
+    if texto_bruto is not None:
+        return _montar_texto(texto_bruto) + "\n\n"
+
     from jarvis.nucleo import perfis
 
     slug = slug_perfil or perfis.SLUG_PADRAO
 
-    return _montar_texto(perfis.texto_sistema(slug)) + "\n\n"
+    return _montar_texto(
+        perfis.preparar_chamada(slug)["prompt_bruto"]
+    ) + "\n\n"
 
 
 # Data e hora local, injetada no fim da instrução de sistema. Vem

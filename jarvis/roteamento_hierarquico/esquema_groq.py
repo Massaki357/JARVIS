@@ -7,7 +7,7 @@
 #
 # Atenção ao formato de destino: Chat Completions ANINHA tudo dentro
 # de "function" ({"type": "function", "function": {"name", ...}}) —
-# diferente do formato ACHATADO que jarvis/openai_realtime/esquema.py
+# diferente do formato ACHATADO que jarvis/cerebro/openai_realtime/esquema.py
 # usa pra Realtime API ({"type", "name", "description", "parameters"}
 # direto). Por isso este é um conversor próprio, não uma reexportação
 # do de lá.
@@ -19,7 +19,7 @@
 # específico de Realtime.
 import json
 
-from jarvis.openai_realtime.esquema import _normalizar_no
+from jarvis.cerebro.openai_realtime.esquema import _normalizar_no
 
 
 # Uma FunctionDeclaration -> um dict de tool da Chat Completions.

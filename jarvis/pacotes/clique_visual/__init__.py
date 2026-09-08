@@ -31,7 +31,7 @@ Duas observações de integração:
   isso o cliente Live segura self._mutex_funcao_visual() em volta do
   despacho de clicar_elemento_visual, igual já faz com
   identificar_planta/consultar_segunda_opiniao_visual — ver
-  jarvis/gemini/cliente_live.py e docs/INTEGRATION.md.
+  jarvis/cerebro/gemini/cliente_live.py e docs/INTEGRATION.md.
 """
 
 # Usado só para montar a FunctionDeclaration deste pacote — mesmo

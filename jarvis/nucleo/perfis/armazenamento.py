@@ -310,6 +310,123 @@ def ferramentas_efetivas(perfil):
     return list(perfil["ferramentas"])
 
 
+def filtrar_declaracoes(declaracoes, permitidas):
+    """
+    Reduz uma lista de FunctionDeclaration ao conjunto permitido.
+
+    Função pura: `permitidas` é None (todas, o curinga do perfil
+    padrão) ou um conjunto de nomes já resolvido por
+    preparar_chamada(). Não lê disco e não decide nada — quem decide,
+    inclusive o que fazer quando o perfil não carrega, é
+    preparar_chamada, num lugar só.
+
+    A INTERSEÇÃO É POR NOME, e é isso que resolve sozinho a assimetria
+    entre os dois provedores: o Gemini tem 16 ferramentas nativas e o
+    OpenAI Realtime tem 4, então um perfil que lista, por exemplo,
+    ler_emails simplesmente não encontra esse nome na lista que o
+    cliente OpenAI monta, e ele some sem erro. Não existe (nem deve
+    existir) uma tabela dizendo "esta ferramenta é só do Gemini" — a
+    lista que chega aqui já é a verdade daquele provedor.
+    """
+    if permitidas is None:
+        return list(declaracoes)
+
+    return [
+        declaracao
+        for declaracao in declaracoes
+        if getattr(declaracao, "name", None) in permitidas
+    ]
+
+
+def preparar_chamada(slug=None):
+    """
+    Tudo que uma sessão de voz precisa saber sobre o perfil dela,
+    resolvido de uma vez: quais ferramentas pode declarar, qual texto
+    de prompt usar, e o aviso a mostrar se algo deu errado.
+
+    Devolve {"slug", "permitidas", "prompt_bruto", "aviso"}:
+
+    - "permitidas": None = todas as registradas (curinga do perfil
+      padrão); um set = exatamente esses nomes.
+    - "aviso": string vazia quando deu tudo certo. Quando não, um texto
+      pronto para ir à INTERFACE (erro_recebido), não só ao console.
+
+    FALHA FECHADA, e isto é a regra mais importante da função. Se o
+    perfil pretendido não puder ser lido — pasta apagada, JSON
+    corrompido, slug inexistente — a chamada NÃO abre com o jarvis
+    completo. Ela abre com FERRAMENTAS_SEMPRE_ATIVAS e nada mais: dá
+    para conversar e para encerrar por voz, e nenhuma capacidade além
+    disso.
+
+    O contrário (o que esta função fazia antes) invertia o motivo de
+    existir de um perfil restrito: justamente quando o perfil da
+    floricultura falhasse, a chamada abriria com controle da casa,
+    terminal de administrador e e-mail — o pior caso de bug virando o
+    caso com MAIS poder. Um perfil que não carrega é uma intenção que
+    não pôde ser respeitada; o único palpite seguro é "nada".
+
+    O PROMPT, ao contrário das ferramentas, cai para o do perfil
+    padrão em vez de ficar vazio. Não é inconsistência: um prompt
+    vazio não é a versão "restrita" de um prompt, é um assistente sem
+    identidade, sem regras de segurança e sem o bloco de
+    autenticação. O texto do padrão é versionado no repositório e
+    sempre existe. Ferramenta de menos limita o que ele PODE FAZER;
+    prompt de menos só faz ele se comportar mal.
+
+    Nunca levanta exceção: uma chamada de voz não pode deixar de
+    acontecer porque um arquivo de perfil quebrou.
+    """
+    slug = slug or perfil_ativo()
+
+    try:
+        perfil = carregar_perfil(slug)
+
+        return {
+            "slug": perfil["slug"],
+            "permitidas": (
+                None
+                if perfil["ferramentas"] is TODAS_AS_FERRAMENTAS
+                else set(perfil["ferramentas"])
+            ),
+            "prompt_bruto": perfil["prompt_sistema"],
+            "aviso": "",
+        }
+
+    except (FileNotFoundError, ValueError, OSError, KeyError) as erro:
+        print(
+            f"[perfis] Perfil {slug!r} não pôde ser carregado ({erro}) "
+            "— a chamada vai SEM ferramentas, por segurança."
+        )
+
+        return {
+            "slug": slug,
+            "permitidas": set(
+                catalogo_ferramentas.FERRAMENTAS_SEMPRE_ATIVAS
+            ),
+            "prompt_bruto": _prompt_de_emergencia(),
+            "aviso": (
+                f"Não consegui carregar o perfil \"{slug}\". Por "
+                "segurança, esta chamada está SEM ferramentas — só dá "
+                "para conversar e encerrar. Confira a pasta "
+                f"dados/perfis/{slug}/ e reinicie a chamada."
+            ),
+        }
+
+
+def _prompt_de_emergencia():
+    """
+    Texto do perfil padrão, para quando o perfil pretendido não
+    carrega. Se nem ele existir, devolve string vazia — nesse ponto o
+    projeto está sem o próprio prompt de sistema, e a chamada abrindo
+    calada ainda é melhor que não abrir.
+    """
+    try:
+        return carregar_perfil(SLUG_PADRAO)["prompt_sistema"]
+
+    except (FileNotFoundError, ValueError, OSError, KeyError):
+        return ""
+
+
 # ============================================================
 # Ler
 # ============================================================

@@ -250,7 +250,7 @@ MINIMO_MENSAGENS_RESUMO_CONVERSA = 4
 
 
 # Gera um título + resumo de uma conversa (lista de {"role", "content"}
-# — mesmo formato de jarvis.gemini.cliente_live.py:self.transcricao_conversa)
+# — mesmo formato de jarvis.cerebro.gemini.cliente_live.py:self.transcricao_conversa)
 # e salva como uma memória pesquisável, chamada no fim de uma chamada
 # do Gemini — pra "como estava aquela conversa sobre X" numa chamada
 # futura encontrar alguma coisa via buscar_memorias_relacionadas.

@@ -44,3 +44,10 @@ JARVIS_COMPLETO
 # regravação, e se refaz sozinho quando falta
 # (jarvis/nucleo/perfis/armazenamento.py::reconstruir_indice).
 dados/perfis/indice.json
+
+# Modelos baixados automaticamente na primeira execução (hoje só o
+# Silero VAD, ~1,2 MB, do modo de voz local). São binários que o
+# app busca sozinho e recoloca em cache — não fonte do projeto, e
+# versioná-los só engordaria o repositório. Ver
+# jarvis/cerebro/voz_local/vad_silero.py::obter_modelo.
+dados/modelos/

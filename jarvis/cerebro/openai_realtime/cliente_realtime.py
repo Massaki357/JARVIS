@@ -1,5 +1,5 @@
 """
-Worker equivalente a jarvis/gemini/cliente_live.py, usando a Realtime
+Worker equivalente a jarvis/cerebro/gemini/cliente_live.py, usando a Realtime
 API da OpenAI como cérebro do ALFRED em vez do Gemini Live.
 
 Veio do JARVIS COMPLETO (openai_provider/live_client.py) e foi
@@ -53,29 +53,34 @@ from jarvis.nucleo.config import (
     obter_nome_jarvis,
 )
 
+from jarvis.nucleo import perfis
 from jarvis.nucleo import prompts
 from jarvis.nucleo.sinalizador import obter_sinalizador
 
 from jarvis.nucleo.registro_pacotes import (
     PACOTES_REGISTRADOS,
     TOOLS_QUE_CAPTURAM_SOZINHAS,
+    TOOLS_QUE_PRECISAM_DE_IMAGEM,
     TOOLS_SILENCIOSAS,
 )
 
-from jarvis.servicos.visao.captura_tela import capturar_tela_bytes
+from jarvis.servicos.visao.captura_tela import (
+    capturar_monitor_do_cursor_bytes,
+    capturar_tela_bytes,
+)
 from jarvis.servicos.visao.captura_camera import capturar_camera_bytes
 
 from jarvis.pacotes import ativacao_voz
 
 # Frase de ativação por voz atual — usada pela tool pausar_chamada,
-# mesmo motivo e mesma convenção de jarvis/gemini/cliente_live.py.
+# mesmo motivo e mesma convenção de jarvis/cerebro/gemini/cliente_live.py.
 from jarvis.pacotes.ativacao_voz.config import NOME_ATIVACAO
 from jarvis.pacotes import admin_terminal
 from jarvis.pacotes import discord_jarvis
 from jarvis.pacotes import memoria_obsidian
 from jarvis.pacotes import rede_jarvis
 
-from jarvis.openai_realtime import esquema
+from jarvis.cerebro.openai_realtime import esquema
 
 
 # A Realtime API trabalha em PCM16 24 kHz tanto na entrada quanto na
@@ -103,7 +108,7 @@ TIMEOUT_FUNCAO_PADRAO = 20
 # admin_terminal tem timeout interno próprio, bem mais longo — usar o
 # padrão aqui cortaria um comando demorado antes de ele terminar
 # sozinho. Mesma lógica de TIMEOUTS_TAREFA_FUNCAO_POR_NOME em
-# jarvis/gemini/cliente_live.py.
+# jarvis/cerebro/gemini/cliente_live.py.
 TIMEOUTS_FUNCAO_POR_NOME = {
     "executar_comando_admin": (
         admin_terminal.config.TIMEOUT_COMANDO_LONGO_SEGUNDOS + 30
@@ -113,13 +118,35 @@ TIMEOUTS_FUNCAO_POR_NOME = {
     ),
 }
 
+# Tempo máximo, em segundos, que QUALQUER envio para a sessão da
+# Realtime API pode esperar antes de ser considerado travado. Mesma
+# constante, mesmo valor e mesmo motivo de TIMEOUT_ENVIO_SESSAO_SEGUNDOS
+# em jarvis/cerebro/gemini/cliente_live.py — mas aqui o risco é PIOR,
+# porque todos os envios deste worker passam por self.lock_envio: um
+# envio pendurado nunca devolve a trava, e aí TODA chamada de função
+# seguinte fica esperando para sempre para responder o próprio
+# function_call_output. Como o protocolo não deixa o modelo voltar a
+# falar sem essa resposta, a chamada fica viva e muda ao mesmo tempo,
+# e as três tarefas centrais continuam sem levantar nada — ou seja, a
+# supervisão de executar() não vê problema nenhum. Ver
+# _enviar_para_sessao/self.conexao_travada.
+TIMEOUT_ENVIO_SESSAO_SEGUNDOS = 10
+
+# Quantas chamadas de função podem rodar ao mesmo tempo. Mesma
+# constante e mesmo motivo de LIMITE_TAREFAS_FUNCAO_SIMULTANEAS em
+# jarvis/cerebro/gemini/cliente_live.py: cada chamada vira sua própria
+# asyncio.Task para não bloquear o laço de recepção, e o limite existe
+# só para a lista não crescer sem controle se o modelo pedir muitas
+# funções rápido demais. Ver receber_eventos/_ao_finalizar_tarefa_funcao.
+LIMITE_TAREFAS_FUNCAO_SIMULTANEAS = 4
+
 # Espera antes de encerrar de fato depois de encerrar_chamada, para a
 # despedida terminar de tocar.
 ATRASO_ENCERRAMENTO_SEGUNDOS = 2.8
 
 # Quantas mensagens do transcript da conversa ficam guardadas — mesmo
 # valor e mesmo motivo da constante de mesmo nome em
-# jarvis/gemini/cliente_live.py.
+# jarvis/cerebro/gemini/cliente_live.py.
 MAXIMO_MENSAGENS_TRANSCRICAO = 12
 
 
@@ -207,10 +234,19 @@ class OpenAIRealtimeWorker(QThread):
         session_handle=None,
         transcricao_inicial=None,
         ativado_por_voz=False,
+        slug_perfil=None,
     ):
         super().__init__()
 
         self.ativo = True
+
+        # Perfil que vale para ESTA chamada — prompt de sistema e
+        # subconjunto de ferramentas. Resolvido AGORA, na construção
+        # do worker (que acontece no clique de INICIAR CHAMADA), e
+        # nunca relido depois: é isso que garante que trocar de perfil
+        # na tela não mexe numa chamada já em andamento. Mesma regra e
+        # mesma linha do GeminiLiveWorker.
+        self.slug_perfil = slug_perfil or perfis.perfil_ativo()
         self.loop = None
         self.conexao = None
         self.session_handle = session_handle
@@ -221,6 +257,24 @@ class OpenAIRealtimeWorker(QThread):
         # (microfone, resposta de ferramenta, imagem avulsa) e a
         # Realtime API não gosta de escritas concorrentes.
         self.lock_envio = None
+
+        # Ligado por _enviar_para_sessao quando um envio estoura o
+        # timeout ou falha. O laço de supervisão de executar() checa
+        # essa flag a cada volta e encerra a chamada, em vez de
+        # deixá-la viva e muda. Mesma ideia do self.conexao_travada +
+        # monitorar_conexao do GeminiLiveWorker, aproveitando o laço
+        # que já existe aqui em vez de criar uma tarefa nova só para
+        # isso.
+        self.conexao_travada = False
+
+        # Chamadas de função em andamento. Guardar a referência é
+        # OBRIGATÓRIO, não organização: o asyncio só mantém referência
+        # FRACA a uma task rodando, então uma task criada e esquecida
+        # pode ser coletada pelo garbage collector no meio da execução
+        # — e aí o function_call_output daquele call_id nunca é
+        # enviado, e o modelo fica esperando por ele para sempre. Ver
+        # receber_eventos/_ao_finalizar_tarefa_funcao.
+        self.tarefas_funcao_ativas = []
 
         # True enquanto uma função está sendo executada — o microfone
         # fica ignorado nesse período, igual a alfred_falando.
@@ -293,6 +347,45 @@ class OpenAIRealtimeWorker(QThread):
     # Mesmo contrato do método de mesmo nome no GeminiLiveWorker: é
     # chamado de uma thread de fundo do pacote, então só agenda a
     # corrotina no loop desta thread.
+    # Envolve QUALQUER envio para a sessão da Realtime API (uma
+    # corrotina já construída e ainda não aguardada — ex:
+    # self._enviar_para_sessao(conexao.response.create())) com um
+    # timeout, e marca self.conexao_travada se estourar ou falhar.
+    # Sempre repropaga a exceção original: quem chama continua
+    # tratando do mesmo jeito que já tratava, este método só adiciona
+    # o timeout e o registro do travamento, nunca engole o erro.
+    #
+    # O ponto crítico é o timeout soltar o self.lock_envio. Sem ele,
+    # um único envio pendurado segura a trava para sempre e congela a
+    # conversa inteira — nenhuma chamada de função consegue responder
+    # seu function_call_output, e o protocolo não deixa o modelo
+    # voltar a falar sem essa resposta.
+    async def _enviar_para_sessao(self, corrotina):
+        try:
+            return await asyncio.wait_for(
+                corrotina,
+                timeout=TIMEOUT_ENVIO_SESSAO_SEGUNDOS,
+            )
+
+        except asyncio.TimeoutError:
+            print(
+                "[CONEXÃO] Envio para a sessão da OpenAI travou "
+                f"(timeout de {TIMEOUT_ENVIO_SESSAO_SEGUNDOS}s) — "
+                "marcando a conexão como travada."
+            )
+
+            self.conexao_travada = True
+            raise
+
+        except Exception as erro:
+            print(
+                f"[CONEXÃO] Envio para a sessão da OpenAI falhou: "
+                f"{erro!r} — marcando a conexão como travada."
+            )
+
+            self.conexao_travada = True
+            raise
+
     def _falar_espontaneamente(self, texto):
         if not self.loop or not self.conexao:
             return
@@ -305,22 +398,28 @@ class OpenAIRealtimeWorker(QThread):
     async def _enviar_anuncio_espontaneo(self, texto):
         try:
             async with self.lock_envio:
-                await self.conexao.conversation.item.create(
-                    item={
-                        "type": "message",
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "input_text",
-                                "text": prompts.ANUNCIO_ESPONTANEO.format(
-                                    texto=texto
-                                ),
-                            },
-                        ],
-                    }
+                await self._enviar_para_sessao(
+                    self.conexao.conversation.item.create(
+                        item={
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": (
+                                        prompts.ANUNCIO_ESPONTANEO.format(
+                                            texto=texto
+                                        )
+                                    ),
+                                },
+                            ],
+                        }
+                    )
                 )
 
-                await self.conexao.response.create()
+                await self._enviar_para_sessao(
+                    self.conexao.response.create()
+                )
 
         except Exception as erro:
             print(f"[OPENAI] Falha ao anunciar espontaneamente: {erro}")
@@ -340,18 +439,22 @@ class OpenAIRealtimeWorker(QThread):
     async def _injetar_frame_remoto(self, imagem_bytes):
         try:
             async with self.lock_envio:
-                await self.conexao.conversation.item.create(
-                    item={
-                        "type": "message",
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "input_image",
-                                "image_url": self._data_url(imagem_bytes),
-                                "detail": "auto",
-                            },
-                        ],
-                    }
+                await self._enviar_para_sessao(
+                    self.conexao.conversation.item.create(
+                        item={
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_image",
+                                    "image_url": self._data_url(
+                                        imagem_bytes
+                                    ),
+                                    "detail": "auto",
+                                },
+                            ],
+                        }
+                    )
                 )
 
         except Exception as erro:
@@ -379,17 +482,21 @@ class OpenAIRealtimeWorker(QThread):
     async def _enviar_texto(self, texto):
         try:
             async with self.lock_envio:
-                await self.conexao.conversation.item.create(
-                    item={
-                        "type": "message",
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": texto},
-                        ],
-                    }
+                await self._enviar_para_sessao(
+                    self.conexao.conversation.item.create(
+                        item={
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": texto},
+                            ],
+                        }
+                    )
                 )
 
-                await self.conexao.response.create()
+                await self._enviar_para_sessao(
+                    self.conexao.response.create()
+                )
 
         except Exception as erro:
             print(f"[OPENAI] Falha ao enviar texto da interface: {erro}")
@@ -428,15 +535,19 @@ class OpenAIRealtimeWorker(QThread):
             )
 
             async with self.lock_envio:
-                await self.conexao.conversation.item.create(
-                    item={
-                        "type": "message",
-                        "role": "user",
-                        "content": conteudo,
-                    }
+                await self._enviar_para_sessao(
+                    self.conexao.conversation.item.create(
+                        item={
+                            "type": "message",
+                            "role": "user",
+                            "content": conteudo,
+                        }
+                    )
                 )
 
-                await self.conexao.response.create()
+                await self._enviar_para_sessao(
+                    self.conexao.response.create()
+                )
 
         except Exception as erro:
             print(f"[OPENAI] Falha ao enviar imagem da interface: {erro}")
@@ -456,7 +567,12 @@ class OpenAIRealtimeWorker(QThread):
     # autenticação por palavra-chave quando EXIGIR_AUTENTICACAO está
     # ligado. Ver o docstring do módulo: um prompt próprio aqui seria
     # um segundo caminho para contornar a trava.
-    def _montar_instrucao_sistema(self, memorias_atuais):
+    # prompt_bruto vem de perfis.preparar_chamada(), resolvido pelo
+    # chamador: o corpo da instrução é o sistema.md do perfil ativo,
+    # não mais um texto fixo. Passado como parâmetro (e não relido
+    # aqui) para o arquivo ser lido UMA vez por chamada e para o
+    # caminho de falha ficar só em preparar_chamada.
+    def _montar_instrucao_sistema(self, memorias_atuais, prompt_bruto):
         bloco_autenticacao = (
             prompts.bloco_autenticacao()
             if EXIGIR_AUTENTICACAO
@@ -465,7 +581,9 @@ class OpenAIRealtimeWorker(QThread):
 
         return (
             bloco_autenticacao
-            + prompts.instrucao_sistema_corpo()
+            + prompts.instrucao_sistema_corpo(
+                texto_bruto=prompt_bruto
+            )
             + prompts.contexto_data_hora()
             + "\n\n"
             + memorias_atuais
@@ -496,9 +614,43 @@ class OpenAIRealtimeWorker(QThread):
             memoria_obsidian.contexto_inicial
         )
 
+        # Resolve o perfil desta chamada de uma vez:
+        # ferramentas permitidas, texto do prompt e um
+        # aviso se algo deu errado. FALHA FECHADA — um
+        # perfil ilegível deixa a chamada SEM ferramentas,
+        # nunca com todas (ver perfis.preparar_chamada).
+        perfil_da_chamada = await asyncio.to_thread(
+            perfis.preparar_chamada,
+            self.slug_perfil,
+        )
+
+        # Um perfil que não carrega é reportado à INTERFACE, não só ao
+        # console: ninguém está olhando o terminal durante uma chamada
+        # de verdade. erro_recebido cai no registro de atividade e no
+        # painel de console da janela.
+        if perfil_da_chamada["aviso"]:
+            self.erro_recebido.emit(perfil_da_chamada["aviso"])
+
+        # A lista que chega ao filtro já é só o que ESTE
+        # provedor oferece (4 nativas, não as 16 do
+        # Gemini), então uma ferramenta do perfil que só
+        # existe no Gemini simplesmente não aparece — sem
+        # erro e sem tabela de equivalência em lugar
+        # nenhum.
         ferramentas = esquema.montar_ferramentas(
             FUNCTION_DECLARATIONS_NATIVAS,
             PACOTES_REGISTRADOS,
+            filtro=lambda declaracoes: (
+                perfis.filtrar_declaracoes(
+                    declaracoes,
+                    perfil_da_chamada["permitidas"],
+                )
+            ),
+        )
+
+        print(
+            f"[PERFIL] {self.slug_perfil}: "
+            f"{len(ferramentas)} ferramentas nesta chamada."
         )
 
         self.status_recebido.emit("Conectando à OpenAI Realtime...")
@@ -521,7 +673,8 @@ class OpenAIRealtimeWorker(QThread):
                         "type": "realtime",
                         "output_modalities": ["audio"],
                         "instructions": self._montar_instrucao_sistema(
-                            memorias_atuais
+                            memorias_atuais,
+                            perfil_da_chamada["prompt_bruto"],
                         ),
                         "audio": {
                             "input": {
@@ -575,23 +728,43 @@ class OpenAIRealtimeWorker(QThread):
                     texto_saudacao = prompts.SAUDACAO_ATIVACAO_POR_VOZ
 
                     async with self.lock_envio:
-                        await conexao.conversation.item.create(
-                            item={
-                                "type": "message",
-                                "role": "user",
-                                "content": [
-                                    {
-                                        "type": "input_text",
-                                        "text": texto_saudacao,
-                                    },
-                                ],
-                            }
+                        await self._enviar_para_sessao(
+                            conexao.conversation.item.create(
+                                item={
+                                    "type": "message",
+                                    "role": "user",
+                                    "content": [
+                                        {
+                                            "type": "input_text",
+                                            "text": texto_saudacao,
+                                        },
+                                    ],
+                                }
+                            )
                         )
 
-                        await conexao.response.create()
+                        await self._enviar_para_sessao(
+                            conexao.response.create()
+                        )
 
                 try:
                     while self.ativo:
+                        # Conexão travada (ver _enviar_para_sessao):
+                        # as três tarefas centrais continuam vivas
+                        # nesse caso, então nada abaixo perceberia o
+                        # problema — a chamada ficaria viva e muda.
+                        # Não tenta avisar por voz: o aviso seria mais
+                        # um envio, que travaria do mesmo jeito.
+                        if self.conexao_travada:
+                            self.erro_recebido.emit(
+                                "A conexão com a OpenAI travou. "
+                                "Encerrando a chamada — é só iniciar "
+                                "outra."
+                            )
+
+                            self.ativo = False
+                            break
+
                         concluidas, _ = await asyncio.wait(
                             tarefas,
                             timeout=0.5,
@@ -626,7 +799,20 @@ class OpenAIRealtimeWorker(QThread):
                     if self.tarefa_encerramento:
                         self.tarefa_encerramento.cancel()
 
-                    await asyncio.gather(*tarefas, return_exceptions=True)
+                    # Chamadas de função ainda em andamento quando a
+                    # chamada termina. Itera sobre uma CÓPIA da lista:
+                    # cancel() dispara _ao_finalizar_tarefa_funcao, que
+                    # remove o item da lista original.
+                    tarefas_funcao = list(self.tarefas_funcao_ativas)
+
+                    for tarefa_funcao in tarefas_funcao:
+                        tarefa_funcao.cancel()
+
+                    await asyncio.gather(
+                        *tarefas,
+                        *tarefas_funcao,
+                        return_exceptions=True,
+                    )
 
         finally:
             self.conexao = None
@@ -702,9 +888,15 @@ class OpenAIRealtimeWorker(QThread):
                         continue
 
                     async with self.lock_envio:
-                        await conexao.input_audio_buffer.append(
-                            audio=base64.b64encode(audio_bytes).decode(
-                                "ascii"
+                        # É o envio mais frequente da sessão (~15x por
+                        # segundo), então é também o primeiro a
+                        # perceber um transporte travado — por isso
+                        # passa pelo mesmo wrapper, e não direto.
+                        await self._enviar_para_sessao(
+                            conexao.input_audio_buffer.append(
+                                audio=base64.b64encode(
+                                    audio_bytes
+                                ).decode("ascii")
                             )
                         )
 
@@ -755,14 +947,42 @@ class OpenAIRealtimeWorker(QThread):
                 # Uma função lenta não pode bloquear este laço (áudio
                 # incluído) — mesma correção já feita no worker do
                 # Gemini. Cada chamada vira uma tarefa própria.
-                asyncio.create_task(
-                    self.processar_chamada_de_funcao(
+                #
+                # A tarefa PRECISA ficar guardada em
+                # self.tarefas_funcao_ativas: o asyncio mantém só
+                # referência fraca a uma task em execução, então uma
+                # task criada e esquecida pode sumir no meio do
+                # caminho — e um function_call_output que nunca é
+                # enviado deixa o modelo esperando aquele call_id para
+                # sempre. Ver _ao_finalizar_tarefa_funcao.
+                if (
+                    len(self.tarefas_funcao_ativas)
+                    >= LIMITE_TAREFAS_FUNCAO_SIMULTANEAS
+                ):
+                    corrotina = self._recusar_chamada_de_funcao(
+                        conexao,
+                        evento.call_id,
+                        evento.name,
+                    )
+
+                else:
+                    corrotina = self.processar_chamada_de_funcao(
                         conexao,
                         evento.call_id,
                         evento.name,
                         argumentos,
                         fila_microfone,
                     )
+
+                tarefa = asyncio.create_task(
+                    corrotina,
+                    name=f"FUNÇÃO:{evento.name}",
+                )
+
+                self.tarefas_funcao_ativas.append(tarefa)
+
+                tarefa.add_done_callback(
+                    self._ao_finalizar_tarefa_funcao
                 )
 
             elif tipo == "response.done":
@@ -848,6 +1068,69 @@ class OpenAIRealtimeWorker(QThread):
     # CHAMADAS DE FUNÇÃO
     # ================================================================
 
+    # Chamado quando uma tarefa de self.tarefas_funcao_ativas termina
+    # (sucesso, erro ou cancelamento), via Task.add_done_callback —
+    # então roda de forma síncrona, sempre na thread do loop
+    # assíncrono. Tira a tarefa da lista para ela não crescer para
+    # sempre. Mesma função e mesmo motivo do método de mesmo nome em
+    # jarvis/cerebro/gemini/cliente_live.py.
+    def _ao_finalizar_tarefa_funcao(self, tarefa):
+        if tarefa in self.tarefas_funcao_ativas:
+            self.tarefas_funcao_ativas.remove(tarefa)
+
+        if tarefa.cancelled():
+            return
+
+        erro = tarefa.exception()
+
+        if erro is not None:
+            # Não deveria acontecer: processar_chamada_de_funcao já
+            # captura tudo internamente. Se ainda assim escapar, pelo
+            # menos aparece no console e na interface, em vez de ficar
+            # totalmente silencioso (que é o comportamento padrão do
+            # asyncio quando ninguém checa o resultado de uma Task).
+            print(
+                "[FUNÇÃO] Exceção não tratada numa tarefa de função: "
+                f"{erro!r}"
+            )
+
+            self.erro_recebido.emit(
+                f"A chamada de função '{tarefa.get_name()}' falhou de "
+                f"forma inesperada: {erro}"
+            )
+
+    # Responde uma chamada de função que nem chegou a ser executada,
+    # porque já há LIMITE_TAREFAS_FUNCAO_SIMULTANEAS rodando. Responder
+    # é obrigatório mesmo recusando: sem o function_call_output, o
+    # modelo fica preso esperando aquele call_id e a conversa para.
+    async def _recusar_chamada_de_funcao(self, conexao, call_id, nome):
+        texto = (
+            f"Não foi possível iniciar '{nome}' agora — já existem "
+            f"{LIMITE_TAREFAS_FUNCAO_SIMULTANEAS} outras ações em "
+            "andamento ao mesmo tempo (limite atingido). Informe isso "
+            "ao usuário de forma breve e diga que ele pode pedir de "
+            "novo em instantes. NÃO tente de novo sozinho."
+        )
+
+        print(f"[FUNÇÃO] Limite simultâneo atingido, recusando '{nome}'.")
+
+        try:
+            async with self.lock_envio:
+                await self._enviar_para_sessao(
+                    conexao.conversation.item.create(
+                        item={
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": texto,
+                        }
+                    )
+                )
+
+                await self._enviar_para_sessao(conexao.response.create())
+
+        except Exception as erro:
+            print(f"[FUNÇÃO] Falha ao recusar '{nome}': {erro}")
+
     async def processar_chamada_de_funcao(
         self,
         conexao,
@@ -889,12 +1172,20 @@ class OpenAIRealtimeWorker(QThread):
                 resultado = await self._despachar_para_pacotes(nome, args)
 
             async with self.lock_envio:
-                await conexao.conversation.item.create(
-                    item={
-                        "type": "function_call_output",
-                        "call_id": call_id,
-                        "output": str(resultado),
-                    }
+                # Este é o envio que NÃO pode pendurar. Enquanto este
+                # function_call_output não chega, o protocolo não
+                # deixa o modelo voltar a falar — então um envio sem
+                # timeout aqui congela a conversa inteira, e ainda
+                # segura self.lock_envio, congelando junto toda
+                # chamada de função seguinte.
+                await self._enviar_para_sessao(
+                    conexao.conversation.item.create(
+                        item={
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": str(resultado),
+                        }
+                    )
                 )
 
                 # Só depois de responder à ferramenta é que a imagem
@@ -903,7 +1194,7 @@ class OpenAIRealtimeWorker(QThread):
                 if self.imagem_visual_pendente is not None:
                     await self._anexar_imagem_visual_pendente(conexao)
 
-                await conexao.response.create()
+                await self._enviar_para_sessao(conexao.response.create())
 
             if encerrar_depois:
                 if self.tarefa_encerramento:
@@ -914,10 +1205,17 @@ class OpenAIRealtimeWorker(QThread):
                 )
 
         except Exception as erro:
-            print(f"[OPENAI] Falha ao processar '{nome}': {erro}")
+            # str(TimeoutError()) é VAZIO — e agora um timeout de envio
+            # chega mesmo aqui (ver _enviar_para_sessao). Sem este
+            # fallback a mensagem terminaria em dois-pontos e nada,
+            # que é a mesma armadilha já corrigida uma vez em
+            # _tarefa_supervisionada, no worker do Gemini.
+            descricao = str(erro) or type(erro).__name__
+
+            print(f"[OPENAI] Falha ao processar '{nome}': {descricao}")
 
             self.erro_recebido.emit(
-                f"A função '{nome}' falhou: {erro}"
+                f"A função '{nome}' falhou: {descricao}"
             )
 
         finally:
@@ -929,11 +1227,14 @@ class OpenAIRealtimeWorker(QThread):
     # o primeiro pacote que reconhece o nome responde, e despachar()
     # devolve None quando não reconhece.
     async def _despachar_para_pacotes(self, nome, args):
-        # identificar_planta e consultar_segunda_opiniao_visual não
-        # recebem a imagem do modelo: quem captura é o cliente, e a
-        # imagem entra em args antes do despacho. Mesma exceção
-        # documentada em docs/INTEGRATION.md.
-        if nome in ("identificar_planta", "consultar_segunda_opiniao_visual"):
+        # Estas tools não recebem a imagem do modelo: quem captura é o
+        # cliente, e a imagem entra em args antes do despacho. Mesma
+        # exceção documentada em docs/INTEGRATION.md. A origem
+        # ("tela" ou "camera") vem da própria lista — descrever_tela
+        # precisa da TELA, e antes isto capturava sempre a câmera.
+        if nome in TOOLS_QUE_PRECISAM_DE_IMAGEM:
+            origem_imagem = TOOLS_QUE_PRECISAM_DE_IMAGEM[nome]
+
             if self.executando_funcao_visual:
                 return (
                     "Já existe uma captura de tela/câmera em "
@@ -944,12 +1245,21 @@ class OpenAIRealtimeWorker(QThread):
 
             try:
                 self.status_recebido.emit(
-                    "Capturando imagem da câmera..."
+                    "Capturando imagem da tela..."
+                    if origem_imagem == "tela"
+                    else "Capturando imagem da câmera..."
                 )
 
-                args["imagem_bytes"] = await asyncio.to_thread(
-                    capturar_camera_bytes
+                # capturar_monitor_do_cursor_bytes, e não
+                # capturar_tela_bytes: em monitor duplo, "olha minha
+                # tela" quer dizer o monitor que o usuário está olhando.
+                captura = (
+                    capturar_monitor_do_cursor_bytes
+                    if origem_imagem == "tela"
+                    else capturar_camera_bytes
                 )
+
+                args["imagem_bytes"] = await asyncio.to_thread(captura)
 
             finally:
                 self.executando_funcao_visual = False
@@ -1120,24 +1430,26 @@ class OpenAIRealtimeWorker(QThread):
         tipo, imagem_bytes = pendente
         origem = "tela" if tipo == "tela" else "câmera"
 
-        await conexao.conversation.item.create(
-            item={
-                "type": "message",
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": prompts.ANALISE_IMAGEM_PONTUAL.format(
-                            origem=origem
-                        ),
-                    },
-                    {
-                        "type": "input_image",
-                        "image_url": self._data_url(imagem_bytes),
-                        "detail": "auto",
-                    },
-                ],
-            }
+        await self._enviar_para_sessao(
+            conexao.conversation.item.create(
+                item={
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": prompts.ANALISE_IMAGEM_PONTUAL.format(
+                                origem=origem
+                            ),
+                        },
+                        {
+                            "type": "input_image",
+                            "image_url": self._data_url(imagem_bytes),
+                            "detail": "auto",
+                        },
+                    ],
+                }
+            )
         )
 
         self.status_recebido.emit(
@@ -1183,7 +1495,10 @@ class OpenAIRealtimeWorker(QThread):
 
             async with self.lock_envio:
                 await self._anexar_imagem_visual_pendente(self.conexao)
-                await self.conexao.response.create()
+
+                await self._enviar_para_sessao(
+                    self.conexao.response.create()
+                )
 
         except Exception as erro:
             self.erro_recebido.emit(f"Erro na análise visual: {erro}")

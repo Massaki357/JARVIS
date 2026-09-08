@@ -41,7 +41,7 @@ _LIMITE_CARACTERES_TEXTO = 12000
 # Processa um arquivo local e envia como contexto pra sessão Live
 # ativa, através do worker informado (ver
 # GeminiLiveWorker.enviar_texto_da_ui/enviar_imagem_da_ui em
-# jarvis/gemini/cliente_live.py). Nunca falha silenciosamente — sempre
+# jarvis/cerebro/gemini/cliente_live.py). Nunca falha silenciosamente — sempre
 # retorna (sucesso: bool, mensagem: str) explicando o que aconteceu,
 # mesma convenção usada pelos outros pacotes do projeto (ex:
 # plantnet_client.identificar).

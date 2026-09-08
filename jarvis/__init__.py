@@ -3,7 +3,7 @@
 #
 #   jarvis/nucleo/    -> configuração, preferências e o sinalizador
 #                        compartilhado entre threads
-#   jarvis/gemini/    -> o worker da sessão Live (coração do app)
+#   jarvis/cerebro/gemini/    -> o worker da sessão Live (coração do app)
 #   jarvis/ui/        -> janelas PySide6
 #   jarvis/servicos/  -> infraestrutura reutilizável (visão, email,
 #                        memória) usada tanto pelo núcleo quanto

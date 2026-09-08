@@ -6,7 +6,7 @@ Este arquivo é a fonte da verdade de como religar os pacotes isolados
 `jarvis/pacotes/explorador_windows/`, `jarvis/pacotes/chat_jarvis/`, `jarvis/pacotes/abrir_aplicativo/`, `jarvis/pacotes/discord_jarvis/`,
 `jarvis/pacotes/fechar_app/`, `jarvis/pacotes/criar_arquivo/`, e
 outros que vierem depois) a QUALQUER arquivo cliente Gemini Live — seja o
-`jarvis/gemini/cliente_live.py` atual (temporário, será substituído quando a versão
+`jarvis/cerebro/gemini/cliente_live.py` atual (temporário, será substituído quando a versão
 completa do curso chegar) ou o arquivo cliente da versão final.
 
 **Atualize este arquivo toda vez que um pacote novo for criado, ou que
@@ -15,7 +15,7 @@ a forma de religar um pacote existente mudar.**
 ## Por que esse padrão existe
 
 Três arquivos vieram do projeto do curso e são temporários: `main.py`,
-`jarvis/gemini/cliente_live.py` e `jarvis/ui/janela_principal.py` (antes
+`jarvis/cerebro/gemini/cliente_live.py` e `jarvis/ui/janela_principal.py` (antes
 `main_basic.py`, `gemini/live_client_basic.py` e
 `ui/main_window_basic.py` — o sufixo `_basic` sumiu na reorganização de
 pastas, mas o status deles é exatamente o mesmo). Nenhuma lógica
@@ -75,11 +75,11 @@ assíncrona do Gemini.
 ## Onde fica a lista de pacotes (mudou)
 
 `PACOTES_REGISTRADOS` **não mora mais dentro de
-`jarvis/gemini/cliente_live.py`**. Ela foi para
+`jarvis/cerebro/gemini/cliente_live.py`**. Ela foi para
 `jarvis/nucleo/registro_pacotes.py`, por dois motivos:
 
 1. Passou a existir um **segundo cérebro de voz** — o provedor OpenAI
-   Realtime (`jarvis/openai_realtime/cliente_realtime.py`, ligado por
+   Realtime (`jarvis/cerebro/openai_realtime/cliente_realtime.py`, ligado por
    `PROVEDOR_IA=openai` no `.env`). Os dois clientes precisam da mesma
    lista, e nenhum dos dois pode importar o outro só para pegá-la.
 2. Com a lista fora do cliente, **registrar um pacote novo não toca
@@ -256,7 +256,7 @@ async def _injetar_frame_remoto(self, frame_bytes):
 ```
 
 O código-fonte de referência (cópia funcionando, sempre atualizada)
-está em `jarvis/gemini/cliente_live.py`, no `__init__` de
+está em `jarvis/cerebro/gemini/cliente_live.py`, no `__init__` de
 `GeminiLiveWorker` e nos métodos `_falar_espontaneamente`/
 `_receber_frame_remoto`/`_enviar_anuncio_espontaneo`/
 `_injetar_frame_remoto`.
@@ -313,6 +313,121 @@ terceira porta em `jarvis/nucleo/perfis/`.
 `TIMEOUT_SEGUNDOS` (8s) é curto de propósito porque uma resposta falada
 não pode esperar, mas aqui o usuário está olhando uma tela de
 progresso e o texto pedido é bem maior.
+
+### Perfis (`jarvis/nucleo/perfis/`)
+
+Não é um pacote de tool — não expõe
+`obter_function_declarations()`/`despachar()` e não entra em
+`PACOTES_REGISTRADOS`. É infraestrutura de núcleo, e **é o único
+mecanismo do projeto que muda o que uma sessão de voz declara**, então
+merece ser reencontrável aqui quando o cliente for reescrito.
+
+Um perfil é um cenário de uso: prompt de sistema próprio + subconjunto
+das ferramentas. Os dados ficam em `dados/perfis/<slug>/`
+(`perfil.json` + `sistema.md`), com `indice.json` derivado ao lado.
+
+**Os três pontos de contato com um cliente de voz**, e nenhum a mais:
+
+```python
+from jarvis.nucleo import perfis
+
+# 1. No __init__ do worker — resolve UMA vez, no clique de iniciar:
+self.slug_perfil = slug_perfil or perfis.perfil_ativo()
+
+# 2. No início da sessão, uma leitura só (bloqueia disco, por isso
+#    asyncio.to_thread):
+perfil_da_chamada = await asyncio.to_thread(
+    perfis.preparar_chamada, self.slug_perfil
+)
+
+if perfil_da_chamada["aviso"]:
+    self.erro_recebido.emit(perfil_da_chamada["aviso"])
+
+# 3. Depois da lista completa de tools de sempre:
+function_declarations = perfis.filtrar_declaracoes(
+    function_declarations,
+    perfil_da_chamada["permitidas"],
+)
+
+# 4. Ao montar a instrução de sistema:
+prompts.instrucao_sistema_corpo(
+    texto_bruto=perfil_da_chamada["prompt_bruto"]
+)
+```
+
+Mais o parâmetro `slug_perfil=None` no construtor, que os dois workers
+têm (a paridade de API entre eles é um requisito do `CLAUDE.md`).
+
+**Por que resolver no `__init__` e não em `executar()`:** o worker é
+construído no clique de INICIAR CHAMADA. Ler ali, e nunca reler, é o
+que garante que trocar de perfil na tela não mexe numa chamada em
+andamento. A janela passa o slug explicitamente ao reconectar
+(`go_away`) ou retomar uma pausa — `MainWindow.slug_perfil_chamada`
+segue exatamente a mesma regra de `session_handle` e
+`transcricao_preservada`: sobrevive à reconexão, morre em qualquer
+encerramento de verdade.
+
+**A assimetria entre provedores se resolve sozinha.** O Gemini declara
+16 ferramentas nativas e o OpenAI Realtime declara 4;
+`filtrar_declaracoes` intersecta **por nome** sobre a lista que aquele
+cliente montou, então uma ferramenta do perfil que só existe no Gemini
+(`ler_emails`, por exemplo) simplesmente não aparece na sessão OpenAI,
+sem erro. **Não existe — e não deve existir — uma tabela dizendo "esta
+ferramenta é só do Gemini":** a lista que chega ao filtro já é a
+verdade daquele provedor.
+
+No cliente OpenAI o filtro entra por
+`esquema.montar_ferramentas(..., filtro=...)`, aplicado **antes** da
+conversão de formato, sobre os mesmos objetos que o cliente Gemini
+filtra — a regra é literalmente a mesma nos dois.
+
+Esse silêncio é certo em runtime e seria armadilha na hora de montar o
+perfil, então a tela avisa antes: `nomes_do_cerebro(usar_openai)` diz
+o que existe em cada cérebro, e `jarvis/ui/janela_perfil.py` marca cada
+item afetado (`[não existe no OpenAI Realtime]`) e mostra um resumo do
+que está marcado e será ignorado, atualizado a cada clique. Vale nas
+duas telas — edição manual e confirmação da sugestão da IA. São 12 das
+61 (o e-mail inteiro e o envio de capturas), então não é um canto
+obscuro do catálogo.
+
+**Nunca levanta exceção, e FALHA FECHADA.** Perfil inexistente, pasta
+apagada ou `perfil.json` corrompido não impedem a chamada — mas ela
+abre com `FERRAMENTAS_SEMPRE_ATIVAS` e **nada mais** (2 ferramentas:
+conversar e encerrar), nunca com todas.
+
+Isto foi o contrário no primeiro corte, e estava errado: cair para
+"declara tudo" invertia o motivo de existir de um perfil restrito —
+justamente quando o perfil da floricultura falhasse, a chamada abriria
+com controle da casa, terminal de administrador e e-mail. O pior caso
+de bug virando o caso com MAIS poder. Um perfil que não carrega é uma
+intenção que não pôde ser respeitada; o único palpite seguro é "nada".
+
+**O prompt é a exceção deliberada:** cai para o do perfil padrão, não
+para vazio. Prompt vazio não é a versão "restrita" de um prompt, é um
+assistente sem identidade, sem regras e sem o bloco de autenticação.
+Ferramenta de menos limita o que ele PODE FAZER; prompt de menos só
+faz ele se comportar mal.
+
+O aviso vai para a **interface** (`erro_recebido` → registro de
+atividade e painel de console), não só para o terminal: ninguém está
+olhando o console durante uma chamada de verdade.
+
+**O perfil padrão (`completo`) guarda `"ferramentas": null`** — o
+curinga "todas as registradas", resolvido na hora do uso, e
+`filtrar_declaracoes` devolve a lista intacta sem olhar nome nenhum.
+Congelar esse curinga numa lista fixa faria todo pacote novo nascer
+desligado justamente no perfil que deveria ter tudo, e é por isso que
+a lista de ferramentas dele é imutável (`ferramentas_editaveis()`
+recusa a alteração na camada de dados, não só na tela).
+
+**Relação com `jarvis/roteamento_hierarquico/`:** nenhuma hoje, além
+do catálogo. Aquele módulo é standalone, ninguém chama
+`processar_turno()` fora do próprio `medir_custo.py`, e ele mira um
+pipeline futuro (servidor STT/TTS via MQTT) sobre a API sem estado da
+Groq. Os perfis compartilham só o `catalogo.py` dele, como dado. Se
+aquele pipeline for ligado um dia, note que o `_despachar` dele lê
+`PACOTES_REGISTRADOS` direto e ignoraria o perfil ativo até alguém
+conectar as duas coisas.
 
 ### `admin_terminal`
 
@@ -581,7 +696,7 @@ real**: as duas janelas (`jarvis/ui/janela_chat.py`, `jarvis/ui/janela_envio_arq
 mandar dado NOVO pra dentro da sessão Live já em andamento — texto digitado, imagem
 ou texto de arquivo — não só disparar um sinal de abrir janela. Isso não cabe dentro
 do pacote (que não tem acesso a `self.sessao`/`self.loop`), então o worker
-(`GeminiLiveWorker`, em `jarvis/gemini/cliente_live.py`) expõe dois métodos públicos
+(`GeminiLiveWorker`, em `jarvis/cerebro/gemini/cliente_live.py`) expõe dois métodos públicos
 pra essa ponte:
 
 ```python
@@ -785,7 +900,7 @@ completamente fora do fluxo normal de `despachar()`:
    `window.alternar_chamada()` — o MESMO método que o clique do botão já chama,
    reaproveitado, não duplicado.
 
-2. **`GeminiLiveWorker` (`jarvis/gemini/cliente_live.py`) chama
+2. **`GeminiLiveWorker` (`jarvis/cerebro/gemini/cliente_live.py`) chama
    `ativacao_voz.pausar()`/`ativacao_voz.retomar()` diretamente**, ao redor do
    próprio ciclo de vida de `executar()` — `pausar()` como a primeira linha de
    `executar()` (antes até de conectar no Gemini), `retomar()` logo depois de
@@ -878,7 +993,7 @@ detector roda numa thread própria simples, sem precisar interoperar com nenhum 
 
 **Encerramento por inatividade** (`TIMEOUT_INATIVIDADE_SEGUNDOS`, `jarvis/nucleo/config.py`)
 é uma feature separada, sem relação de código com o detector de ativação além de
-terem sido pedidas juntas — vive inteiramente em `jarvis/gemini/cliente_live.py`:
+terem sido pedidas juntas — vive inteiramente em `jarvis/cerebro/gemini/cliente_live.py`:
 `GeminiLiveWorker.verificar_inatividade()` roda como mais uma das tarefas
 concorrentes de `executar()` (junto de `enviar_microfone`/`receber_audio`/
 `reproduzir_audio`), checando periodicamente `self.timestamp_ultima_atividade`
@@ -1038,7 +1153,7 @@ cada request reenviava o schema das 45 ferramentas — **7.480 tokens medidos**,
 seja, dizer "bom dia" custava 7.511 tokens em vez de 31, e o limite de 25.000
 tokens/min permitia cerca de 1,5 turno com ferramenta por minuto.
 
-Saiu junto com ele, do `jarvis/gemini/cliente_live.py`: `vigiar_resposta_lenta`
+Saiu junto com ele, do `jarvis/cerebro/gemini/cliente_live.py`: `vigiar_resposta_lenta`
 (a sexta tarefa da chamada), `_conduzir_reserva_temporaria`,
 `_devolver_controle_ao_gemini`, `_anunciar_retomada_gemini`, `_status_reserva`,
 `_ao_finalizar_tarefa_reserva`, o buffer circular do microfone, o espelho da fila
@@ -1117,7 +1232,7 @@ genérico com data se o modelo fugir do formato, em vez de descartar o resumo.
 Salva via `escritor.salvar_memoria(titulo, resumo)`, a MESMA função usada por
 qualquer memória — nada novo precisou ser inventado pra gravar.
 
-Chamado de `jarvis/gemini/cliente_live.py`, no fim de `executar()`, logo antes
+Chamado de `jarvis/cerebro/gemini/cliente_live.py`, no fim de `executar()`, logo antes
 de `self.sessao = None`, em `asyncio.to_thread` (é uma chamada de rede) — pra
 QUALQUER encerramento de chamada, não só falha. A checagem de "vale a pena"
 (`MINIMO_MENSAGENS_RESUMO_CONVERSA`, 4 — evita salvar chamadas triviais/vazias)
@@ -1290,7 +1405,7 @@ Três pontos de atenção:
 
 ## Segundo cérebro de voz: OpenAI Realtime (`PROVEDOR_IA`)
 
-`jarvis/openai_realtime/cliente_realtime.py` (`OpenAIRealtimeWorker`) é uma
+`jarvis/cerebro/openai_realtime/cliente_realtime.py` (`OpenAIRealtimeWorker`) é uma
 alternativa completa ao `GeminiLiveWorker`, escolhida por `PROVEDOR_IA` no `.env`
 (`gemini`, o padrão, ou `openai`). Veio do JARVIS COMPLETO
 (`openai_provider/live_client.py`).
@@ -1306,7 +1421,7 @@ def _classe_do_worker():
     # Import lá dentro: quem usa o Gemini não precisa nem ter o
     # pacote openai instalado.
     if usar_provedor_openai():
-        from jarvis.openai_realtime import OpenAIRealtimeWorker
+        from jarvis.cerebro.openai_realtime import OpenAIRealtimeWorker
 
         return OpenAIRealtimeWorker
 
@@ -1335,7 +1450,7 @@ construtor `(session_handle=None, transcricao_inicial=None)`; os métodos `parar
 - Áudio em PCM16 **24 kHz na entrada e na saída** (no Gemini a entrada é 16 kHz).
 
 **As ferramentas são as mesmas, sem nenhuma cópia à mão.**
-`jarvis/openai_realtime/esquema.py` converte as `FunctionDeclaration` do Gemini (o
+`jarvis/cerebro/openai_realtime/esquema.py` converte as `FunctionDeclaration` do Gemini (o
 formato que todo pacote já expõe) para o formato achatado da Realtime API
 (`{"type", "name", "description", "parameters"}` achatado — **não** o formato de
 chat completions, que aninha tudo dentro de `"function"`). Um pacote novo passa a
@@ -1393,6 +1508,617 @@ Layout: a janela virou três colunas — controles + registro de atividade (330p
 a esfera (todo o espaço que sobrar) e o console de diagnóstico (340px fixos). Os
 painéis que já existiam continuam todos lá.
 
+## Terceiro cérebro de voz: servidor local / alfred-server (`PROVEDOR_IA=local`)
+
+`jarvis/cerebro/voz_local/` fala com o **alfred-server** — um servidor de voz rodando em
+Docker na própria máquina, que expõe um broker MQTT (mosquitto, `localhost:1883`)
+e uma API REST. Escolhido por `PROVEDOR_IA=local` no `.env`, exatamente como
+`openai` escolhe o worker da OpenAI. Os três workers expõem a MESMA API pública,
+então `_classe_do_worker()` em `jarvis/ui/janela_principal.py` continua sendo a
+única função do projeto que escolhe entre eles.
+
+**Protocolo do servidor** (definido por ele, não por nós). São DUAS metades, com a
+decisão de roteamento no meio — foi exatamente para abrir espaço para ela que o
+pipeline do servidor foi partido:
+
+| Etapa | Publica em | Responde em | Payload |
+|---|---|---|---|
+| 1 — transcrição | `jarvis/audio/entrada` | `jarvis/texto/saida` | arquivo de áudio INTEIRO, cru (sem JSON, sem base64) -> `{"texto","tom","sexo"}` em JSON UTF-8 |
+| 2 — resposta falada | `jarvis/texto/entrada` | `jarvis/audio/saida` | o MESMO JSON de volta -> o WAV da resposta |
+
+`jarvis/audio/erro` é **um só** para as duas metades — não existe
+`jarvis/texto/erro`. A linha vem prefixada pela metade que falhou
+(`"transcrição: ..."` / `"resposta: ..."`), e é isso que diz de qual pedido se
+trata. O tópico de erro é separado dos de saída porque estes carregam áudio: quem
+espera um WAV não tem como distinguir uma mensagem de erro de um áudio corrompido.
+
+Os cinco nomes são configuráveis no `.env` (`VOZ_LOCAL_TOPICO_*`), assim como
+host, porta, credenciais opcionais e os dois timeouts.
+
+**A porta padrão é 1884, não 1883.** Nesta máquina existe um `mosquitto.exe`
+NATIVO do Windows ligado a `127.0.0.1:1883` e `::1:1883`; no Windows o bind
+específico ganha do curinga que o Docker usa, então todo `connect` em
+`localhost:1883` cai no broker nativo — vazio, sem o alfred-server. Isso já
+custou um diagnóstico errado ("o alfred-api não está conectado"), quando na
+verdade o log do broker do Docker mostrava o servidor conectado e inscrito o
+tempo todo. O `docker-compose.yml` do alfred-server passou a publicar em
+`1884:1883`; dentro da rede do compose nada mudou. Antes de concluir que o MQTT
+aqui "não responde", confirme com qual broker você está falando.
+
+### Por que este worker NÃO pôde ser copiado dos outros dois
+
+Gemini Live e OpenAI Realtime são sessões de **streaming** bidirecional: o áudio é
+empurrado bloco a bloco e o **servidor** decide onde o turno do usuário terminou.
+O alfred-server é requisição/resposta com **arquivos inteiros**. Isso força duas
+coisas que nenhum dos outros workers faz:
+
+1. **Decidir sozinho onde a frase acaba** — `_capturar_frase()` faz o VAD.
+   Começa a gravar quando um bloco é classificado como fala, fecha após
+   `VOZ_LOCAL_SILENCIO_SEGUNDOS` de NÃO-fala. Guarda `BLOCOS_PRE_FALA` blocos
+   ANTES disso (senão a primeira sílaba é cortada — quando o modelo reconhece a
+   voz, a palavra já começou) e apara o silêncio final, deixando só
+   `BLOCOS_POS_FALA`. A duração mínima é medida **só sobre os blocos com voz**,
+   nunca sobre o buffer: medindo o buffer inteiro, um estalo de 0,1s com 1s de
+   silêncio atrás parecia uma frase de 1,4s e ia parar no servidor.
+
+   **Quem classifica cada bloco é o Silero VAD, por CONTEÚDO**
+   (`jarvis/cerebro/voz_local/vad_silero.py`), e isso substituiu uma decisão por
+   AMPLITUDE que era um bug real. O critério antigo comparava
+   `calcular_nivel_audio()` (pico normalizado) com `VOZ_LOCAL_LIMIAR_VOZ` — um
+   medidor de volume, que não distingue fala de coisa nenhuma. Com ruído de
+   fundo contínuo e alto (moto passando, ventilador, música), **todo** bloco
+   ficava acima do limiar, `silencio_acumulado` nunca subia e a frase **nunca
+   fechava**: o microfone gravava enquanto o barulho durasse. Medido nesta
+   máquina, no limiar padrão 0,12, ruído branco forte e zumbido de motor a 90 Hz
+   deram **100%** de blocos "com fala". Com o Silero, os mesmos sinais dão 0,0%
+   e 13,0%, contra 74,0% numa fala de verdade.
+
+   Detalhes que importam para quem for mexer:
+
+   - `VOZ_LOCAL_LIMIAR_PROB_FALA` (0.5) é **probabilidade de ser voz humana**,
+     não volume. Aumentar não deixa o jarvis surdo para sons baixos; deixa mais
+     exigente quanto àquilo ser uma voz.
+   - **A lógica de tempo não mudou.** `SILENCIO_SEGUNDOS`, `BLOCOS_PRE_FALA`,
+     `BLOCOS_POS_FALA`, `DURACAO_MINIMA_SEGUNDOS` e `DURACAO_MAXIMA_SEGUNDOS`
+     continuam iguais — só mudou COMO cada bloco vira fala/não-fala.
+   - `calcular_nivel_audio()` **continua existindo e continua certo**: é o que
+     anima a esfera (ali volume é a medida correta) e é o critério do modo de
+     emergência abaixo.
+   - **`onnxruntime`, não o pacote `silero-vad` do PyPI**: ele exige
+     torch+torchaudio (~250 MB) e importa torch mesmo no caminho ONNX, para
+     rodar um modelo de 1,2 MB.
+   - **Janela de exatamente 512 amostras, com 64 de contexto na frente** (576 no
+     total), lidas do wrapper oficial. Sem o contexto o modelo devolve ~0.001
+     para tudo, fala inclusive — parece modelo quebrado, é entrada malformada.
+     O modelo é recorrente, então `zerar()` é chamado no início de cada frase.
+   - **Custo medido**: 0,21–0,26 ms por bloco de 64 ms (~250–300× o tempo real).
+     Um teste reprova se passar de um décimo da duração do bloco.
+   - **O modelo se resolve sozinho** e fica em `dados/modelos/` (gitignorado),
+     como o do Vosk: `VOZ_LOCAL_MODELO_VAD` → cache → cópia dentro de um
+     `silero-vad` instalado (achado por caminho, nunca importado) → download de
+     uma **tag fixa**.
+   - **Falhar em carregar não derruba a chamada**: `_preparar_detector_de_fala()`
+     avisa por `erro_recebido` e deixa `detector_fala = None`, e
+     `_bloco_tem_fala()` cai no critério de amplitude. Esse fallback **é** o bug
+     descrito acima, e está documentado como modo de emergência de propósito —
+     um VAD pior é melhor do que não conseguir falar com o assistente.
+2. **Conversar em turnos estritamente sequenciais** — captura, publica, espera,
+   toca, volta a capturar. Não há tarefas de envio e recepção em paralelo.
+
+### O turno, ponta a ponta
+
+```
+_capturar_frase        VAD: Silero classifica cada bloco em fala/não-fala
+      |
+_transcrever           ETAPA 1: publica o WAV, espera o JSON
+      |
+_rotear                roteamento_hierarquico.processar_turno(texto, histórico)
+      |
+      +-- usou_ferramenta ou pedido_esclarecimento?
+      |     -> _registrar_resultado_local: mostra o texto na interface.
+      |        A ETAPA 2 NÃO é chamada neste turno. Sem voz.
+      |
+      +-- conversa?
+            -> _pedir_resposta   ETAPA 2: republica o JSON, espera o WAV
+            -> _reproduzir_resposta (inalterado)
+```
+
+**Ferramentas funcionam neste modo**, e quem as escolhe e executa é
+`jarvis/roteamento_hierarquico` — o mesmo motor, agora com um consumidor de
+verdade. `processar_turno` já executa a ferramenta, então `_rotear` só lê a
+decisão; não há despacho aqui. É síncrono e faz HTTP mais o despacho, por isso
+sempre vai para `asyncio.to_thread`.
+
+O histórico passado a ele é o próprio `self.transcricao_conversa` (que já está no
+formato `{"role","content"}` que ele espera), **sem a fala atual** — ela é
+anexada antes, e mandá-la também no histórico a duplicaria. `_aparar_transcricao`
+mantém o teto de `MAXIMO_MENSAGENS_TRANSCRICAO` (12), que aqui pesa dobrado: essa
+lista vai inteira ao roteamento a cada turno.
+
+`pedido_esclarecimento` fica no ramo da ferramenta de propósito: o roteamento
+entendeu que era uma ação, só não soube qual. Mandar o texto original para a
+etapa 2 faria o servidor conversar sobre um pedido de ação que ele nem sabe que
+existe.
+
+Sem `GROQ_API_KEY` o roteamento não roda e **todo** turno vira conversa — o
+worker avisa por `erro_recebido` logo após conectar, porque ficar sem ferramentas
+em silêncio é pior do que ficar sem ferramentas.
+
+**A ETAPA 2 republica o dicionário INTEIRO** recebido da etapa 1, sem remontar
+campo a campo: é literalmente o que o servidor espera de volta, e assim `tom` e
+`sexo` chegam lá exatamente como ele os produziu.
+
+**Respostas atrasadas são casadas por ETAPA, não só por pendência.**
+`self._tipo_esperado` (`"texto"` ou `"audio"`) filtra em `_resolver_futuro`: os
+dois pares de tópicos são independentes, então um WAV atrasado do turno anterior
+pode chegar bem no meio da espera da etapa 1 e, sem essa checagem, seria
+devolvido como se fosse o JSON da transcrição. Erros são a exceção deliberada —
+resolvem qualquer etapa que esteja esperando, já que o servidor publica os dois
+no mesmo tópico.
+
+### Por que existe um SEGUNDO cliente MQTT no projeto
+
+`jarvis/pacotes/rede_jarvis/mqtt_client.py` **não pôde ser reaproveitado**, e não
+é questão de estilo: ele mantém um cliente único por processo (`obter_cliente()`)
+apontado para o broker na nuvem do rede_jarvis (HiveMQ, porta 8883), chama
+`tls_set()` incondicionalmente e configura usuário/senha e um Last Will de
+presença. Um objeto do paho-mqtt é uma conexão para **um** endereço — a mesma
+instância não tem como atender também `localhost:1883` sem TLS. Generalizá-la
+mexeria em código testado que carrega credenciais, sem ganho nenhum.
+
+`jarvis/cerebro/voz_local/mqtt_voz.py` repete o **formato** de lá (paho v2, MQTT5,
+callbacks em português, nunca levantar exceção para fora) numa conexão separada, e
+o `rede_jarvis` continua byte a byte como estava. Diferença: aqui não há
+singleton — cada chamada cria e desconecta a sua instância, como o worker.
+
+### As 16 ferramentas nativas do Gemini não existem aqui
+
+Elas são branches do `elif` de `processar_chamada_de_funcao`, não pacotes: não
+estão no catálogo do roteamento e não há código de pacote por trás delas, então
+`_despachar` jamais as encontraria.
+
+| Grupo | Ferramentas |
+|---|---|
+| Visão ao vivo | `analisar_tela`, `analisar_camera`, `iniciar_visualizacao_continua`, `parar_visualizacao_continua` |
+| Captura em disco | `salvar_print_tela`, `tirar_foto_camera` |
+| Envio de captura | `enviar_captura_email`, `enviar_captura_discord_dm`, `enviar_captura_discord_canal`, `enviar_captura_remoto` |
+| Email | `preparar_email`, `confirmar_envio_email`, `ler_emails`, `baixar_anexo_email` |
+| Controle de chamada | `encerrar_chamada`, `pausar_chamada` |
+
+**Duas delas já foram portadas.** `analisar_tela` e `analisar_camera` existem no
+modo local como `descrever_tela` e `descrever_camera`, no pacote
+`jarvis/pacotes/descricao_visual/` — o cliente captura, um modelo de visão devolve
+a descrição em TEXTO, e esse texto entra no turno como resultado de ferramenta
+comum.
+
+Os nomes são **diferentes das nativas de propósito**: o despacho do worker do
+Gemini percorre `PACOTES_REGISTRADOS` ANTES da cadeia de `elif` nativa, então um
+pacote registrado com o nome nativo sequestraria o comportamento do Gemini, que
+manda vídeo de verdade para a sessão e tem o contexto da conversa. Um teste
+garante que nenhum pacote use esses dois nomes.
+
+`iniciar_visualizacao_continua` e `parar_visualizacao_continua` seguem
+**indisponíveis por design**, e não é o mesmo problema: dependem de streaming de
+vídeo em tempo real, com frames injetados continuamente na sessão. Replicar isso
+com chamadas repetidas de "captura avulsa + descreve" seria outra feature, com
+custo e latência muito maiores — uma chamada de visão leva segundos, e a
+visualização contínua manda vários frames por segundo.
+
+As de email e captura são só Python e seriam portáveis pelo mesmo caminho — só não
+foram ainda.
+
+Consequências práticas: "olha minha tela" e "vê a câmera" são recusados **por
+design**, não por bug; e sem `encerrar_chamada`, neste modo a chamada só termina
+pelo botão.
+
+O que existe de visão aqui vem do catálogo: `descrever_tela` e
+`descrever_camera` (as portadas), `identificar_planta` e
+`consultar_segunda_opiniao_visual` — as quatro passam pelo gancho de captura
+descrito abaixo —, mais `abrir_camera`/`fechar_camera` e `clicar_elemento_visual`,
+que captura a tela sozinha.
+
+### Provedor de visão (`descricao_visual` e `identificacao_visual`)
+
+Dois provedores possíveis, "gemini" e "mistral", e **a escolha é uma política, não
+um valor fixo** — resolvida a cada chamada por `config.provedor_visao()` em cada um
+dos dois pacotes:
+
+1. `DESCRICAO_VISUAL_PROVEDOR` no `.env`, quando definida com um valor válido,
+   **manda** — é a porta manual do usuário e sobrepõe a regra automática.
+2. Sem ela (o caso normal), vale o padrão automático de cada pacote, e eles
+   **diferem de propósito**:
+
+| Pacote | Ferramentas | Padrão automático |
+|---|---|---|
+| `identificacao_visual` | `consultar_segunda_opiniao_visual` | **sempre o provedor OPOSTO ao cérebro de voz ativo**: Mistral quando `PROVEDOR_IA=gemini`, Gemini nos modos `openai` e `local` |
+| `descricao_visual` | `descrever_tela`, `descrever_camera` | **fixo em `gemini`** |
+
+**Por que a regra automática existe (identificacao_visual).** A segunda opinião só
+tem um propósito: ser uma fonte INDEPENDENTE de quem já respondeu — daí ter nascido
+na Mistral. Com um padrão fixo em Gemini, no modo de voz Gemini ela virava o Gemini
+confirmando a si mesmo, e deixava de cumprir a própria promessa **em silêncio**: a
+ferramenta respondia normalmente, nada falhava, e o problema só aparecia se alguém
+estivesse prestando atenção (pior ainda porque `enviar_imagem_para_cruzamento` ia
+pedir que o modelo concordasse ou discordasse de si próprio). Amarrar o padrão ao
+cérebro ativo fecha esse furo silencioso.
+
+**Por que `descricao_visual` NÃO segue a mesma regra.** `descrever_tela`/
+`descrever_camera` não prometem independência de ninguém — não são uma segunda
+opinião, são a visão PRIMÁRIA do modo de voz local (o porte dos antigos
+`analisar_tela`/`analisar_camera`). Não existe fonte anterior de que elas precisem
+divergir, então amarrá-las ao cérebro ativo só mandaria a descrição para uma chave
+sem cota no modo Gemini, quebrando a ferramenta sem ganho nenhum.
+
+**A assimetria é só do padrão automático.** A variável manual continua sendo UMA só
+para os dois pacotes: uma escolha explícita do usuário nunca separa as duas
+ferramentas de visão em provedores diferentes — só a política automática separa, e
+por um motivo documentado. Os MODELOS continuam separados
+(`IDENTIFICACAO_VISUAL_MODELO_GEMINI` vs `DESCRICAO_VISUAL_MODELO_GEMINI`), porque
+descrever uma cena inteira e identificar um objeto são tarefas diferentes.
+
+**Cuidado com a cota da Mistral.** Medido ao vivo: a `MISTRAL_API_KEY` deste projeto
+responde 429 com `x-ratelimit-limit-req-minute: 0` — o limite é ZERO, a cota do tier
+gratuito acabou, não é espera passageira (o Gemini, na mesma hora, descreveu um
+print real de 467 KB em 5,7s com a chave que o projeto já exige). Enquanto ela não
+voltar, **no modo de voz Gemini a segunda opinião vai FALHAR em vez de responder** —
+e falhar ali é barulhento e honesto (o cliente devolve `prompts.VISAO_INDISPONIVEL`,
+que manda o cérebro avisar o usuário que não confirmou com uma segunda fonte),
+enquanto o padrão fixo em Gemini era silencioso e enganoso. Quem preferir a resposta
+menos independente à falha põe `DESCRICAO_VISUAL_PROVEDOR=gemini` no `.env`, que
+existe exatamente para isso.
+
+**Como é lido.** `provedor_forcado()` lê o arquivo `.env` DO DISCO a cada chamada
+(caindo em `os.getenv` só quando a variável não está no arquivo), mesmo motivo de
+`provedor_ativo()` em `jarvis/nucleo/config.py`: a tela de configurações salva com
+`set_key()`, que escreve no arquivo e nunca atualiza o `os.environ` do processo já
+em execução. Um valor inválido é tratado como ausência — cai na regra automática,
+nunca num provedor sorteado, mesma disciplina de `PROVEDOR_IA`. Como nada é fixado
+no import, trocar o cérebro de voz OU a variável manual vale já na próxima chamada,
+sem reiniciar o app.
+
+O fallback para um valor desconhecido em runtime sai do próprio mapa `_CLIENTES`, e
+não de uma referência direta ao módulo — uma referência direta furava o mapa e ia
+para a rede sem passar por ele (pego por teste).
+
+Cada cliente expõe `NOME_PROVEDOR`, e tanto a resposta de sucesso quanto
+`prompts.VISAO_INDISPONIVEL` (parametrizado com `{provedor}`) nomeiam quem de fato
+respondeu: dizer "Mistral" quando quem respondeu foi o Gemini faria o cérebro
+relatar ao usuário uma fonte que não foi consultada. Pelo mesmo motivo, a
+`FunctionDeclaration` de `consultar_segunda_opiniao_visual` **não nomeia provedor
+nenhum** — quem responde depende do cérebro ativo, e um nome fixo na descrição faria
+o modelo anunciar uma fonte que talvez não tenha sido a consultada.
+
+A chamada do Gemini leva um **timeout explícito** (`HttpOptions(timeout=...)`, em
+milissegundos): o SDK não tem nenhum por padrão, e isto roda na thread do
+roteamento, dentro de um `asyncio.to_thread` que também não tem `wait_for` por
+fora — uma chamada pendurada travaria o turno para sempre sem levantar nada. Uma
+chamada real levou 21,9s, então não é hipotético.
+
+### Ferramentas que precisam de uma imagem capturada pelo cliente
+
+`identificar_planta` e `consultar_segunda_opiniao_visual` são alcançáveis pelo
+roteamento, mas dependem de alguém capturar a imagem e injetá-la em `args` — no
+worker do Gemini quem faz isso é o próprio cliente. Sem o equivalente aqui, as
+duas eram alcançáveis e falhavam **sempre**, com "nenhuma imagem foi capturada".
+
+`processar_turno` ganhou um parâmetro opcional `preparar_argumentos(nome, args)`,
+chamado logo antes do despacho. O worker passa
+`_preparar_argumentos_da_ferramenta`, que captura só para os nomes de
+`FERRAMENTAS_QUE_PRECISAM_DE_IMAGEM` e devolve uma **cópia** dos argumentos.
+
+Essa constante é um **dicionário nome → `"tela"`/`"camera"`** (quatro entradas: as
+duas originais mais as duas portadas). A função de captura é resolvida na hora da
+chamada, via `_CAPTURAS`, em vez de guardada no mapa — assim o módulo continua
+substituível em teste sem precisar reconstruir o mapa.
+
+O gancho foi preferido a deixar os pacotes se virarem sozinhos porque eles também
+são despachados pelo worker do Gemini, onde a captura é feita sob
+`_mutex_funcao_visual` de propósito — um pacote que capturasse sozinho passaria
+por cima disso. Aqui não há mutex porque não há concorrência: o worker é
+estritamente sequencial, e `capturar_camera_bytes` já compartilha o handle com a
+janela de pré-visualização.
+
+### Memória: histórico da conversa e fatos de longo prazo
+
+Dois problemas relatados no modo local: perguntar o nome, dizer o nome e
+perguntar de novo — sem memória de curto prazo; e o nome já estar salvo no vault
+sem nunca chegar ao servidor.
+
+**Como os outros dois cérebros resolvem isso**: montam UMA instrução de sistema na
+abertura da sessão (prompt do perfil + `memoria_obsidian.contexto_inicial()` +
+data/hora) e a mandam no `LiveConnectConfig`/`session.update`. Dali em diante a
+própria sessão guarda o histórico — o cliente não reenvia nada. Fatos que não
+estão no contexto inicial o modelo busca sob demanda, chamando a tool
+`buscar_memorias_relacionadas`.
+
+Nada disso se aplica a um servidor de requisição única: não há sessão para guardar
+histórico, e o servidor não pode chamar tool nenhuma porque não sabe que memória
+existe. Mantida a decisão de deixá-lo sem conhecimento algum sobre o jarvis, a
+divisão é: **o jarvis monta o contexto e manda pronto a cada chamada; o servidor
+só usa o que recebe e não guarda nada.**
+
+**Contrato proposto para `jarvis/texto/entrada` e `POST /responder`** — dois
+campos novos, ambos OPCIONAIS:
+
+```json
+{
+  "texto": "qual é o meu nome?",
+  "tom": "neutro",
+  "sexo": "M",
+
+  "historico": [
+    {"role": "user", "content": "meu nome é Massaki"},
+    {"role": "assistant", "content": "Anotado."}
+  ],
+
+  "contexto_sistema": "Você é Jarvis, o assistente pessoal deste usuário. ...\n\nData e hora local atual: 05/09/2026 12:57.\n\nFatos que você já sabe sobre o usuário:\n- O nome do usuário é Massaki."
+}
+```
+
+- `historico`: turnos ANTERIORES, na ordem em que aconteceram, no formato
+  `{"role": "user"|"assistant", "content": str}` — o mesmo que o resto do projeto
+  já usa. **Não inclui a fala atual**, que já vai em `texto`. O jarvis manda no
+  máximo `LIMITE_MENSAGENS_HISTORICO` (6) mensagens.
+- `contexto_sistema`: texto curto (teto de 1200 caracteres) para ser usado como
+  instrução de sistema da chamada. Identidade, data/hora e os fatos de memória
+  relevantes para ESTA fala.
+
+Faltando qualquer um dos dois, o servidor deve se comportar exatamente como hoje —
+foi por isso que o jarvis já os envia: `_tratar_texto` lê o payload por chave
+(`pedido.get(...)`), então campos desconhecidos são ignorados e nada quebra
+enquanto o outro lado não existe.
+
+**O servidor não deve guardar nada entre requests.** Se o `historico` de uma
+chamada não vier, é porque não há histórico — nunca porque o cliente confia que o
+servidor lembra.
+
+**Uma lacuna que o contrato acima NÃO fecha sozinho**: hoje `/responder` devolve só
+o WAV, então o jarvis não tem como saber o que o assistente respondeu. O
+`historico` fica de um lado só — as falas do usuário e os resultados de ferramenta
+entram, mas as respostas faladas não. Para o caso relatado isso basta (quem disse o
+nome foi o usuário), mas o assistente não consegue se referir ao que ele mesmo
+acabou de dizer. Fechar isso exige o servidor devolver TAMBÉM o texto que gerou.
+Duas formas, nenhuma implementada ainda:
+
+- **MQTT**: uma user property `texto` na mensagem de `jarvis/audio/saida` —
+  metadado ao lado de payload binário é exatamente o padrão que
+  `jarvis/pacotes/rede_jarvis/mqtt_client.py` já usa.
+- **HTTP**: um cabeçalho de resposta, com o texto codificado (cabeçalho HTTP não
+  carrega não-ASCII cru).
+
+Decidir isso é parte do prompt do lado do servidor.
+
+### Onde os fatos são montados: `jarvis/cerebro/voz_local/contexto.py`
+
+`montar_contexto_sistema(texto_do_turno)` junta identidade (`obter_nome_jarvis()`),
+`prompts.contexto_data_hora()` — o mesmo dado que os outros dois cérebros recebem —
+e as memórias relevantes.
+
+As memórias vêm de `memoria_obsidian.busca.buscar_memorias(...)`, o mesmo motor por
+trás da tool `buscar_memorias_relacionadas`. Duas decisões:
+
+- **`registrar=False`**. Contar como acesso marcaria as notas como usadas a cada
+  turno, deixando `last_used` sempre fresco e fazendo os critérios de poda nunca
+  dispararem. Mesma decisão, pelo mesmo motivo, de
+  `memoria_obsidian.contexto_inicial()`.
+- **`PONTUACAO_MINIMA = 2.0`**. Medido contra o vault real: a busca dá 4.0 para
+  acerto de verdade e 1.0 para nota que só encostou no assunto. Sem o corte,
+  perguntar "qual é o meu nome" arrastava junto notas sobre navegador e YouTube —
+  ruído que ocupa o contexto e ainda convida o modelo a falar do que ninguém
+  perguntou. A seção `## Relacionados` também é removida do corpo: é navegação do
+  Obsidian, não fato.
+
+`historico_para_envio(transcricao)` devolve uma **cópia** das últimas mensagens — a
+lista do worker continua crescendo enquanto o pedido está em voo.
+
+Uma falha de leitura do vault degrada para contexto sem fatos, nunca custa o turno.
+
+### Falha de roteamento NUNCA vira conversa
+
+Bug real: "pedi para abrir o navegador, ele disse que estava abrindo e nada
+abriu; na segunda vez funcionou".
+
+Medido ao vivo: o tier gratuito da Groq limita `openai/gpt-oss-20b` a **8000
+tokens por minuto**, e cada chamada da etapa 1 custa **~1450 tokens** (o catálogo
+inteiro de 45 ferramentas vai no prompt todo turno) — ou seja, ~5 turnos por
+minuto antes do 429, que um ritmo normal de conversa ultrapassa fácil.
+
+A cadeia: `_chamar_groq` devolve `(False, ...)` em vez de levantar exceção ->
+`processar_turno` transformava isso num `ResultadoTurno` comum com
+`usou_ferramenta=False` -> o worker, que só capturava *exceções*, mandava a fala
+para a etapa 2 -> o servidor, que não sabe que ferramentas existem, respondia
+algo plausível. A mensagem de erro era descartada.
+
+Três correções:
+
+1. **`ResultadoTurno.falhou`**, marcado em todo ponto de falha real (sem chave,
+   etapa 1 falhou, schemas não carregaram, etapa 2 falhou, ferramenta não
+   reconhecida, gancho levantou). `pedido_esclarecimento` **não** é falha: ali o
+   roteamento funcionou e produziu um resultado de verdade.
+2. **O worker reporta `falhou` por `erro_recebido` e encerra o turno**, sem
+   chamar a etapa 2. Não dá para *falar* a falha: a única saída de voz é a etapa
+   2, que RESPONDE ao texto enviado em vez de lê-lo.
+3. **Retry no 429**, respeitando `retry-after` e limitado por
+   `ESPERA_MAXIMA_RATE_LIMIT`; e `_chamar_groq` passou a preservar o corpo do
+   erro. Sem o corpo, um rate limit recuperável fica indistinguível de qualquer
+   outro erro HTTP — foi o que fez este bug precisar de engenharia reversa.
+
+#### O 400 "Tool choice is none, but model called a tool"
+
+Segundo caso relatado, e o **único 4xx que este projeto repete**.
+
+A ETAPA 1 não declara ferramenta nenhuma — é justamente o que o roteamento em
+duas etapas economiza: o catálogo viaja como TEXTO, não como ~45 esquemas. Só
+que o `gpt-oss` às vezes decide EXECUTAR a ferramenta em vez de escrever o nome
+dela na linha `FERRAMENTAS:`, e aí a Groq recusa a requisição inteira com 400.
+O usuário bateu nisso em "salve na sua memória que gosto de conversar sobre
+tecnologia", logo depois de uma pergunta que o assistente já tinha respondido.
+
+**É não determinístico e depende do HISTÓRICO**, medido com a frase exata do
+log: 0 falhas em 8 chamadas sem turno anterior; de 1 a 3 em cada 6 com um turno
+de assistente antes. Por isso ele só apareceu depois que as falas do assistente
+passaram a entrar em `transcricao_conversa` — o histórico não criou a
+fragilidade, só passou a encontrá-la.
+
+**O que NÃO resolve, e foi testado:**
+
+- *Mexer no prompt.* Acrescentar "você não tem ferramentas nesta etapa, nunca
+  emita tool call" PIOROU: 3 falhas em 6, contra 1 em 6 sem o reforço. O canal
+  de ferramenta do formato harmony não se desliga por instrução. Não tente
+  consertar isto reescrevendo `ROTEAMENTO_ETAPA1_INSTRUCAO`.
+- *Trocar de modelo.* `qwen/qwen3.6-27b` recusa o prompt do catálogo
+  (`Request too large` — o limite por requisição dele é menor do que a etapa 1
+  precisa) e `openai/gpt-oss-120b` é da mesma família harmony. Os modelos Llama
+  de chat sumiram do catálogo da Groq.
+
+**O tratamento, em duas camadas:**
+
+1. `_chamar_groq` repete **este 400 específico** (`TENTATIVAS_TOOL_CALL_INDEVIDA`
+   = **2**), com orçamento **independente** do 429 e **sem espera** — não é
+   limite de uso, é a amostragem do modelo. É a única exceção à regra de não
+   repetir 4xx, e se justifica porque aqui a resposta não é função só da
+   requisição. **Só 2 por causa do teto de tokens**: cada tentativa custa ~1,8k
+   contra os 8000 TPM do tier gratuito, e com 3 tentativas um turno medido
+   passou a falhar por 429 em vez de pelo 400 — repetir demais troca um erro
+   por outro.
+2. Se a etapa 1 ainda falhar assim **e houver histórico**, `processar_turno`
+   refaz a etapa 1 **sem o histórico** — remove o gatilho medido em vez de
+   sortear de novo. Perde-se contexto, e é uma troca deliberada: perder contexto
+   é muito melhor do que perder o turno, que é o que o usuário viu.
+
+**Medido ao vivo no turno exato do relato:** 1 falha em 5 só com a repetição
+(um turno esgotou as três tentativas); **0 em 5** com o plano B do histórico.
+
+### O que este modo NÃO tem (limitação do protocolo, não pendência)
+
+O servidor troca áudio e texto, e não faz function-calling. Então:
+
+- **perfis** (`jarvis/nucleo/perfis/`), **prompt de sistema** e o **gate da
+  palavra-chave** não se aplicam — eles pertencem à sessão do Gemini/OpenAI, que
+  aqui não existe (ferramentas, essas sim, funcionam: ver "O turno, ponta a
+  ponta" acima);
+- **um turno resolvido por ferramenta não tem voz** — o resultado aparece na
+  interface por `status_recebido`, e a etapa 2 não é chamada;
+- **não há retomada de sessão**: `solicitou_reconexao` e
+  `session_handle_atualizado` existem só por paridade de interface e nunca são
+  emitidos (mesma situação do worker da OpenAI);
+- **interromper durante a GERAÇÃO** (antes de o áudio começar a tocar) não é
+  tratado: o protocolo do servidor não tem canal de cancelamento, e o pipeline
+  dele é síncrono. Uma resposta abandonada seria descartada na chegada por
+  `_resolver_futuro`, que já ignora resposta sem futuro pendente — mas o corte
+  em si não foi implementado, e o custo de não ter isso é só uma geração jogada
+  fora. Durante a geração o usuário não ouve nada, então a chance de querer
+  interromper ali é baixa.
+
+(A interrupção **durante a reprodução** existe — ver a seção abaixo.)
+
+### Interrupção da fala (barge-in) no modo local
+
+`config.json` -> `"interrupcao"`, a MESMA preferência do worker do Gemini, lida
+uma vez no `__init__`. Vem desligada.
+
+**A detecção é deste lado, e é a diferença estrutural.** No Gemini Live quem
+decide é o SERVIDOR: o microfone segue sendo transmitido enquanto o assistente
+fala, e o servidor devolve `server_content.interrupted`. Aqui o alfred-server já
+entregou o WAV inteiro e não sabe mais nada do turno, então
+`_vigiar_interrupcao()` roda em paralelo com a reprodução e usa **o mesmo
+Silero** que fecha as frases (mesma instância — os dois nunca rodam ao mesmo
+tempo, e ambos chamam `zerar()` ao começar, que é o que o estado recorrente do
+modelo exige).
+
+Ao detectar fala:
+
+1. a reprodução para no meio e **o resto do WAV é descartado**;
+2. o `ATRASO_REABRIR_MICROFONE` é **pulado** — o usuário está falando agora,
+   esperar 0,8s seria latência pura;
+3. a fila do microfone **não** é limpa — ali está o começo da frase nova;
+4. os blocos que o vigia já tinha consumido viram a **pré-fala** da próxima
+   captura (`_blocos_apos_interrupcao`). Sem isso as primeiras sílabas de quem
+   interrompeu somem: o vigia as tirou da fila e mais ninguém as veria.
+
+**⚠ EXIGE FONE DE OUVIDO — medido, não precaução.** Não existe cancelamento de
+eco acústico no projeto, e o Silero decide por CONTEÚDO: a voz do assistente é
+voz humana. Alimentando o detector com respostas reais deste servidor, ele viu
+fala em **68% a 82%** dos blocos; a **-24 dB** (eco distante de caixa), ainda
+**67% a 81%** — atenuar não muda o conteúdo. Em caixas de som ele se interrompe
+sozinho em quase toda resposta, e subir limiar não resolve (ao contrário do VAD
+por amplitude antigo). Um teste fixa esse comportamento: a própria voz do
+assistente a -12 dB **interrompe**.
+
+Por isso o worker emite um aviso na interface no início de toda chamada em que a
+interrupção está ligada — a preferência mora em `config.json`, que não aparece
+em tela nenhuma, e o sintoma de usá-la em caixas (a fala parando no meio) é
+idêntico ao de um travamento.
+
+**Dois amortecedores contra falso positivo**, os dois necessários:
+`BLOCOS_FALA_PARA_INTERROMPER` (5 blocos CONSECUTIVOS, ~320 ms — um bloco solto é
+estalo de teclado ou respiração) e `CARENCIA_INTERRUPCAO_SEGUNDOS` (0,5s no
+começo da reprodução, em que os blocos ainda são guardados para a pré-fala mas
+não contam como interrupção — a cauda da própria pergunta do usuário ainda está
+no ar).
+
+`interrupcoes_na_chamada` + a linha `[INTERRUPÇÃO]` existem pelo mesmo motivo do
+contador equivalente no Gemini: interrupção FALSA é indistinguível de
+travamento para quem ouve. Se o número subir com o usuário calado, o culpado é o
+barge-in, e a correção é `config.json`.
+
+**As duas guardas de microfone** do worker local passaram para a forma canônica
+`if self.alfred_falando and not self.interrupcao_habilitada:` — as mesmas três do
+Gemini, só que aqui são duas (não há laço de envio: o microfone alimenta
+`_capturar_frase`, não uma sessão). Um teste conta as 2.
+
+`solicitar_analise_tela`, `solicitar_analise_camera`, `enviar_texto_da_ui` e
+`enviar_imagem_da_ui` existem porque a janela e as janelas de chat/arquivo as
+chamam sem saber qual cérebro está ativo — e **recusam explicando** (via
+`erro_recebido`, e devolvendo `False` onde a janela espera um booleano), nunca em
+silêncio.
+
+### Tratamento de falha (nada trava a aplicação)
+
+- **Broker fora do ar**: `conectar()` devolve `(False, mensagem)` legível e a
+  chamada termina antes de abrir o microfone. Nunca levanta exceção.
+- **Erro em `jarvis/audio/erro`**: vira `erro_recebido` (registro de atividade +
+  painel de console, a mesma porta de qualquer outro erro do projeto) e o
+  microfone **volta a escutar** — um turno perdido não derruba a chamada.
+- **Timeout** (`VOZ_LOCAL_TIMEOUT_RESPOSTA_SEGUNDOS`, padrão 25s): mesmo
+  tratamento do erro acima. Uma resposta que chegue depois disso é **descartada**
+  em `_resolver_futuro` (o future do turno já voltou a `None`), para não tocar por
+  cima do turno seguinte. Mensagens retidas no broker caem na mesma proteção.
+- **Microfone que morre sem levantar exceção** (dispositivo padrão trocando no
+  meio da chamada): `_vigiar_microfone()` detecta pelo carimbo de tempo que o
+  callback do sounddevice grava como PRIMEIRA linha, antes de qualquer return
+  antecipado — medindo se o dispositivo entrega blocos, não se o áudio é
+  aproveitado. Mesmo raciocínio do `vigiar_travamento` do worker do Gemini.
+- **Tarefas que morrem em silêncio**: as três tarefas da chamada passam por
+  `_tarefa_supervisionada`, que reporta na interface e encerra a chamada em vez de
+  deixá-la com cara de conectada. `CancelledError` passa reto de propósito.
+- **Escrita no dispositivo de saída que trava** (jogo em tela cheia tomando a
+  placa de som): `asyncio.wait_for` em volta, e a escrita vai para um
+  `ThreadPoolExecutor` **exclusivo** da reprodução — nunca `asyncio.to_thread`,
+  cujo pool compartilhado já causou fala travando no meio com a CPU ociosa.
+
+### Testes
+
+`testes/testar_voz_local.py` — 104 verificações, offline exceto a parte 5, que
+conversa com o broker real em tópicos `jarvis/teste/...` (sem encostar no pipeline
+do servidor). Cobre paridade de API entre os três workers, resolução de
+`PROVEDOR_IA` (incluindo erro de digitação caindo no Gemini), conversão PCM/WAV
+(taxa lida do cabeçalho, estéreo, WAV inválido, 8 bits recusado), o VAD nos quatro
+casos (fala, silêncio puro, ruído curto, ruído contínuo batendo no teto),
+transporte MQTT real nos três tópicos assinados, as duas etapas isoladamente (a 1
+não dispara a 2; a 2 republica o dicionário intacto), erro e timeout em **cada**
+etapa com o limite de cada uma, um WAV atrasado chegando durante a espera da
+etapa 1 sendo descartado, JSON malformado virando erro de turno, o roteamento
+(ferramenta vs conversa, histórico sem a fala atual, falha degradando para
+conversa, aparo do histórico), as recusas explícitas, e que o caminho do Gemini
+não foi tocado.
+
+`testes/testar_voz_local_ponta_a_ponta.py` — round-trip real no fluxo de duas
+etapas: gera fala em português com a voz do Windows (SAPI), percorre etapa 1 ->
+roteamento -> etapa 2 e para na etapa 1 se o roteamento decidir que era
+ferramenta, igual ao worker. Aceita uma frase como argumento. Depende de o
+servidor já estar rodando o build com as duas metades.
+
 ## Checklist para religar tudo em um cliente novo
 
 1. Copie o trecho da seção "Trecho pronto para copiar" (um import de
@@ -1401,7 +2127,7 @@ painéis que já existiam continuam todos lá.
 2. Para cada pacote listado na seção "Wiring extra por pacote" acima,
    copie também o wiring específico dele.
 3. Se o cliente novo for para outro provedor, use
-   `jarvis/openai_realtime/` como referência: ele já é um segundo
+   `jarvis/cerebro/openai_realtime/` como referência: ele já é um segundo
    cliente completo montado só a partir de `PACOTES_REGISTRADOS`.
 4. Rode o app e confirme que `PACOTES_REGISTRADOS` aparece com todos
    os pacotes esperados e que uma tool de cada pacote funciona por
