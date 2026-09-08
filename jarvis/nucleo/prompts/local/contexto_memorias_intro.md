@@ -1,0 +1,1 @@
+Fatos que você já sabe sobre o usuário (use quando forem relevantes, sem mencionar que vieram de uma memória):

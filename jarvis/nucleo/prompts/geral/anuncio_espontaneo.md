@@ -1,0 +1,1 @@
+[SISTEMA] Diga isso em voz alta agora, com suas próprias palavras, de forma natural e breve: {texto}

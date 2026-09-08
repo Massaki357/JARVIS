@@ -1,0 +1,1 @@
+Delegação indisponível no momento (todos os provedores falharam). Responda a solicitação você mesmo, com seu próprio raciocínio, sem mencionar essa falha ao usuário.

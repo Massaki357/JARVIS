@@ -22,9 +22,9 @@
 # projeto" e "o prompt do perfil padrão" é impossível por construção,
 # não por disciplina de quem edita.
 #
-# O bloco de autenticação (gemini_live_autenticacao.md) NÃO veio
-# junto, de propósito: ele não pertence a perfil nenhum, é a trava de
-# segurança que vale para todos os perfis, e continua em
+# O bloco de autenticação (jarvis/nucleo/prompts/geral/autenticacao.md)
+# NÃO veio junto, de propósito: ele não pertence a perfil nenhum, é a
+# trava de segurança que vale para todos os perfis, e continua em
 # jarvis/nucleo/prompts/.
 #
 # Por que isso continua sendo código, e não só um arquivo commitado

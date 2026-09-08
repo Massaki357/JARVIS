@@ -249,39 +249,79 @@ as little as possible (see the constraint about them further down).
 ## Prompts (`jarvis/nucleo/prompts/`)
 
 Every hardcoded instruction text sent to any model (Gemini, Groq, Cerebras,
-OpenAI, Mistral) anywhere in the project lives here — centralized in one pass,
-with every extraction verified byte-for-byte against the original text before
-moving it (hashes for the two big ones, AST-based structural comparison for
-the rest; see the session transcript for the verification scripts if this
-process ever needs repeating).
+OpenAI, Mistral) anywhere in the project lives here — centralized in one
+pass, with every extraction verified byte-for-byte (sha256 of the old
+constant's value compared against the new one) before moving it.
 
 `prompts/` is a **package**, not a `prompts.py` module, even though it's
 imported and used exactly like one (`from jarvis.nucleo import prompts`,
 `prompts.ANUNCIO_ESPONTANEO`) — Python doesn't allow a module and a
-same-named package side by side in one directory, and the two long prompts
-below needed to live in files inside it. Short prompts (a few sentences) are
-constants in `prompts/__init__.py`, organized in commented sections by
-source file/package. The two genuinely long, multi-section prompts —
-`jarvis/cerebro/gemini/cliente_live.py`'s full `instrucao_sistema` body (~22k chars)
-and its `bloco_autenticacao` — are `.md` files instead
-(`gemini_live_sistema.md`, `gemini_live_autenticacao.md`), because a
-22k-character single-line Python string would be unreviewable in a diff.
+same-named package side by side in one directory, and the prompt `.md`
+files need to live in files inside it.
 
-**How the two `.md` files are loaded, and why it's safer than the original
-Python pattern**: `_carregar()` reads the file, drops blank lines and lines
-starting with `##` (section headers — pure human navigation, exactly like
-the old `# IDENTIDADE`/`# PERSONALIDADE` Python comments, never part of the
-text sent to the model), then joins every remaining line by appending a
-single space to **each** line before concatenating — never relying on a
-line's own trailing whitespace. This is deliberately more robust than the
-original adjacent-string-literal-concatenation pattern documented below: a
-missing trailing space in the `.md` source can no longer jam two words
-together, because the loader supplies the separating space itself
-regardless of what's in the file. `instrucao_sistema_corpo()` returns text
-already ending in `"\n\n"` (the separator before the memory context that
-gets concatenated after it in `cliente_live.py`) — that's added inside the
-function, not baked into the `.md` file, so the file's own whitespace can be
-freely normalized without disturbing that meaningful separator.
+**Organized by cérebro, one subfolder each — the same split as
+`jarvis/cerebro/`**, so a prompt can be edited without touching a cérebro it
+doesn't belong to:
+- `prompts/gemini/` — exclusive to Gemini Live (e.g.
+  `cruzamento_segunda_opiniao.md`).
+- `prompts/openai/` — exclusive to OpenAI Realtime (empty today — nothing
+  is OpenAI-Realtime-only, it reuses everything from `geral/`).
+- `prompts/local/` — exclusive to voz_local/alfred-server (e.g. the visual
+  description prompts, since that's the one cérebro with no native image
+  input).
+- `prompts/geral/` — reused by more than one cérebro: the auth block
+  (`geral/autenticacao.md`, shared by Gemini Live and OpenAI Realtime), and
+  every tool-result prompt that works with whichever cérebro is active
+  (delegação, segunda opinião visual, consolidação de memória, criação de
+  perfil, etc.).
+
+Every prompt is a `.md` file holding the exact final text (with the same
+`{campo}` markers the old Python constant had, for the same `.format()`
+call sites), loaded in `prompts/__init__.py` via
+`_carregar_arquivo("<subpasta>/<arquivo>.md")` and exposed as a Python
+constant — a straight read plus stripping the trailing newline the editor
+left, no other transformation, so the `.md` content must be byte-for-byte
+what's sent to the model.
+
+**One deliberate exception, never extracted to a `.md`**: a prompt line
+with a variable spliced into the *middle* of the sentence — e.g.
+`f"Você é {obter_nome_jarvis()}, o assistente pessoal..."` in
+`jarvis/cerebro/voz_local/contexto.py` — stays as an f-string in the code
+file it's in. Pulling just that fragment into `prompts/` wouldn't make it
+any easier to edit without touching code, and would split the sentence in
+two. Only the fixed text *around* such a line (when there is any, like the
+memory-facts intro that follows it) becomes a `.md` file.
+
+`instrucao_sistema`'s full body (~22k chars) doesn't live in `prompts/` at
+all anymore — it moved to the active profile, `dados/perfis/<slug>/sistema.md`
+(see docs/perfis.md); `prompts.instrucao_sistema_corpo()` reads it from
+there at every call start. `bloco_autenticacao` is the one genuinely long
+prompt still in this folder (`geral/autenticacao.md`), because it belongs
+to no profile — it's the security gate that applies to all of them,
+regardless of which cérebro or profile is active.
+
+**How `geral/autenticacao.md` (and the profile's `sistema.md`) are loaded,
+and why it's safer than the original Python pattern**: `_carregar_prosa()`
+reads the file, drops blank lines and lines starting with `##` (section
+headers — pure human navigation, exactly like the old `# IDENTIDADE`/`#
+PERSONALIDADE` Python comments, never part of the text sent to the model),
+then joins every remaining line by appending a single space to **each**
+line before concatenating — never relying on a line's own trailing
+whitespace. This is deliberately more robust than the original
+adjacent-string-literal-concatenation pattern: a missing trailing space in
+the `.md` source can no longer jam two words together, because the loader
+supplies the separating space itself regardless of what's in the file.
+`instrucao_sistema_corpo()` returns text already ending in `"\n\n"` (the
+separator before the memory context that gets concatenated after it in
+`cliente_live.py`/`cliente_realtime.py`) — that's added inside the
+function, not baked into the `.md` file, so the file's own whitespace can
+be freely normalized without disturbing that meaningful separator. Every
+other `.md` file in `prompts/` (everything under `gemini/`, `openai/`,
+`local/` and `geral/` besides `autenticacao.md`) is loaded with
+`_carregar_arquivo()` instead — a plain read with no line-joining and no
+`"ALFRED"` substitution, because those prompts are short enough that their
+`.md` source already IS the final text, internal blank lines included
+where the original had a real `\n\n` paragraph break.
 
 **The `enviar_tela_para_gemini`/`enviar_camera_para_gemini` duplication was
 unified** into one `prompts.ANALISE_IMAGEM_PONTUAL` template taking
@@ -362,7 +402,7 @@ Three-layer flow, entry point `main.py`:
 - Any new `.env`-reading module (inside `jarvis/pacotes/` or not) should get a `config_schema()` and a line in `jarvis/pacotes/configuracoes/pacotes.py`'s `PACOTES_COM_CONFIG` — this list is not restricted to `jarvis/pacotes/` modules (see `jarvis/nucleo/config.py` and `jarvis/servicos/email/`'s two modules, added specifically to close that gap), so there's no excuse to skip it for a module living elsewhere.
 - Vision and email functions are intentionally *not* auto-triggered by the model — the system prompt explicitly restricts them to explicit user requests, and for `preparar_email` specifically requires the recipient/subject/body to have been stated by the user rather than invented. Preserve these restrictions when adjusting `instrucao_sistema`.
 - **New tools/integrations always live in their own isolated package under `jarvis/pacotes/`** (`jarvis/pacotes/rede_jarvis/`, `jarvis/pacotes/casa_inteligente/`, `jarvis/pacotes/delegacao_ia/` are the existing examples), never as business logic dropped into one of the three course-project files. Every such package exposes exactly `obter_function_declarations()` and `despachar(nome_funcao, argumentos)` — the standard contract in **docs/INTEGRATION.md** — so it can be wired into any client file with the same three touch points, not bespoke code per package.
-- The three course-project files (`main.py`, `jarvis/cerebro/gemini/cliente_live.py`, `jarvis/ui/janela_principal.py` — formerly the `_basic`-suffixed ones) are temporary and will be fully replaced once the finished course project lands — **edit them as little as possible**. For a package, that now means only: (1) one line in `jarvis/nucleo/registro_pacotes.py` and (2) an update to `jarvis/nucleo/prompts/gemini_live_sistema.md` describing the new tool(s) to the model — **neither of which is one of the three files**. `PACOTES_REGISTRADOS` used to live inside `cliente_live.py`; it moved out precisely so that registering a package stopped touching them at all. Anything beyond that (new business logic, new state, new helper methods) belongs inside the package itself, not in one of those three files. Packages that need session-glue callbacks (like `rede_jarvis`) are the only sanctioned exception, and even those are documented as copy-paste snippets in docs/INTEGRATION.md, not open-ended edits.
+- The three course-project files (`main.py`, `jarvis/cerebro/gemini/cliente_live.py`, `jarvis/ui/janela_principal.py` — formerly the `_basic`-suffixed ones) are temporary and will be fully replaced once the finished course project lands — **edit them as little as possible**. For a package, that now means only: (1) one line in `jarvis/nucleo/registro_pacotes.py` and (2) an update to `dados/perfis/completo/sistema.md` (the default profile's system prompt — see docs/perfis.md) describing the new tool(s) to the model — **neither of which is one of the three files**. `PACOTES_REGISTRADOS` used to live inside `cliente_live.py`; it moved out precisely so that registering a package stopped touching them at all. Anything beyond that (new business logic, new state, new helper methods) belongs inside the package itself, not in one of those three files. Packages that need session-glue callbacks (like `rede_jarvis`) are the only sanctioned exception, and even those are documented as copy-paste snippets in docs/INTEGRATION.md, not open-ended edits.
 - **docs/INTEGRATION.md must be updated every time a package is added or its integration surface changes** — new/changed `obter_function_declarations()`/`despachar()` behavior, a new or changed session-glue callback, etc. It is the single source of truth for re-wiring packages into a future (post-course) client file; letting it drift out of sync defeats its purpose.
 - **Qt threading discipline**: `GeminiLiveWorker` (a `QThread`) never touches UI widgets directly. All communication back to `MainWindow` goes through its `Signal`s (`status_recebido`, `erro_recebido`, `chamada_encerrada`, `solicitou_encerramento`, `nivel_audio`), connected once in `jarvis/ui/janela_principal.py`; the worker only ever calls `self.<sinal>.emit(...)`. Preserve this direction — don't add a reference from the worker (or a package it calls) back into `MainWindow`/widgets, and don't call Qt GUI classes (e.g. `QFileDialog`) from a background thread without the same signal/queued-connection bridge pattern `jarvis/pacotes/rede_jarvis/transferencia_arquivos.py` already uses (`_PonteSalvarArquivo`, instantiated on the GUI thread via `preparar_ponte_gui()`).
 - **OpenAI has exactly TWO sanctioned entry points, and no third.** (1) `delegacao_ia.delegar_tarefa(tipo_tarefa="segunda_opiniao", ...)` — the single, rarely-used, no-fallback route in `jarvis/pacotes/delegacao_ia/roteador.py`, deliberate because OpenAI is the most expensive provider in use. (2) `jarvis/cerebro/openai_realtime/cliente_realtime.py`, the alternative voice brain, reachable ONLY when the user sets `PROVEDOR_IA=openai` in `.env` — added at the user's explicit request after being told about this constraint, not as a drive-by. Don't add a third code path that calls OpenAI directly from anywhere else, and don't make the Realtime worker reachable by anything other than that one `.env` variable (`usar_provedor_openai()` in `jarvis/nucleo/config.py`, read by `_classe_do_worker()` in `jarvis/ui/janela_principal.py` — that is the whole surface).

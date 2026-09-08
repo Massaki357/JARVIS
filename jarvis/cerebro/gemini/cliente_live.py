@@ -1841,7 +1841,7 @@ class GeminiLiveWorker(QThread):
         # ficar direto dentro da concatenação de instrucao_sistema,
         # exatamente pra poder incluir ou não condicionalmente. O
         # texto em si mora em jarvis/nucleo/prompts/
-        # gemini_live_autenticacao.md — ver prompts.bloco_autenticacao().
+        # geral/autenticacao.md — ver prompts.bloco_autenticacao().
         bloco_autenticacao = (
             prompts.bloco_autenticacao()
             if EXIGIR_AUTENTICACAO

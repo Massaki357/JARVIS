@@ -2,22 +2,47 @@
 # Groq, Cerebras, OpenAI, Mistral) neste projeto vive aqui —
 # centralizado numa tarefa dedicada, para reaproveitamento e
 # organização, sem alterar nenhum texto final que chega a cada
-# modelo (cada extração foi verificada byte a byte contra o texto
-# original antes de qualquer coisa ser movida).
+# modelo (cada extração foi verificada byte a byte — hash sha256 do
+# valor antigo comparado contra o novo — antes de qualquer coisa ser
+# movida).
 #
-# Prompts curtos (uma a poucas frases) são constante Python aqui
-# embaixo, organizados em seções por pacote/arquivo de origem —
-# padrão usado no resto do projeto pra texto de instrução curto
-# (ver MENSAGEM_INDISPONIVEL em delegacao_ia, por exemplo, que já
-# seguia essa convenção antes desta tarefa).
+# ORGANIZAÇÃO POR CÉREBRO: cada prompt vira um arquivo .md dentro de
+# uma subpasta por cérebro de voz (a mesma divisão de
+# jarvis/cerebro/): "gemini/" (só Gemini Live), "openai/" (só OpenAI
+# Realtime — vazia hoje, nenhum prompt é exclusivo dele) e "local/"
+# (só o alfred-server / voz_local, que não recebe imagem nativa e por
+# isso tem seus próprios prompts de descrição visual). Um prompt
+# reaproveitado por mais de um cérebro (a instrução de sistema comum
+# ao Gemini Live e ao OpenAI Realtime, os textos de tool result de
+# pacotes que funcionam com qualquer cérebro ativo, etc.) mora em
+# "geral/" em vez de duplicado em cada subpasta. Isso é o que dá
+# controle real por cérebro: editar um arquivo de "gemini/" nunca
+# afeta o OpenAI Realtime, e vice-versa.
+#
+# Cada arquivo .md contém o texto FINAL exato (com os mesmos
+# marcadores "{campo}" que antes existiam na constante Python, para
+# o mesmo .format() de sempre), sem nenhuma linha de cabeçalho nem
+# transformação de espaçamento: _carregar_arquivo() só lê o arquivo e
+# remove a quebra de linha final que o editor deixou, byte a byte
+# igual ao que a constante Python continha.
+#
+# O QUE NÃO ENTRA AQUI: uma linha de prompt que tem uma variável
+# espalhada no meio da frase (ex.: f"Você é {obter_nome_jarvis()}, o
+# assistente pessoal..." em jarvis/cerebro/voz_local/contexto.py)
+# continua como f-string no próprio arquivo de código — extrair só
+# esse pedaço não ajudaria a editar o prompt sem tocar em código, e
+# quebraria a frase ao meio. Só o texto FIXO ao redor dessas linhas
+# (quando há algum) é que vira arquivo .md.
 #
 # Os dois prompts realmente grandes e multi-seção (a instrução de
-# sistema completa da sessão Gemini Live e o bloco de autenticação)
-# NÃO viraram string Python: são arquivos .md ao lado deste, porque
-# uma constante de ~22 mil caracteres numa linha só seria ilegível e
-# impossível de revisar num diff. Ver a seção "GEMINI LIVE —
-# instrução de sistema" no fim deste arquivo para como eles são
-# carregados.
+# sistema completa da sessão de voz e o bloco de autenticação)
+# também não viram string Python: são arquivos .md, porque uma
+# constante de ~22 mil caracteres numa linha só seria ilegível e
+# impossível de revisar num diff. A instrução de sistema em si não
+# mora nesta pasta (ver a seção "GEMINI LIVE — instrução de sistema
+# principal" mais abaixo); o bloco de autenticação mora em
+# "geral/autenticacao.md", porque tanto o Gemini Live quanto o OpenAI
+# Realtime o usam.
 #
 # Nome do pacote: por que "jarvis/nucleo/prompts/" e não
 # "jarvis/nucleo/prompts.py" — Python não permite um módulo e um
@@ -33,17 +58,36 @@ from pathlib import Path
 
 # Nome de identidade configurável (jarvis/nucleo/config.py::
 # obter_nome_jarvis, .env NOME_JARVIS, padrão "ALFRED") — usado por
-# _carregar() logo abaixo pra substituir toda ocorrência literal de
-# "ALFRED" nos .md desta pasta pelo nome que o usuário escolheu.
+# _carregar_prosa() logo abaixo pra substituir toda ocorrência
+# literal de "ALFRED" no .md da instrução de sistema/autenticação
+# pelo nome que o usuário escolheu.
 from jarvis.nucleo.config import obter_nome_jarvis
 
 _PASTA = Path(__file__).resolve().parent
 
 
+# Carrega um prompt curto/médio de um .md desta pasta (organizado por
+# cérebro — ver o comentário no topo do arquivo) devolvendo o texto
+# EXATO do arquivo, sem nenhuma transformação além de remover a
+# quebra de linha final que sobra do editor. Diferente de
+# _carregar_prosa() abaixo: aqui as quebras de linha internas (que
+# alguns prompts usam de propósito, como separador de parágrafo) são
+# preservadas literalmente, nunca substituídas por espaço — e não há
+# substituição de "ALFRED", porque nenhum destes prompts menciona o
+# nome do assistente.
+def _carregar_arquivo(caminho_relativo):
+    return (_PASTA / caminho_relativo).read_text(
+        encoding="utf-8"
+    ).rstrip("\n")
+
+
 # ============================================================
-# GEMINI LIVE — jarvis/cerebro/gemini/cliente_live.py
-# Prompts pontuais enviados via send_client_content durante a sessão
-# (a instrução de sistema completa fica no fim deste arquivo).
+# GEMINI + OPENAI (geral/) — jarvis/cerebro/gemini/cliente_live.py e
+# jarvis/cerebro/openai_realtime/cliente_realtime.py
+# Prompts pontuais enviados durante a sessão, idênticos nos dois
+# cérebros de sessão (a instrução de sistema completa fica no fim
+# deste arquivo). Ficam em geral/ e não em gemini/ ou openai/ porque
+# os DOIS clientes chamam exatamente a mesma constante.
 # ============================================================
 
 # Anúncio espontâneo: o worker "fala" algo sem o usuário ter
@@ -51,27 +95,7 @@ _PASTA = Path(__file__).resolve().parent
 # comando administrativo confirmado fora da conversa, fim do timeout
 # de inatividade, etc.) — usado por _enviar_anuncio_espontaneo, e
 # reaproveitado por rede_jarvis/admin_terminal via callback_falar.
-ANUNCIO_ESPONTANEO = (
-    "[SISTEMA] Diga isso em voz alta agora, com suas próprias "
-    "palavras, de forma natural e breve: {texto}"
-)
-
-# Cruzamento de segunda opinião visual: reenvia a MESMA imagem já
-# usada numa consulta externa (Pl@ntNet ou Mistral) pedindo pro
-# Gemini olhar com a própria visão e comparar, em vez de só repassar
-# o resultado externo sem checagem — usado por
-# enviar_imagem_para_cruzamento (identificar_planta e
-# consultar_segunda_opiniao_visual).
-CRUZAMENTO_SEGUNDA_OPINIAO = (
-    "[SISTEMA] Esta é exatamente a mesma imagem usada na consulta "
-    "de {contexto}. Resultado obtido dessa fonte externa: "
-    "{resultado_externo} Observe a imagem você mesmo agora, com sua "
-    "própria visão, e compare com esse resultado — diga "
-    "explicitamente se concorda ou diverge ao responder. Não "
-    "repasse o resultado externo como se fosse a única opinião, e "
-    "não afirme nada que você não consiga confirmar olhando a "
-    "imagem você mesmo."
-)
+ANUNCIO_ESPONTANEO = _carregar_arquivo("geral/anuncio_espontaneo.md")
 
 # Retomada de controle: você ficou temporariamente indisponível e o
 # cérebro reserva (outra IA) conduziu a conversa em seu lugar por um
@@ -81,13 +105,7 @@ CRUZAMENTO_SEGUNDA_OPINIAO = (
 # voz alta (diferente de ANUNCIO_ESPONTANEO): o usuário já ouviu essa
 # parte da conversa de verdade, através do reserva — só o contexto
 # precisa chegar até você, em silêncio, pra continuar naturalmente.
-ANALISE_IMAGEM_PONTUAL = (
-    "Analise exatamente esta imagem da {origem} enviada neste "
-    "turno. Ignore imagens anteriores. Use somente esta imagem "
-    "como base. Não chame nenhuma função visual. Não chute. Se a "
-    "imagem não estiver clara, diga que não conseguiu ver bem. "
-    "Explique de forma objetiva o que está vendo."
-)
+ANALISE_IMAGEM_PONTUAL = _carregar_arquivo("geral/analise_imagem_pontual.md")
 
 # Enviada por executar() logo depois de conectar — SOMENTE quando a
 # chamada foi iniciada pela ativação por voz (a frase configurada em
@@ -100,88 +118,84 @@ ANALISE_IMAGEM_PONTUAL = (
 # assistente pelo nome/frase de ativação, então uma resposta faz
 # sentido de novo — só que restrita a este caso específico, sem trazer
 # de volta o atraso pra toda chamada iniciada manualmente.
-SAUDACAO_ATIVACAO_POR_VOZ = (
-    "[SISTEMA] O usuário acabou de te chamar agora, dizendo a frase "
-    "de ativação por voz. Cumprimente-o brevemente, perguntando como "
-    "pode ajudar — por exemplo algo como 'Como posso ajudar?' — "
-    "antes de qualquer outra coisa."
+SAUDACAO_ATIVACAO_POR_VOZ = _carregar_arquivo(
+    "geral/saudacao_ativacao_por_voz.md"
 )
 
 
 # ============================================================
-# ENVIO DE ARQUIVO PELA UI — jarvis/ui/janela_envio_arquivo.py
-# Ambos entram na sessão Live via GeminiLiveWorker.enviar_texto_da_ui
-# / enviar_imagem_da_ui (send_realtime_input) — ver o comentário
-# sobre chat_jarvis no CLAUDE.md pra por que esse caminho usa um
-# mecanismo diferente do resto (send_realtime_input, não
-# send_client_content).
+# GEMINI (gemini/) — jarvis/cerebro/gemini/cliente_live.py
+# Prompt exclusivo do Gemini Live: o OpenAI Realtime e o voz_local
+# não fazem esse cruzamento de segunda opinião visual.
 # ============================================================
 
-CONTEXTO_IMAGEM_ENVIADA = (
-    "[SISTEMA] O usuário acabou de enviar a imagem '{nome}' como "
-    "contexto adicional — considere essa imagem na conversa."
-)
-
-CONTEXTO_ARQUIVO_ENVIADO = (
-    "[SISTEMA] O usuário enviou o seguinte arquivo como contexto "
-    "({nome_arquivo}){aviso_truncamento}:\n\n{texto_truncado}"
+# Cruzamento de segunda opinião visual: reenvia a MESMA imagem já
+# usada numa consulta externa (Pl@ntNet ou Mistral) pedindo pro
+# Gemini olhar com a própria visão e comparar, em vez de só repassar
+# o resultado externo sem checagem — usado por
+# enviar_imagem_para_cruzamento (identificar_planta e
+# consultar_segunda_opiniao_visual).
+CRUZAMENTO_SEGUNDA_OPINIAO = _carregar_arquivo(
+    "gemini/cruzamento_segunda_opiniao.md"
 )
 
 
 # ============================================================
-# DELEGACAO_IA — jarvis/pacotes/delegacao_ia/roteador.py
+# ENVIO DE ARQUIVO PELA UI (geral/) — jarvis/ui/janela_envio_arquivo.py
+# Entram na sessão ativa via <Worker>.enviar_texto_da_ui /
+# enviar_imagem_da_ui — os três cérebros (Gemini Live, OpenAI
+# Realtime, voz_local) implementam os dois métodos, então ficam em
+# geral/. Ver o comentário sobre chat_jarvis no CLAUDE.md pra por que
+# esse caminho usa um mecanismo diferente do resto (send_realtime_input,
+# não send_client_content, no caso do Gemini Live).
+# ============================================================
+
+CONTEXTO_IMAGEM_ENVIADA = _carregar_arquivo(
+    "geral/contexto_imagem_enviada.md"
+)
+
+CONTEXTO_ARQUIVO_ENVIADO = _carregar_arquivo(
+    "geral/contexto_arquivo_enviado.md"
+)
+
+
+# ============================================================
+# DELEGACAO_IA (geral/) — jarvis/pacotes/delegacao_ia/roteador.py
 # (Groq/Cerebras/OpenAI, por trás de delegar_tarefa) — textos
-# devolvidos como resultado da tool ao Gemini, não prompts para os
-# provedores em si (provedores.py manda o "conteudo" cru, sem
-# nenhuma instrução hardcoded própria — ver a nota em
+# devolvidos como resultado da tool a QUALQUER cérebro ativo, não
+# prompts para os provedores em si (provedores.py manda o "conteudo"
+# cru, sem nenhuma instrução hardcoded própria — ver a nota em
 # _chamar_completions).
 # ============================================================
 
-DELEGACAO_INDISPONIVEL = (
-    "Delegação indisponível no momento (todos os provedores "
-    "falharam). Responda a solicitação você mesmo, com seu próprio "
-    "raciocínio, sem mencionar essa falha ao usuário."
+DELEGACAO_INDISPONIVEL = _carregar_arquivo("geral/delegacao_indisponivel.md")
+
+DELEGACAO_SEGUNDA_OPINIAO_INDISPONIVEL = _carregar_arquivo(
+    "geral/delegacao_segunda_opiniao_indisponivel.md"
 )
 
-DELEGACAO_SEGUNDA_OPINIAO_INDISPONIVEL = (
-    "Não foi possível consultar uma segunda opinião agora (falha ao "
-    "acessar a OpenAI). Responda a solicitação você mesmo, com seu "
-    "próprio raciocínio, e avise ao usuário que não conseguiu "
-    "confirmar essa resposta com uma segunda IA neste momento."
-)
-
-DELEGACAO_SEGUNDA_OPINIAO_RESULTADO = (
-    "[SEGUNDA OPINIÃO — OPENAI]\n"
-    "{resultado}\n\n"
-    "Compare essa resposta com o seu próprio raciocínio sobre o "
-    "mesmo assunto e responda ao usuário sintetizando os dois "
-    "pontos de vista: onde concordam, onde divergem, e qual "
-    "conclusão parece mais sólida. Não repasse a resposta acima "
-    "como se fosse a única opinião."
+DELEGACAO_SEGUNDA_OPINIAO_RESULTADO = _carregar_arquivo(
+    "geral/delegacao_segunda_opiniao_resultado.md"
 )
 
 
 # ============================================================
-# DESCRICAO_VISUAL — jarvis/pacotes/descricao_visual/
-# (descreve tela/câmera em texto, para o modo de voz local)
+# DESCRICAO_VISUAL (local/) — jarvis/pacotes/descricao_visual/
+# (descreve tela/câmera em texto, exclusivo do modo de voz local —
+# é o único cérebro sem entrada de imagem nativa)
 # ============================================================
 
 # Instrução de sistema da chamada de visão. Pede descrição objetiva
 # porque o texto devolvido é falado de volta ao usuário: uma resposta
 # longa demais vira um monólogo que ele não pediu.
-DESCRICAO_VISUAL_INSTRUCAO = (
-    "Você descreve imagens para alguém que não pode vê-las, e sua "
-    "descrição será lida em voz alta. Responda em português do "
-    "Brasil, de forma direta e objetiva, em no máximo três frases. "
-    "Descreva o que realmente aparece na imagem, sem especular sobre "
-    "o que não dá para ver. Se houver texto relevante na imagem, "
-    "leia-o. Não comece com 'a imagem mostra' — vá direto ao ponto."
+DESCRICAO_VISUAL_INSTRUCAO = _carregar_arquivo(
+    "local/descricao_visual_instrucao.md"
 )
 
 # Pergunta usada quando o usuário só pediu para olhar, sem perguntar
 # nada específico.
-DESCRICAO_VISUAL_PERGUNTA_PADRAO = (
-    "Descreva o que está aparecendo nesta {origem} agora."
+DESCRICAO_VISUAL_PERGUNTA_PADRAO = _carregar_arquivo(
+    "local/descricao_visual_pergunta_padrao.md"
 )
 
 # Devolvido quando a consulta falha. Diferente da convenção de
@@ -189,21 +203,35 @@ DESCRICAO_VISUAL_PERGUNTA_PADRAO = (
 # própria visão): aqui a descrição É a resposta do turno, então não
 # há visão própria para usar como alternativa — a falha precisa ser
 # dita ao usuário.
-DESCRICAO_VISUAL_INDISPONIVEL = (
-    "Não consegui ver a {origem} agora porque {motivo}."
+DESCRICAO_VISUAL_INDISPONIVEL = _carregar_arquivo(
+    "local/descricao_visual_indisponivel.md"
 )
 
 
 # ============================================================
-# IDENTIFICACAO_VISUAL — jarvis/pacotes/identificacao_visual/
-# mistral_vision_client.py (Mistral, com entrada de imagem)
+# CONTEXTO (local/) — jarvis/cerebro/voz_local/contexto.py
+# O alfred-server não guarda sessão (ver o comentário no topo de
+# contexto.py): o JARVIS monta esse contexto e manda pronto a cada
+# chamada. A linha de identidade em si (com o nome configurável no
+# meio da frase) continua como f-string em contexto.py — só o texto
+# fixo abaixo dela vem daqui.
+# ============================================================
+
+# Introduz a lista de fatos de memória relevantes ao turno atual.
+CONTEXTO_MEMORIAS_INTRO = _carregar_arquivo("local/contexto_memorias_intro.md")
+
+
+# ============================================================
+# IDENTIFICACAO_VISUAL (geral/) — jarvis/pacotes/identificacao_visual/
+# mistral_vision_client.py (Mistral, com entrada de imagem) — a
+# segunda opinião funciona com qualquer cérebro ativo, daí geral/.
 # ============================================================
 
 # Pergunta padrão quando o usuário não deu uma pergunta específica —
 # essa sim é enviada de verdade ao provedor de visão, junto com a
 # imagem (as outras duas constantes desta seção voltam pro cérebro
 # como tool result).
-VISAO_PERGUNTA_PADRAO = "O que é isso na imagem?"
+VISAO_PERGUNTA_PADRAO = _carregar_arquivo("geral/visao_pergunta_padrao.md")
 
 # Texto devolvido ao cérebro quando a consulta de segunda opinião
 # falha por qualquer motivo — instrui a responder só com a própria
@@ -212,33 +240,18 @@ VISAO_PERGUNTA_PADRAO = "O que é isso na imagem?"
 # Gemini nos modos openai/local), a menos que DESCRICAO_VISUAL_PROVEDOR
 # force um — ver jarvis/pacotes/identificacao_visual/config.py. Dizer o
 # nome errado seria pior do que não dizer nenhum.
-VISAO_INDISPONIVEL = (
-    "Não foi possível obter uma segunda opinião ({provedor}: "
-    "{motivo}). Responda usando só sua própria visão e avise "
-    "o usuário que não conseguiu confirmar com uma segunda "
-    "fonte desta vez."
-)
+VISAO_INDISPONIVEL = _carregar_arquivo("geral/visao_indisponivel.md")
 
 
 # ============================================================
-# MEMORIA_OBSIDIAN — jarvis/pacotes/memoria_obsidian/consolidacao.py
+# MEMORIA_OBSIDIAN (geral/) — jarvis/pacotes/memoria_obsidian/consolidacao.py
 # (Gemini, chamada de texto simples — a consolidação em background
-# das notas arquivadas, sem voz nem UI).
+# das notas arquivadas, sem voz nem UI, independente de qual cérebro
+# de voz está ativo no momento).
 # ============================================================
 
-CONSOLIDACAO_RESUMO_ARQUIVO = (
-    "Abaixo estão anotações antigas de um assistente pessoal, "
-    "que ficaram muito tempo sem uso e vão ser descartadas.\n\n"
-    "Escreva um resumo condensado, em português do Brasil, "
-    "preservando SOMENTE o que ainda pode ser útil no futuro: "
-    "fatos sobre a pessoa, preferências, nomes, contatos, "
-    "decisões. Descarte o que for irrelevante, repetido ou "
-    "efêmero.\n\n"
-    "Organize em tópicos curtos, um por linha, começando com "
-    "'- '. Não invente nada que não esteja nas anotações. Se "
-    "nada valer a pena preservar, responda apenas: (nada a "
-    "preservar)\n\n"
-    "{blocos}"
+CONSOLIDACAO_RESUMO_ARQUIVO = _carregar_arquivo(
+    "geral/consolidacao_resumo_arquivo.md"
 )
 
 # Resumo de UMA conversa por voz inteira (não notas antigas — a
@@ -249,27 +262,17 @@ CONSOLIDACAO_RESUMO_ARQUIVO = (
 # resposta fixo (TÍTULO/RESUMO) pra poder ser separado por código sem
 # ambiguidade — nunca confiar no modelo pra devolver JSON aqui, texto
 # simples com um marcador é mais robusto contra pequenas variações.
-CONSOLIDACAO_RESUMO_CONVERSA = (
-    "Abaixo está a transcrição de uma conversa por voz entre um "
-    "usuário e um assistente pessoal.\n\n"
-    "Gere um TÍTULO curto (poucas palavras, específico ao assunto "
-    "principal da conversa) e um RESUMO objetivo do que foi "
-    "discutido — fatos, decisões, opiniões, qualquer coisa que "
-    "ajude a retomar essa conversa numa próxima vez. Não invente "
-    "nada que não esteja na transcrição.\n\n"
-    "Responda EXATAMENTE neste formato, nada além disso:\n"
-    "TÍTULO: <título aqui>\n"
-    "RESUMO:\n"
-    "<resumo aqui>\n\n"
-    "Transcrição:\n{transcricao}"
+CONSOLIDACAO_RESUMO_CONVERSA = _carregar_arquivo(
+    "geral/consolidacao_resumo_conversa.md"
 )
 
 
 # ============================================================
-# ROTEAMENTO_HIERARQUICO — jarvis/roteamento_hierarquico/roteador.py
+# ROTEAMENTO_HIERARQUICO (geral/) — jarvis/roteamento_hierarquico/roteador.py
 # (Groq, chat/completions SEM ESTADO — motor de roteamento em duas
-# etapas, standalone, ainda não conectado a nenhum dos dois cérebros
-# de voz atuais). O catálogo curto em si (nome + resumo de cada
+# etapas, standalone, ainda não conectado a nenhum dos cérebros de
+# voz atuais — por isso geral/, e não uma subpasta de cérebro
+# específico). O catálogo curto em si (nome + resumo de cada
 # ferramenta) mora em jarvis/roteamento_hierarquico/catalogo.py, não
 # aqui — mesmo tratamento que as descrições de FunctionDeclaration já
 # recebem, explicitamente fora desta centralização (ver o topo deste
@@ -284,24 +287,8 @@ CONSOLIDACAO_RESUMO_CONVERSA = (
 # pelo nome, num formato de marcador simples de analisar — nunca
 # JSON, que dependeria de um recurso da API (response_format) ainda
 # não confirmado ao vivo pra esse modelo.
-ROTEAMENTO_ETAPA1_INSTRUCAO = (
-    "Você é o roteador de ferramentas do ALFRED, um assistente "
-    "pessoal por voz. Abaixo está o catálogo de ferramentas "
-    "disponíveis, agrupado por categoria — cada uma com um resumo "
-    "curto do que faz (os detalhes completos e as regras de uso só "
-    "aparecem numa etapa seguinte, se for o caso).\n\n"
-    "{catalogo}\n\n"
-    "Se a mensagem do usuário puder ser respondida sem usar nenhuma "
-    "dessas ferramentas, responda normalmente, em português do "
-    "Brasil, como o ALFRED responderia.\n\n"
-    "Se a mensagem precisar de uma ou mais dessas ferramentas, NÃO "
-    "responda normalmente — responda SOMENTE com uma linha no "
-    "formato abaixo, sem mais nada antes ou depois:\n"
-    "FERRAMENTAS: nome_da_ferramenta, outro_nome\n\n"
-    "Use no máximo 3 nomes, e somente nomes que existem no catálogo "
-    "acima, exatamente como escritos. Nunca invente um nome. Na "
-    "dúvida entre responder direto ou apontar uma ferramenta, "
-    "prefira responder direto."
+ROTEAMENTO_ETAPA1_INSTRUCAO = _carregar_arquivo(
+    "geral/roteamento_etapa1_instrucao.md"
 )
 
 # Etapa 2: só é montada (e só é chamada) quando a etapa 1 apontou
@@ -309,24 +296,20 @@ ROTEAMENTO_ETAPA1_INSTRUCAO = (
 # pra dar contexto ao modelo sobre por que aquele schema específico
 # foi carregado — o schema completo em si vai no parâmetro "tools" da
 # chamada, não neste texto.
-ROTEAMENTO_ETAPA2_INSTRUCAO = (
-    "Você é o ALFRED, um assistente pessoal por voz. Com base no "
-    "pedido do usuário, monte a chamada de função apropriada dentre "
-    "estas ferramentas: {ferramentas}. Preencha os parâmetros com "
-    "exatamente o que o usuário disse, sem inventar nem completar "
-    "informação que faltou. Se, ao ver os detalhes completos, "
-    "nenhuma dessas ferramentas realmente servir para o pedido, "
-    "responda normalmente em texto em vez de chamar uma função."
+ROTEAMENTO_ETAPA2_INSTRUCAO = _carregar_arquivo(
+    "geral/roteamento_etapa2_instrucao.md"
 )
 
 
 # ============================================================
 # GEMINI LIVE — instrução de sistema principal
 # ============================================================
-# As duas peças mais longas do projeto ficam em arquivos .md ao lado
-# deste, não como constante Python — são multi-seção e ~23 mil
-# caracteres somados, o que tornaria este arquivo ilegível como uma
-# única string e péssimo de revisar num diff.
+# A instrução de sistema completa (corpo do perfil + bloco de
+# autenticação) NÃO vira constante Python — juntas somam ~23 mil
+# caracteres, o que tornaria este arquivo ilegível como uma única
+# string e péssimo de revisar num diff. O corpo mora no perfil ativo
+# (dados/perfis/<slug>/sistema.md); o bloco de autenticação mora
+# aqui mesmo, em geral/autenticacao.md (ver mais abaixo por quê).
 #
 # Formato dos .md: uma frase por linha (mesmo layout do código
 # original), com "## NOME DA SEÇÃO" marcando cada seção — os
@@ -335,7 +318,7 @@ ROTEAMENTO_ETAPA2_INSTRUCAO = (
 # são descartados ao carregar, nunca chegam no texto final enviado
 # ao modelo.
 #
-# _carregar() junta as linhas de conteúdo com espaço, NUNCA
+# _carregar_prosa() junta as linhas de conteúdo com espaço, NUNCA
 # confiando no arquivo já ter espaço no fim de cada linha — isso é
 # deliberadamente mais seguro que a concatenação de literais Python
 # que este texto tinha antes: lá, uma linha sem o espaço final no
@@ -360,7 +343,7 @@ ROTEAMENTO_ETAPA2_INSTRUCAO = (
 # junta o resto inserindo o espaço separador ela mesma, e troca
 # "ALFRED" pelo nome configurado.
 #
-# Separada de _carregar() porque o prompt de sistema não vem mais de
+# Separada de _carregar_prosa() porque o prompt de sistema não vem mais de
 # um arquivo desta pasta: ele mora no perfil ativo
 # (dados/perfis/<slug>/sistema.md, ver jarvis/nucleo/perfis/). As
 # duas origens precisam passar pela MESMA montagem, senão o texto que
@@ -379,9 +362,9 @@ def _montar_texto(texto_bruto):
     return texto.replace("ALFRED", obter_nome_jarvis())
 
 
-def _carregar(nome_arquivo):
+def _carregar_prosa(caminho_relativo):
     return _montar_texto(
-        (_PASTA / nome_arquivo).read_text(encoding="utf-8")
+        (_PASTA / caminho_relativo).read_text(encoding="utf-8")
     )
 
 
@@ -398,9 +381,10 @@ def _carregar(nome_arquivo):
 # função devolve o corpo desse perfil padrão, que é exatamente o
 # texto que o projeto sempre enviou.
 #
-# O bloco de autenticação (gemini_live_autenticacao.md) continua
-# aqui de propósito: ele não é específico de perfil nenhum, é a trava
-# de segurança que vale para todos.
+# O bloco de autenticação (geral/autenticacao.md) continua aqui de
+# propósito: ele não é específico de perfil nenhum, é a trava de
+# segurança que vale para todos os cérebros — Gemini Live e OpenAI
+# Realtime.
 def instrucao_sistema_corpo(slug_perfil=None, texto_bruto=None):
     # texto_bruto vem preenchido quando quem chama já resolveu o
     # perfil (perfis.preparar_chamada, usado pelos dois clientes de
@@ -435,14 +419,18 @@ def contexto_data_hora():
 # Bloco de autenticação (a palavra-chave "Coisa") — só deve ser
 # concatenado no início de instrucao_sistema quando
 # EXIGIR_AUTENTICACAO estiver ligado; a decisão condicional continua
-# em cliente_live.py, não aqui (este módulo só entrega o texto).
+# em cliente_live.py/cliente_realtime.py, não aqui (este módulo só
+# entrega o texto). Fica em geral/ porque os dois cérebros de sessão
+# o usam.
 def bloco_autenticacao():
-    return _carregar("gemini_live_autenticacao.md")
+    return _carregar_prosa("geral/autenticacao.md")
 
 
 # ============================================================
-# PERFIS — jarvis/nucleo/perfis/geracao.py
-# Criação de um perfil a partir de uma descrição em texto livre.
+# PERFIS (geral/) — jarvis/nucleo/perfis/geracao.py
+# Criação de um perfil a partir de uma descrição em texto livre —
+# roteada por delegar_para_cerebro_configurado, não por um cérebro de
+# voz específico, daí geral/.
 # ============================================================
 
 # Pedido enviado ao modelo na criação de um perfil. Três campos
@@ -463,36 +451,4 @@ def bloco_autenticacao():
 # uma instrução de texto; do jeito que está, o modelo pode escolher o
 # que quiser que nada sensível entra sem o usuário aprovar item a
 # item.
-CRIACAO_PERFIL = (
-    "Você configura perfis de uso de um assistente de voz chamado "
-    "{nome_assistente}, que roda no computador do usuário.\n\n"
-    "Um PERFIL é formado por duas coisas: um prompt de sistema, que "
-    "define como o assistente se comporta naquele cenário, e o "
-    "subconjunto de ferramentas que ele pode usar ali.\n\n"
-    "O usuário descreveu o perfil que quer assim:\n\n"
-    "\"\"\"\n{descricao}\n\"\"\"\n\n"
-    "Estas são TODAS as ferramentas que existem no projeto. Você só "
-    "pode escolher nomes desta lista, copiados exatamente como estão "
-    "escritos aqui:\n\n"
-    "{catalogo}\n\n"
-    "Responda SOMENTE com um objeto JSON, sem texto antes ou depois, "
-    "com exatamente estes três campos:\n\n"
-    "- \"nome\": um nome curto de exibição para o perfil, no máximo 40 "
-    "caracteres, em português do Brasil. Sem aspas, sem emoji.\n"
-    "- \"ferramentas\": uma lista com os nomes das ferramentas que "
-    "esse perfil deve poder usar. Escolha só o que o cenário descrito "
-    "realmente precisa — um perfil focado é melhor que um perfil com "
-    "tudo. Se o cenário não pedir nenhuma ferramenta, devolva uma "
-    "lista vazia.\n"
-    "- \"prompt_sistema\": o texto do prompt de sistema desse perfil, "
-    "em português do Brasil, escrito na segunda pessoa (falando COM o "
-    "assistente, como em \"Você é...\"). Descreva o papel, o tom, o "
-    "que ele deve e o que não deve fazer nesse cenário, e como usar "
-    "as ferramentas escolhidas. Não repita a lista de ferramentas "
-    "como um índice: explique o comportamento. Organize em seções "
-    "usando linhas que comecem com \"## \" como título — essas linhas "
-    "são só navegação para quem lê o arquivo e não são enviadas ao "
-    "modelo depois.\n\n"
-    "Nunca invente um nome de ferramenta que não esteja na lista "
-    "acima."
-)
+CRIACAO_PERFIL = _carregar_arquivo("geral/criacao_perfil.md")

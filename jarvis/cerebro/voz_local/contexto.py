@@ -69,8 +69,8 @@ def montar_contexto_sistema(texto_do_turno):
 
     if memorias:
         partes.append(
-            "Fatos que você já sabe sobre o usuário (use quando forem "
-            "relevantes, sem mencionar que vieram de uma memória):\n"
+            prompts.CONTEXTO_MEMORIAS_INTRO
+            + "\n"
             + "\n".join(f"- {linha}" for linha in memorias)
         )
 

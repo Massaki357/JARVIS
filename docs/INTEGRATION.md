@@ -1298,10 +1298,33 @@ reprodução e detector de palavra-chave.
 
 Todo texto de instrução hardcoded enviado a algum modelo (Gemini, Groq,
 Cerebras, OpenAI, Mistral), de qualquer pacote, mora em
-`jarvis/nucleo/prompts/` — constantes curtas em `prompts/__init__.py`
-(organizadas por seção/pacote de origem), e os dois prompts realmente
-grandes (a instrução de sistema completa do Gemini Live e o bloco de
-autenticação) em arquivos `.md` dentro da mesma pasta.
+`jarvis/nucleo/prompts/`, organizado numa subpasta POR CÉREBRO — a mesma
+divisão de `jarvis/cerebro/`:
+
+- `prompts/gemini/` — prompts exclusivos do Gemini Live (ex.:
+  `cruzamento_segunda_opiniao.md`).
+- `prompts/openai/` — prompts exclusivos do OpenAI Realtime (vazia hoje:
+  nenhum prompt é exclusivo dele, ele reaproveita tudo de `geral/`).
+- `prompts/local/` — prompts exclusivos do voz_local/alfred-server (ex.: a
+  descrição visual em texto, já que esse cérebro não recebe imagem nativa).
+- `prompts/geral/` — reaproveitado por mais de um cérebro (a instrução de
+  sistema comum ao Gemini Live e ao OpenAI Realtime, o bloco de
+  autenticação, os textos de tool result que funcionam com qualquer
+  cérebro ativo — delegação, segunda opinião visual, consolidação de
+  memória, etc.).
+
+Cada prompt é um arquivo `.md` com o texto final exato (com os mesmos
+marcadores `{campo}` de antes), carregado em `prompts/__init__.py` por
+`_carregar_arquivo("<subpasta>/<arquivo>.md")` e exposto como constante
+Python. `_carregar_arquivo()` só lê o arquivo e remove a quebra de linha
+final — nenhuma outra transformação, então o `.md` deve conter o texto
+byte a byte igual ao que será enviado.
+
+Uma linha de prompt com uma variável NO MEIO da frase (ex.: `f"Você é
+{obter_nome_jarvis()}, o assistente pessoal..."` em
+`jarvis/cerebro/voz_local/contexto.py`) NÃO entra aqui — continua como
+f-string no próprio arquivo de código, porque separar essa linha quebraria
+a frase ao meio sem ganhar nada em capacidade de edição.
 
 Um pacote que precisa de um texto de instrução importa:
 
@@ -1311,13 +1334,17 @@ from jarvis.nucleo import prompts
 texto = prompts.NOME_DA_CONSTANTE.format(campo=valor)
 ```
 
-Ao adicionar um pacote novo com prompt próprio: se for curto (poucas frases),
-vira constante em `prompts/__init__.py`, numa seção nova comentada com o
-nome do pacote. Só crie um `.md` separado se o prompt for realmente
-grande/multi-seção, como os dois que já existem — nesse caso, ao editar,
-re-verifique o texto montado (a função de carregamento normaliza espaços
-entre linhas, mas ainda vale reler o resultado final antes de considerar
-pronto).
+Ao adicionar um pacote novo com prompt próprio: escreva o `.md` na subpasta
+certa (`geral/` se mais de um cérebro vai usar o mesmo texto, ou a subpasta
+do cérebro específico caso contrário), carregue-o em `prompts/__init__.py`
+com `_carregar_arquivo(...)` numa seção nova comentada com o nome do
+pacote, e re-verifique o texto montado antes de considerar pronto (nenhuma
+normalização de espaço acontece — o que está no arquivo é exatamente o que
+chega ao modelo). Os dois prompts realmente grandes/multi-seção (a
+instrução de sistema principal e o bloco de autenticação) usam
+`_carregar_prosa()` em vez disso — essa função normaliza espaços entre
+linhas e substitui "ALFRED" pelo nome configurado; não use `_carregar_prosa()`
+para um `.md` novo a menos que ele precise das duas coisas.
 
 ## `fechar_app`
 
