@@ -37,8 +37,8 @@ enviar_captura_email: Prepara um email com um print ou uma foto anexada e NÃO e
 enviar_captura_discord_dm: Manda um print ou uma foto por DM no Discord para um amigo — só se o usuário pedir para enviar.
 enviar_captura_discord_canal: Manda um print ou uma foto num canal do Discord — só se o usuário pedir para enviar.
 enviar_captura_remoto: Manda um print ou uma foto para outra máquina da rede jarvis — só se o usuário pedir para enviar.
-encerrar_chamada: Encerra a chamada de vez — só se o usuário pedir claramente para desligar ou encerrar, nunca por um simples tchau.
-pausar_chamada: Pausa a conversa para retomar depois — quando o usuário disser que não precisa de mais nada; não é encerrar. Depois, repita a frase de ativação que a função devolver.
+encerrar_chamada: Encerra de vez quando o usuário pedir para encerrar, finalizar, desligar ou terminar a chamada, sessão ou conversa (ex: 'encerre a sessão', 'pode desligar') — mesmo que ele também diga que não precisa de mais nada; nunca por um simples tchau.
+pausar_chamada: Pausa para retomar depois — só depois de você perguntar se ele precisa de mais algo e ele responder que não; nunca quando ele pedir para encerrar. Depois, repita a frase de ativação que a função devolver.
 identificar_planta: Identifica a espécie de uma planta pela câmera (Pl@ntNet) — só para planta ou flor.
 descrever_tela: Outro modelo de visão descreve a tela e devolve em texto — só se o usuário pedir para ver ou ler a tela.
 descrever_camera: Outro modelo de visão descreve a webcam e devolve em texto — só se o usuário pedir para ver a câmera.

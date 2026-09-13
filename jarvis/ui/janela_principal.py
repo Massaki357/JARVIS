@@ -723,13 +723,17 @@ class MainWindow(QMainWindow):
             self.hibernando_por_voz = False
             self.reconectar_automaticamente = False
 
+            # Lido do módulo na hora: é o mesmo valor que o detector de voz está ouvindo.
+            from jarvis.pacotes.ativacao_voz import config as config_ativacao
+
+            frase = config_ativacao.NOME_ATIVACAO
+
             self.definir_status(
-                "PAUSADO — DIGA A FRASE DE ATIVAÇÃO"
+                f'Pausado — diga "{frase}"'
             )
 
             self.escrever_log(
-                "Chamada pausada — diga a frase de ativação para "
-                "continuar."
+                f'Chamada pausada — diga "{frase}" para continuar.'
             )
 
             return
