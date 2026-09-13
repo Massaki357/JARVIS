@@ -1,9 +1,28 @@
 # Motor de roteamento hierárquico de ferramentas, em duas etapas,
-# sobre a API de Chat Completions da Groq (SEM ESTADO — cada
-# processar_turno() é uma conversa isolada, sem sessão persistente
-# no servidor). Ver jarvis/roteamento_hierarquico/config.py para o
-# porquê deste módulo ser standalone e não plugado a nenhum dos dois
-# cérebros de voz atuais (Gemini Live / OpenAI Realtime) ainda.
+# sobre a Groq (SEM ESTADO — cada processar_turno() é uma conversa
+# isolada, sem sessão persistente no servidor). Ver
+# jarvis/roteamento_hierarquico/config.py para o porquê deste módulo
+# ser standalone e não plugado a nenhum dos dois cérebros de voz
+# atuais (Gemini Live / OpenAI Realtime) ainda.
+#
+# QUEM FALA COM A GROQ é jarvis/servicos/agentes/ (LangChain), não
+# mais um requests.post escrito aqui. O que mudou de lugar, e o que
+# não mudou:
+#
+#   - A lógica de REPETIÇÃO continua sendo desta etapa, mas agora é
+#     declarada (_POLITICA) em vez de implementada: os dois
+#     orçamentos independentes, a espera que respeita o retry-after
+#     do servidor e o teto dessa espera viraram uma PoliticaRepeticao.
+#     Nada foi afrouxado — os valores continuam vindo de config.py.
+#   - O PLANO B (refazer a etapa 1 sem o histórico) continua aqui,
+#     porque ele é decisão DESTE roteador, não de uma chamada
+#     genérica: só quem sabe que a etapa 1 manda catálogo e espera
+#     texto sabe que remover o histórico é a última cartada certa.
+#   - A distinção entre os erros deixou de ser lida do status HTTP e
+#     passou a vir de resposta.tipo_erro. Ver
+#     jarvis/servicos/agentes/erros.py, que guarda inteiro o porquê
+#     de 429 e "tool choice is none" serem os únicos casos que valem
+#     repetir.
 #
 # LIMITAÇÃO CONHECIDA, documentada de propósito: alguns pacotes
 # (rede_jarvis, admin_terminal, discord_jarvis, chat_jarvis,
@@ -19,18 +38,14 @@
 # mesmos inicializadores no processo novo antes de usar isto a
 # sério.
 import re
-import time
-
-import requests
 
 from jarvis.nucleo import prompts
 from jarvis.nucleo.registro_pacotes import PACOTES_REGISTRADOS
+from jarvis.servicos import agentes
 
 from . import catalogo
 from . import config
 from . import esquema_groq
-
-_URL_GROQ = "https://api.groq.com/openai/v1/chat/completions"
 
 # Reconhece "FERRAMENTAS: nome1, nome2" como a ÚNICA linha não vazia
 # da resposta da etapa 1 — qualquer outra coisa na resposta é tratada
@@ -38,6 +53,28 @@ _URL_GROQ = "https://api.groq.com/openai/v1/chat/completions"
 _PADRAO_MARCADOR = re.compile(
     r"^\s*FERRAMENTAS\s*:\s*(.+?)\s*$",
     re.IGNORECASE,
+)
+
+
+# Os dois orçamentos de repetição, INDEPENDENTES, porque são dois
+# problemas diferentes: o 429 é do servidor e pede espera; o 400 de
+# tool call indevida é do modelo e pede só outra amostragem. Somar os
+# dois num contador só faria um rate limit consumir as tentativas
+# reservadas para o outro caso.
+#
+# Medido ao vivo neste projeto: o tier gratuito do openai/gpt-oss-20b
+# tem teto de 8000 tokens por MINUTO e cada chamada da etapa 1 custa
+# ~1450 tokens (o catálogo inteiro vai no prompt toda vez) — ~5 turnos
+# por minuto antes de estourar, o que um ritmo normal de conversa
+# ultrapassa fácil. O corpo do 429 vem com "Please try again in 975ms",
+# então a janela reabre em ~1s: repetir resolve, esperar o usuário
+# repetir a frase não.
+_POLITICA = agentes.PoliticaRepeticao(
+    tentativas_limite=config.TENTATIVAS_RATE_LIMIT,
+    tentativas_ferramenta_indevida=config.TENTATIVAS_TOOL_CALL_INDEVIDA,
+    espera_base=config.ESPERA_BASE_RATE_LIMIT,
+    espera_maxima=config.ESPERA_MAXIMA_RATE_LIMIT,
+    rotulo="roteamento_hierarquico",
 )
 
 
@@ -95,229 +132,49 @@ class ResultadoTurno:
         )
 
 
-# Extrai a explicação REAL de uma resposta de erro da Groq. Sem isto,
-# um 429 recuperável (janela de rate limit, reabre em ~1s) fica
-# indistinguível de um 500 qualquer: requests só monta "429 Client
-# Error: Too Many Requests for url: ...", e o motivo — que vem no
-# corpo JSON, incluindo quanto esperar — é descartado.
-#
-# Foi exatamente essa perda que fez um bug real levar engenharia
-# reversa para ser diagnosticado. Nunca volte a ignorar o corpo.
-# A Groq recusa com 400 quando o modelo emite uma chamada de
-# ferramenta numa requisição que não declarou ferramenta nenhuma:
-# "Tool choice is none, but model called a tool".
-#
-# ISTO NÃO É ERRO DE REQUISIÇÃO NOSSA — é o modelo saindo do combinado.
-# A ETAPA 1 manda só texto (o catálogo curto) e espera só texto (a
-# linha "FERRAMENTAS: ..."); nenhuma ferramenta é declarada, e é assim
-# de propósito, porque declarar os esquemas todos ali é justamente o
-# custo que o roteamento em duas etapas existe para evitar. Só que o
-# gpt-oss decide, de vez em quando, EXECUTAR a ferramenta em vez de
-# escrever o nome dela — e aí a requisição inteira volta 400.
-#
-# É NÃO DETERMINÍSTICO: medido com a frase e o histórico exatos do
-# caso relatado, deu de 1 a 3 falhas em cada 6 chamadas idênticas. E
-# depende do HISTÓRICO: sem nenhum turno anterior, 0 em 8; com um turno
-# de assistente antes, passa a acontecer. Foi por isso que só apareceu
-# depois que as falas do assistente passaram a entrar no histórico.
-#
-# O QUE NÃO RESOLVE, testado: reforçar o prompt ("você não tem
-# ferramentas, nunca emita tool call") não ajudou — 3 falhas em 6
-# contra 1 em 6 sem o reforço. O canal de ferramenta do formato
-# harmony não se desliga por instrução.
-#
-# Então o tratamento é repetir: como o resultado varia entre chamadas
-# idênticas, uma segunda tentativa quase sempre volta o texto certo.
-# É a ÚNICA exceção à regra de não repetir 4xx (repetir um 401 ou um
-# 400 de corpo malformado seria gastar o tempo do usuário para receber
-# o mesmo erro), e é uma exceção justificada porque aqui a resposta
-# não é função só da requisição.
-def _e_chamada_de_ferramenta_indevida(detalhe):
-    texto = (detalhe or "").lower()
-
-    return "tool" in texto and (
-        "tool choice is none" in texto or "called a tool" in texto
+# Monta o pedido de uma etapa. As duas etapas só diferem em três
+# coisas — a instrução de sistema, o modelo e se declaram ferramentas
+# — então o resto (histórico, mensagem do usuário, timeout) é montado
+# uma vez só, aqui.
+def _pedido_groq(
+    instrucao_sistema,
+    mensagem_usuario,
+    modelo,
+    historico=None,
+    ferramentas=None,
+):
+    return agentes.PedidoAgente(
+        provedor="groq",
+        modelo=modelo,
+        api_key=config.GROQ_API_KEY,
+        texto=mensagem_usuario,
+        instrucao_sistema=instrucao_sistema,
+        historico=historico,
+        ferramentas=ferramentas,
+        timeout=config.TIMEOUT_SEGUNDOS,
     )
 
 
-def _detalhe_do_erro(resposta):
-    try:
-        corpo = resposta.json()
-
-    except ValueError:
-        texto = (resposta.text or "").strip()
-
-        return texto[:300] if texto else ""
-
-    if isinstance(corpo, dict):
-        erro = corpo.get("error")
-
-        if isinstance(erro, dict):
-            return str(erro.get("message") or erro)[:300]
-
-        if erro:
-            return str(erro)[:300]
-
-    return str(corpo)[:300]
+# Executa um pedido com a política de repetição deste módulo. Nunca
+# levanta — devolve sempre uma RespostaAgente, de sucesso ou de
+# falha.
+def _consultar(pedido):
+    return agentes.executar(pedido, _POLITICA)
 
 
-# Quanto esperar antes de repetir, respeitando o retry-after do
-# servidor quando ele existe — ninguém adivinha melhor que o próprio
-# servidor quando a janela reabre. Sem ele, backoff exponencial.
-# Sempre limitado por ESPERA_MAXIMA_RATE_LIMIT, porque o valor vem de
-# fora e um número absurdo travaria o turno de voz.
-def _espera_do_retry(resposta, tentativa):
-    cabecalho = resposta.headers.get("retry-after")
-
-    if cabecalho:
-        try:
-            return min(
-                float(cabecalho),
-                config.ESPERA_MAXIMA_RATE_LIMIT,
-            )
-
-        except (TypeError, ValueError):
-            pass
-
-    return min(
-        config.ESPERA_BASE_RATE_LIMIT * (2 ** tentativa),
-        config.ESPERA_MAXIMA_RATE_LIMIT,
+# Registra uma etapa já executada no resultado, com o uso de tokens no
+# formato de chave do provedor — é esse formato que
+# medir_custo.py lê para calcular cache hit (prompt_tokens_details.
+# cached_tokens só existe nele).
+def _registrar_etapa(resultado, numero, modelo, resposta):
+    resultado.etapas.append(
+        EtapaExecutada(
+            numero,
+            modelo,
+            resposta.uso.como_dicionario_provedor(),
+            resposta.latencia_segundos,
+        )
     )
-
-
-# Chamada de baixo nível à Groq. Nunca lança — sempre devolve
-# (sucesso, dados_ou_mensagem_de_erro, latencia_segundos). "dados" é
-# o corpo JSON completo da resposta (não só o texto), porque tanto a
-# etapa 1 quanto a etapa 2 precisam de campos diferentes dele
-# (conteúdo de texto, tool_calls, usage).
-#
-# Repete em DOIS casos, cada um com o próprio orçamento: no 429 (o
-# servidor diz que a janela reabre) e no 400 específico de "o modelo
-# chamou uma ferramenta que ninguém declarou", que é não determinístico
-# — ver _e_chamada_de_ferramenta_indevida. Qualquer outro erro volta na
-# primeira tentativa: repetir um 401, ou um 400 de corpo malformado, é
-# gastar o tempo do usuário para receber o mesmo erro de novo.
-def _chamar_groq(mensagens, modelo, tools=None, tool_choice=None):
-    corpo = {
-        "model": modelo,
-        "messages": mensagens,
-        "stream": False,
-    }
-
-    if tools:
-        corpo["tools"] = tools
-        corpo["tool_choice"] = tool_choice or "auto"
-
-    inicio = time.monotonic()
-    ultimo_erro = "Falha desconhecida ao consultar a Groq."
-
-    # Dois orçamentos de repetição INDEPENDENTES, porque são dois
-    # problemas diferentes: o 429 é do servidor e pede espera; o 400 de
-    # tool call indevida é do modelo e pede só outra amostragem. Somar
-    # os dois num contador só faria um rate limit consumir as
-    # tentativas reservadas para o outro caso.
-    tentativas_429 = 0
-    tentativas_tool = 0
-
-    while True:
-        try:
-            resposta = requests.post(
-                _URL_GROQ,
-                headers={
-                    "Authorization": f"Bearer {config.GROQ_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json=corpo,
-                timeout=config.TIMEOUT_SEGUNDOS,
-            )
-
-            if resposta.status_code == 429:
-                detalhe = _detalhe_do_erro(resposta)
-                ultimo_erro = f"Limite de uso da Groq atingido: {detalhe}"
-
-                tentativas_429 += 1
-
-                # Última tentativa: não adianta dormir para desistir
-                # logo em seguida.
-                if tentativas_429 >= config.TENTATIVAS_RATE_LIMIT:
-                    break
-
-                espera = _espera_do_retry(resposta, tentativas_429 - 1)
-
-                print(
-                    "[roteamento_hierarquico] Rate limit da Groq "
-                    f"(tentativa {tentativas_429}/"
-                    f"{config.TENTATIVAS_RATE_LIMIT}); repetindo em "
-                    f"{espera:.1f}s. {detalhe}"
-                )
-
-                time.sleep(espera)
-
-                continue
-
-            if resposta.status_code >= 400:
-                detalhe = _detalhe_do_erro(resposta)
-
-                # A exceção à regra de não repetir 4xx — ver
-                # _e_chamada_de_ferramenta_indevida para o porquê.
-                if _e_chamada_de_ferramenta_indevida(detalhe):
-                    tentativas_tool += 1
-                    ultimo_erro = (
-                        f"Falha na chamada à Groq ({resposta.status_code})"
-                        + (f": {detalhe}" if detalhe else "")
-                    )
-
-                    if tentativas_tool < config.TENTATIVAS_TOOL_CALL_INDEVIDA:
-                        print(
-                            "[roteamento_hierarquico] O modelo tentou chamar "
-                            "uma ferramenta numa etapa que não declara "
-                            f"nenhuma (tentativa {tentativas_tool}/"
-                            f"{config.TENTATIVAS_TOOL_CALL_INDEVIDA}); "
-                            "repetindo."
-                        )
-
-                        # Sem espera: não é limite de uso, é a
-                        # amostragem do modelo. Dormir aqui só atrasaria
-                        # a resposta ao usuário.
-                        continue
-
-                    return (
-                        False,
-                        ultimo_erro,
-                        time.monotonic() - inicio,
-                    )
-
-                return (
-                    False,
-                    f"Falha na chamada à Groq ({resposta.status_code})"
-                    + (f": {detalhe}" if detalhe else ""),
-                    time.monotonic() - inicio,
-                )
-
-            return True, resposta.json(), time.monotonic() - inicio
-
-        except requests.Timeout:
-            return (
-                False,
-                "Tempo esgotado ao consultar a Groq.",
-                time.monotonic() - inicio,
-            )
-
-        except requests.RequestException as erro:
-            return (
-                False,
-                f"Falha na chamada à Groq: {erro}",
-                time.monotonic() - inicio,
-            )
-
-        except ValueError as erro:
-            return (
-                False,
-                f"Resposta inesperada da Groq: {erro}",
-                time.monotonic() - inicio,
-            )
-
-    return False, ultimo_erro, time.monotonic() - inicio
 
 
 # Extrai e valida os nomes candidatos do texto do marcador — só
@@ -412,37 +269,31 @@ def processar_turno(
     historico = historico or []
 
     if not config.GROQ_API_KEY:
-        resultado = ResultadoTurno(
+        return ResultadoTurno(
             "GROQ_API_KEY não configurada no .env.",
             falhou=True,
         )
 
-        return resultado
-
     # --- ETAPA 1: catálogo curto, prefixo fixo ---
-    mensagens_etapa1 = [
-        {
-            "role": "system",
-            "content": prompts.ROTEAMENTO_ETAPA1_INSTRUCAO.format(
-                catalogo=catalogo.TEXTO_CATALOGO
-            ),
-        },
-        *historico,
-        {"role": "user", "content": mensagem_usuario},
-    ]
-
-    sucesso, dados, latencia = _chamar_groq(
-        mensagens_etapa1, config.MODELO_GROQ_ETAPA1
+    pedido_etapa1 = _pedido_groq(
+        prompts.ROTEAMENTO_ETAPA1_INSTRUCAO.format(
+            catalogo=catalogo.TEXTO_CATALOGO
+        ),
+        mensagem_usuario,
+        config.MODELO_GROQ_ETAPA1,
+        historico=historico,
     )
+
+    resposta_etapa1 = _consultar(pedido_etapa1)
 
     # PLANO B, e ele ataca a causa em vez de sortear de novo.
     #
     # O 400 de "o modelo chamou uma ferramenta" acontece muito mais com
     # HISTÓRICO na conversa: medido com a frase do caso relatado, 0 em 8
     # sem nenhum turno anterior, e de 1 a 3 em cada 6 com um turno de
-    # assistente antes. As repetições dentro de _chamar_groq reenviam a
-    # mesma mensagem e por isso continuam esbarrando no mesmo gatilho —
-    # em 5 turnos reais, um esgotou as três.
+    # assistente antes. As repetições dentro da camada de agentes
+    # reenviam a mesma mensagem e por isso continuam esbarrando no mesmo
+    # gatilho — em 5 turnos reais, um esgotou as três.
     #
     # Aqui a última cartada é remover o gatilho: refaz a etapa 1 SEM o
     # histórico. Perde-se contexto (um "e o segundo?" deixa de ser
@@ -450,40 +301,33 @@ def processar_turno(
     # de a chamada normal já ter falhado — perder contexto é muito
     # melhor do que perder o turno inteiro, que é o que o usuário viu.
     if (
-        not sucesso
+        not resposta_etapa1.sucesso
         and historico
-        and _e_chamada_de_ferramenta_indevida(str(dados))
+        and resposta_etapa1.tipo_erro == agentes.erros.FERRAMENTA_INDEVIDA
     ):
         print(
             "[roteamento_hierarquico] A etapa 1 falhou mesmo repetindo; "
             "tentando sem o histórico da conversa."
         )
 
-        sucesso, dados, latencia = _chamar_groq(
-            [mensagens_etapa1[0], mensagens_etapa1[-1]],
-            config.MODELO_GROQ_ETAPA1,
-        )
+        resposta_etapa1 = _consultar(pedido_etapa1.sem_historico())
 
-    if not sucesso:
+    if not resposta_etapa1.sucesso:
         # falhou=True: o roteamento NÃO rodou. Quem chama não pode
         # tratar isto como "era conversa" — o pedido pode muito bem
         # ter sido uma ferramenta.
         return ResultadoTurno(
-            f"Não consegui processar seu pedido agora: {dados}",
+            f"Não consegui processar seu pedido agora: "
+            f"{resposta_etapa1.erro}",
             falhou=True,
         )
 
-    mensagem_etapa1 = dados["choices"][0]["message"]
-    texto_etapa1 = (mensagem_etapa1.get("content") or "").strip()
-
-    resultado = ResultadoTurno(texto_etapa1)
-    resultado.etapas.append(
-        EtapaExecutada(
-            1, config.MODELO_GROQ_ETAPA1, dados.get("usage"), latencia
-        )
+    resultado = ResultadoTurno(resposta_etapa1.texto)
+    _registrar_etapa(
+        resultado, 1, config.MODELO_GROQ_ETAPA1, resposta_etapa1
     )
 
-    marcador = _PADRAO_MARCADOR.match(texto_etapa1)
+    marcador = _PADRAO_MARCADOR.match(resposta_etapa1.texto)
 
     if not marcador:
         # Nenhuma ferramenta apontada — a resposta da etapa 1 já É a
@@ -517,11 +361,11 @@ def processar_turno(
         return resultado
 
     # --- ETAPA 2: schema completo, só dos candidatos ---
-    schemas = esquema_groq.obter_schemas_completos(
+    esquemas = esquema_groq.obter_schemas_completos(
         nomes_candidatos, PACOTES_REGISTRADOS
     )
 
-    if not schemas:
+    if not esquemas:
         # Os nomes existem no catálogo, mas nenhum pacote registrado
         # os reconheceu de verdade — catálogo desatualizado (ver
         # catalogo.verificar_catalogo_atualizado). Não adivinha.
@@ -533,59 +377,49 @@ def processar_turno(
 
         return resultado
 
-    mensagens_etapa2 = [
-        {
-            "role": "system",
-            "content": prompts.ROTEAMENTO_ETAPA2_INSTRUCAO.format(
+    resposta_etapa2 = _consultar(
+        _pedido_groq(
+            prompts.ROTEAMENTO_ETAPA2_INSTRUCAO.format(
                 ferramentas=", ".join(nomes_candidatos)
             ),
-        },
-        *historico,
-        {"role": "user", "content": mensagem_usuario},
-    ]
-
-    sucesso, dados, latencia = _chamar_groq(
-        mensagens_etapa2,
-        config.MODELO_GROQ_ETAPA2,
-        tools=schemas,
-        tool_choice="auto",
+            mensagem_usuario,
+            config.MODELO_GROQ_ETAPA2,
+            historico=historico,
+            ferramentas=esquemas,
+        )
     )
 
-    if not sucesso:
+    if not resposta_etapa2.sucesso:
         # A etapa 1 JÁ tinha decidido que era ferramenta, então isto é
         # ainda mais claramente uma falha — nunca uma conversa.
         resultado.resposta = (
-            f"Não consegui concluir essa ação agora: {dados}"
+            f"Não consegui concluir essa ação agora: "
+            f"{resposta_etapa2.erro}"
         )
         resultado.falhou = True
 
         return resultado
 
-    resultado.etapas.append(
-        EtapaExecutada(
-            2, config.MODELO_GROQ_ETAPA2, dados.get("usage"), latencia
-        )
+    _registrar_etapa(
+        resultado, 2, config.MODELO_GROQ_ETAPA2, resposta_etapa2
     )
 
-    mensagem_etapa2 = dados["choices"][0]["message"]
-    chamadas = mensagem_etapa2.get("tool_calls") or []
+    chamada = resposta_etapa2.primeira_chamada()
 
-    if not chamadas:
+    if chamada is None:
         # O modelo, já vendo os detalhes completos, decidiu que
         # nenhuma ferramenta realmente serve — o texto dele vira a
         # resposta final, mesmo tratamento da etapa 1.
-        resultado.resposta = (mensagem_etapa2.get("content") or "").strip()
+        resultado.resposta = resposta_etapa2.texto
 
         return resultado
 
     # No máximo UMA chamada por turno — mesma suposição de "uma ação
     # por pedido" já usada em todo o projeto (ex.: clicar_elemento_
-    # visual). Se o modelo devolver mais de uma, só a primeira roda.
-    primeira_chamada = chamadas[0]["function"]
-    nome_funcao = primeira_chamada["name"]
-    argumentos = esquema_groq.interpretar_argumentos(
-        primeira_chamada.get("arguments")
-    )
+    # visual). Se o modelo devolver mais de uma, só a primeira roda;
+    # é o que primeira_chamada() garante.
+    nome_funcao = chamada.nome
+    argumentos = esquema_groq.interpretar_argumentos(chamada.argumentos)
 
     # Enriquecimento dos argumentos pelo chamador (ex.: capturar a
     # imagem da câmera). Uma falha aqui não pode derrubar o turno nem

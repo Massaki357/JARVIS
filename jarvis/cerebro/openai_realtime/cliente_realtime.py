@@ -1,37 +1,3 @@
-"""
-Worker equivalente a jarvis/cerebro/gemini/cliente_live.py, usando a Realtime
-API da OpenAI como cérebro do ALFRED em vez do Gemini Live.
-
-Veio do JARVIS COMPLETO (openai_provider/live_client.py) e foi
-adaptado à arquitetura deste projeto. O que mudou em relação ao
-original do curso:
-
-- As ferramentas NÃO são declaradas à mão aqui. Elas vêm de
-  PACOTES_REGISTRADOS (jarvis/nucleo/registro_pacotes.py), convertidas
-  do formato do Gemini pelo esquema.py deste pacote. Um pacote novo
-  funciona nos dois cérebros de voz sem tocar em nenhum cliente.
-- A instrução de sistema é a MESMA do Gemini
-  (jarvis/nucleo/prompts/), incluindo o bloco de autenticação por
-  palavra-chave quando EXIGIR_AUTENTICACAO está ligado. O prompt do
-  curso não tinha esse bloco; ter dois prompts diferentes criaria um
-  segundo jeito de contornar a trava, que é justamente o que a regra
-  do projeto proíbe.
-- A memória vem do vault do Obsidian (memoria_obsidian), não do
-  gerenciador antigo.
-
-Mantém a mesma API pública do GeminiLiveWorker (sinais, construtor e
-métodos) para jarvis/ui/janela_principal.py trocar de provedor só
-mudando PROVEDOR_IA no .env, sem tocar na interface.
-
-Diferenças de comportamento que a interface precisa conhecer:
-
-- A Realtime API não tem equivalente a session_resumption/GoAway do
-  Gemini. Os sinais solicitou_reconexao e session_handle_atualizado
-  existem só para manter a mesma interface; nunca são emitidos.
-- Áudio em PCM16 24 kHz na entrada E na saída (no Gemini a entrada é
-  16 kHz).
-"""
-
 import asyncio
 import base64
 import time
@@ -55,6 +21,7 @@ from jarvis.nucleo.config import (
 
 from jarvis.nucleo import perfis
 from jarvis.nucleo import prompts
+from jarvis.nucleo.preferencias import interrupcao_ativa
 from jarvis.nucleo.sinalizador import obter_sinalizador
 
 from jarvis.nucleo.registro_pacotes import (
@@ -72,8 +39,6 @@ from jarvis.servicos.visao.captura_camera import capturar_camera_bytes
 
 from jarvis.pacotes import ativacao_voz
 
-# Frase de ativação por voz atual — usada pela tool pausar_chamada,
-# mesmo motivo e mesma convenção de jarvis/cerebro/gemini/cliente_live.py.
 from jarvis.pacotes.ativacao_voz.config import NOME_ATIVACAO
 from jarvis.pacotes import admin_terminal
 from jarvis.pacotes import discord_jarvis
@@ -83,32 +48,19 @@ from jarvis.pacotes import rede_jarvis
 from jarvis.cerebro.openai_realtime import esquema
 
 
-# A Realtime API trabalha em PCM16 24 kHz tanto na entrada quanto na
-# saída, por isso as duas taxas são iguais aqui (no Gemini a entrada
-# é 16 kHz e a saída 24 kHz).
 TAXA_ENTRADA = 24000
 TAXA_SAIDA = 24000
 CANAIS = 1
 BLOCO = 1024
 
-# Tempo de segurança antes de reabrir o microfone depois que o
-# assistente termina de falar.
 ATRASO_REABRIR_MICROFONE = 0.8
 
 LIMITE_FILA_MICROFONE = 50
 
-# Debounce da mesma função visual, para o modelo não recapturar a
-# mesma imagem várias vezes para um único pedido.
 COOLDOWN_FUNCAO_VISUAL = 8.0
 
-# Tempo máximo de uma função de pacote antes de devolver uma mensagem
-# amigável em vez de travar a sessão.
 TIMEOUT_FUNCAO_PADRAO = 20
 
-# admin_terminal tem timeout interno próprio, bem mais longo — usar o
-# padrão aqui cortaria um comando demorado antes de ele terminar
-# sozinho. Mesma lógica de TIMEOUTS_TAREFA_FUNCAO_POR_NOME em
-# jarvis/cerebro/gemini/cliente_live.py.
 TIMEOUTS_FUNCAO_POR_NOME = {
     "executar_comando_admin": (
         admin_terminal.config.TIMEOUT_COMANDO_LONGO_SEGUNDOS + 30
@@ -118,42 +70,15 @@ TIMEOUTS_FUNCAO_POR_NOME = {
     ),
 }
 
-# Tempo máximo, em segundos, que QUALQUER envio para a sessão da
-# Realtime API pode esperar antes de ser considerado travado. Mesma
-# constante, mesmo valor e mesmo motivo de TIMEOUT_ENVIO_SESSAO_SEGUNDOS
-# em jarvis/cerebro/gemini/cliente_live.py — mas aqui o risco é PIOR,
-# porque todos os envios deste worker passam por self.lock_envio: um
-# envio pendurado nunca devolve a trava, e aí TODA chamada de função
-# seguinte fica esperando para sempre para responder o próprio
-# function_call_output. Como o protocolo não deixa o modelo voltar a
-# falar sem essa resposta, a chamada fica viva e muda ao mesmo tempo,
-# e as três tarefas centrais continuam sem levantar nada — ou seja, a
-# supervisão de executar() não vê problema nenhum. Ver
-# _enviar_para_sessao/self.conexao_travada.
+
 TIMEOUT_ENVIO_SESSAO_SEGUNDOS = 10
 
-# Quantas chamadas de função podem rodar ao mesmo tempo. Mesma
-# constante e mesmo motivo de LIMITE_TAREFAS_FUNCAO_SIMULTANEAS em
-# jarvis/cerebro/gemini/cliente_live.py: cada chamada vira sua própria
-# asyncio.Task para não bloquear o laço de recepção, e o limite existe
-# só para a lista não crescer sem controle se o modelo pedir muitas
-# funções rápido demais. Ver receber_eventos/_ao_finalizar_tarefa_funcao.
 LIMITE_TAREFAS_FUNCAO_SIMULTANEAS = 4
 
-# Espera antes de encerrar de fato depois de encerrar_chamada, para a
-# despedida terminar de tocar.
 ATRASO_ENCERRAMENTO_SEGUNDOS = 2.8
 
-# Quantas mensagens do transcript da conversa ficam guardadas — mesmo
-# valor e mesmo motivo da constante de mesmo nome em
-# jarvis/cerebro/gemini/cliente_live.py.
 MAXIMO_MENSAGENS_TRANSCRICAO = 12
 
-
-# Tools nativas deste cliente — as mesmas três do JARVIS COMPLETO que
-# não pertencem a pacote nenhum. Declaradas no formato do Gemini de
-# propósito: é o formato que esquema.py converte, então há um único
-# conversor para tudo, em vez de dois jeitos de declarar ferramenta.
 FUNCTION_DECLARATIONS_NATIVAS = [
     types.FunctionDeclaration(
         name="analisar_tela",
@@ -203,32 +128,17 @@ FUNCTION_DECLARATIONS_NATIVAS = [
 
 class OpenAIRealtimeWorker(QThread):
 
-    # Os mesmos sinais do GeminiLiveWorker — ver o docstring do módulo.
     status_recebido = Signal(str)
     erro_recebido = Signal(str)
     chamada_encerrada = Signal()
     nivel_audio = Signal(float)
     solicitou_encerramento = Signal()
 
-    # Existem só por compatibilidade de interface: a Realtime API não
-    # tem retomada de sessão por handle nem aviso de renovação de
-    # WebSocket, então este worker NUNCA emite os dois.
     solicitou_reconexao = Signal()
     session_handle_atualizado = Signal(str)
 
-    # O usuário pediu pra pausar a chamada por voz (tool
-    # pausar_chamada) — mesmo contrato do GeminiLiveWorker: a janela
-    # preserva session_handle/transcricao_preservada (aqui o handle
-    # nunca é usado de fato, ver acima, mas a transcrição sim) e só
-    # reconecta quando ativacao_voz detectar a frase de novo.
     solicitou_hibernacao = Signal()
 
-    # Mesma assinatura do GeminiLiveWorker. session_handle e
-    # transcricao_inicial são aceitos para a janela poder criar
-    # qualquer um dos dois workers do mesmo jeito; o handle é ignorado
-    # (ver acima), a transcrição não. ativado_por_voz: mesmo motivo do
-    # GeminiLiveWorker — True só quando esta chamada veio da detecção
-    # da frase de ativação, controla a saudação logo após conectar.
     def __init__(
         self,
         session_handle=None,
@@ -240,12 +150,6 @@ class OpenAIRealtimeWorker(QThread):
 
         self.ativo = True
 
-        # Perfil que vale para ESTA chamada — prompt de sistema e
-        # subconjunto de ferramentas. Resolvido AGORA, na construção
-        # do worker (que acontece no clique de INICIAR CHAMADA), e
-        # nunca relido depois: é isso que garante que trocar de perfil
-        # na tela não mexe numa chamada já em andamento. Mesma regra e
-        # mesma linha do GeminiLiveWorker.
         self.slug_perfil = slug_perfil or perfis.perfil_ativo()
         self.loop = None
         self.conexao = None
@@ -253,63 +157,40 @@ class OpenAIRealtimeWorker(QThread):
         self.ativado_por_voz = ativado_por_voz
         self.hibernacao_solicitada = False
 
-        # Trava de envio: vários pontos podem escrever na conexão
-        # (microfone, resposta de ferramenta, imagem avulsa) e a
-        # Realtime API não gosta de escritas concorrentes.
         self.lock_envio = None
 
-        # Ligado por _enviar_para_sessao quando um envio estoura o
-        # timeout ou falha. O laço de supervisão de executar() checa
-        # essa flag a cada volta e encerra a chamada, em vez de
-        # deixá-la viva e muda. Mesma ideia do self.conexao_travada +
-        # monitorar_conexao do GeminiLiveWorker, aproveitando o laço
-        # que já existe aqui em vez de criar uma tarefa nova só para
-        # isso.
         self.conexao_travada = False
 
-        # Chamadas de função em andamento. Guardar a referência é
-        # OBRIGATÓRIO, não organização: o asyncio só mantém referência
-        # FRACA a uma task rodando, então uma task criada e esquecida
-        # pode ser coletada pelo garbage collector no meio da execução
-        # — e aí o function_call_output daquele call_id nunca é
-        # enviado, e o modelo fica esperando por ele para sempre. Ver
-        # receber_eventos/_ao_finalizar_tarefa_funcao.
+
         self.tarefas_funcao_ativas = []
 
-        # True enquanto uma função está sendo executada — o microfone
-        # fica ignorado nesse período, igual a alfred_falando.
         self.processando_ferramenta = False
 
-        # (origem, bytes) da imagem capturada por analisar_tela/
-        # analisar_camera, esperando para ser enviada DEPOIS da
-        # resposta da ferramenta (a ordem importa no protocolo).
         self.imagem_visual_pendente = None
 
         self.alfred_falando = False
         self.tarefa_liberar_microfone = None
         self.tarefa_encerramento = None
 
-        # Mutex e debounce das funções visuais, mesma ideia do
-        # GeminiLiveWorker.
+        self.interrupcao_habilitada = interrupcao_ativa()
+
+        self.interrupcoes_na_chamada = 0
+
+        self.item_audio_tocando = None
+        self.bytes_tocados_item = 0
+
+        self.itens_interrompidos = set()
+
         self.executando_funcao_visual = False
         self.ultima_funcao_visual = None
         self.tempo_ultima_funcao_visual = 0.0
 
-        # Descarta o áudio da resposta do turno atual — ligado pelas
-        # tools de TOOLS_SILENCIOSAS (rolar página, escrever no campo
-        # ativo, clicar num elemento).
         self.silenciar_audio_ate_fim_turno = False
 
-        # Histórico da conversa, no mesmo formato usado pelo worker do
-        # Gemini, para o resumo salvo na memória no fim da chamada.
         self.transcricao_conversa = list(transcricao_inicial or [])
         self._buffer_transcricao_usuario = ""
         self._buffer_transcricao_assistente = ""
 
-        # Sobe (ou reconecta os callbacks de) os pacotes que precisam
-        # ficar de pé fora de uma chamada — idempotentes, mesma
-        # chamada que GeminiLiveWorker.__init__ faz, pelos mesmos
-        # motivos. Roda aqui, na thread da UI, antes de .start().
         rede_jarvis.iniciar_rede_jarvis(
             callback_falar=self._falar_espontaneamente,
             callback_frame_remoto=self._receber_frame_remoto,
@@ -682,7 +563,7 @@ class OpenAIRealtimeWorker(QThread):
                                     "type": "audio/pcm",
                                     "rate": TAXA_ENTRADA,
                                 },
-                                "turn_detection": {"type": "server_vad"},
+                                "turn_detection": self._configuracao_vad(),
                             },
                             "output": {
                                 "format": {
@@ -839,6 +720,49 @@ class OpenAIRealtimeWorker(QThread):
     # MICROFONE
     # ================================================================
 
+    def _configuracao_vad(self):
+        """
+        O turn_detection da sessão.
+
+        Com interrupção ligada, interrupt_response vai EXPLÍCITO em
+        True: é o servidor quem cancela a resposta em andamento assim
+        que detecta a voz do usuário (campo confirmado no SDK
+        instalado, ServerVad.interrupt_response). O cliente só precisa
+        parar de tocar o que já chegou — ver _interromper_fala.
+
+        Com interrupção desligada, o dicionário fica EXATAMENTE como
+        era antes desta mudança, sem nenhum campo a mais: o padrão do
+        servidor continua valendo, e o comportamento não muda nem para
+        os anúncios espontâneos (rede_jarvis, admin_terminal), que
+        dependem desse padrão.
+        """
+        configuracao = {"type": "server_vad"}
+
+        if self.interrupcao_habilitada:
+            configuracao["interrupt_response"] = True
+
+        return configuracao
+
+    def _microfone_bloqueado(self):
+        """
+        Se o áudio do microfone deve ser DESCARTADO agora.
+
+        As três barreiras do microfone (o callback do dispositivo, o
+        enfileiramento e o laço de envio) consultam esta função, e não
+        uma condição copiada em cada uma. No worker do Gemini são três
+        cópias da mesma condição, e a documentação dele precisa avisar
+        que reverter UMA delas desliga a interrupção em silêncio — aqui
+        esse erro não tem onde acontecer.
+
+        processando_ferramenta continua bloqueando sempre, com ou sem
+        interrupção: o que o usuário pediu foi interromper a FALA, e a
+        execução de uma ferramenta não é fala.
+        """
+        if self.processando_ferramenta:
+            return True
+
+        return self.alfred_falando and not self.interrupcao_habilitada
+
     async def enviar_microfone(self, conexao, fila_microfone):
         loop = asyncio.get_running_loop()
 
@@ -846,7 +770,7 @@ class OpenAIRealtimeWorker(QThread):
             if not self.ativo:
                 return
 
-            if self.alfred_falando or self.processando_ferramenta:
+            if self._microfone_bloqueado():
                 return
 
             if status:
@@ -855,11 +779,7 @@ class OpenAIRealtimeWorker(QThread):
             audio_bytes = bytes(indata)
 
             def adicionar_audio():
-                if (
-                    self.alfred_falando
-                    or self.processando_ferramenta
-                    or not self.ativo
-                ):
+                if not self.ativo or self._microfone_bloqueado():
                     return
 
                 try:
@@ -884,8 +804,20 @@ class OpenAIRealtimeWorker(QThread):
                 while self.ativo:
                     audio_bytes = await fila_microfone.get()
 
-                    if self.alfred_falando or self.processando_ferramenta:
+                    if self._microfone_bloqueado():
                         continue
+
+                    # Anima as barras enquanto ESCUTA, como o cérebro
+                    # local já fazia. Só quando o ALFRED não está
+                    # falando: nesse caso quem move as barras é a
+                    # própria voz dele (reproduzir_audio), e os dois
+                    # níveis brigando no mesmo sinal fariam a animação
+                    # piscar. Numa interrupção, _interromper_fala zera
+                    # alfred_falando e o microfone assume na hora.
+                    if not self.alfred_falando:
+                        self.nivel_audio.emit(
+                            self.calcular_nivel_audio(audio_bytes)
+                        )
 
                     async with self.lock_envio:
                         # É o envio mais frequente da sessão (~15x por
@@ -929,15 +861,49 @@ class OpenAIRealtimeWorker(QThread):
                 # forma completa: sem marcar alfred_falando e sem
                 # enfileirar nada, senão o microfone ficaria bloqueado
                 # esperando uma reprodução que nunca acontece.
+                item_id = getattr(evento, "item_id", None)
+
+                # Resto de uma fala que o usuário já interrompeu: o
+                # servidor gera áudio mais rápido que o tempo real, então
+                # ainda chegam deltas dela depois do corte. Tocá-los
+                # seria o ALFRED voltar a falar por cima do usuário.
+                if item_id is not None and item_id in self.itens_interrompidos:
+                    continue
+
                 if not self.silenciar_audio_ate_fim_turno:
                     self.alfred_falando = True
 
                     if self.tarefa_liberar_microfone:
                         self.tarefa_liberar_microfone.cancel()
 
-                    self.limpar_fila_microfone(fila_microfone)
+                    # Com interrupção, o microfone NÃO pode ser limpo
+                    # aqui: é justamente enquanto o ALFRED fala que o
+                    # usuário precisa conseguir ser ouvido, e jogar fora
+                    # os blocos dele engoliria o começo da interrupção.
+                    if not self.interrupcao_habilitada:
+                        self.limpar_fila_microfone(fila_microfone)
 
-                    await fila_saida.put(base64.b64decode(evento.delta))
+                    # (item_id, bytes): reproduzir_audio precisa saber a
+                    # qual item cada bloco pertence para contar quanto de
+                    # cada fala o usuário realmente ouviu.
+                    await fila_saida.put(
+                        (item_id, base64.b64decode(evento.delta))
+                    )
+
+            elif tipo == "input_audio_buffer.speech_started":
+                # Evento do server_vad confirmado na documentação e no
+                # SDK instalado (InputAudioBufferSpeechStartedEvent): o
+                # servidor detectou voz no microfone. Com interrupção
+                # ligada e o ALFRED no meio de uma fala, é o corte.
+                #
+                # Sem interrupção esse evento chega do mesmo jeito (é
+                # assim que o servidor sabe que o usuário começou a
+                # falar), e aí não há nada a fazer — o microfone nem
+                # chega ao servidor enquanto o ALFRED fala.
+                if self.interrupcao_habilitada and (
+                    self.alfred_falando or not fila_saida.empty()
+                ):
+                    await self._interromper_fala(conexao, fila_saida)
 
             elif tipo == "response.function_call_arguments.done":
                 argumentos = esquema.interpretar_argumentos(
@@ -1508,6 +1474,112 @@ class OpenAIRealtimeWorker(QThread):
             self.alfred_falando = False
 
     # ================================================================
+    # INTERRUPÇÃO DE FALA
+    # ================================================================
+
+    def _milissegundos_tocados(self):
+        """
+        Quanto do item atual já saiu pelo alto-falante, em ms.
+
+        Contado pelos bytes que saida.write() terminou de escrever —
+        nunca pelos que chegaram do servidor, que vêm bem adiantados.
+        Isso pode ficar alguns milissegundos ABAIXO do real, nunca
+        acima, e é de propósito: a documentação da Realtime API diz
+        que um audio_end_ms maior que a duração real do áudio faz o
+        servidor responder com erro. Errar para menos só significa o
+        modelo achar que falou um pedacinho a menos.
+
+        PCM16 mono: 2 bytes por amostra.
+        """
+        bytes_por_segundo = TAXA_SAIDA * 2 * CANAIS
+
+        return int(self.bytes_tocados_item * 1000 / bytes_por_segundo)
+
+    async def _interromper_fala(self, conexao, fila_saida):
+        """
+        Corta a fala do ALFRED porque o usuário começou a falar.
+
+        O servidor já cancelou a resposta sozinho (interrupt_response
+        em _configuracao_vad). O que sobra para o cliente são as três
+        coisas que só ele sabe fazer:
+
+          1. parar de tocar o que já chegou e ainda está na fila — o
+             servidor manda o áudio adiantado, então sem isto o ALFRED
+             continuaria falando por segundos depois do corte;
+          2. soltar o microfone na hora, sem esperar
+             ATRASO_REABRIR_MICROFONE — o usuário está falando AGORA;
+          3. contar ao servidor até onde o usuário ouviu
+             (conversation.item.truncate), para o histórico do modelo
+             não conter uma frase que ninguém escutou.
+
+        Nunca levanta: é chamado de dentro de receber_eventos, e uma
+        exceção aqui mataria a recepção da chamada inteira.
+        """
+        item_cortado = self.item_audio_tocando
+        milissegundos = self._milissegundos_tocados()
+
+        # Todo item que ainda estava na fila também foi cortado — os
+        # deltas dele que ainda chegarem precisam ser descartados.
+        if item_cortado is not None:
+            self.itens_interrompidos.add(item_cortado)
+
+        descartados = 0
+
+        while True:
+            try:
+                item_na_fila, _bytes = fila_saida.get_nowait()
+
+            except asyncio.QueueEmpty:
+                break
+
+            descartados += 1
+
+            if item_na_fila is not None:
+                self.itens_interrompidos.add(item_na_fila)
+
+        if self.tarefa_liberar_microfone:
+            self.tarefa_liberar_microfone.cancel()
+            self.tarefa_liberar_microfone = None
+
+        self.alfred_falando = False
+        self.nivel_audio.emit(0.0)
+
+        self.interrupcoes_na_chamada += 1
+
+        print(
+            "[INTERRUPÇÃO] O usuário começou a falar e a fala do "
+            f"{obter_nome_jarvis()} foi cortada "
+            f"(interrupção nº {self.interrupcoes_na_chamada} nesta "
+            f"chamada; {descartados} blocos de áudio descartados; "
+            f"{milissegundos} ms já tinham sido ouvidos)."
+        )
+
+        # Sem nada tocado ainda, não há o que truncar — e mandar
+        # audio_end_ms=0 para um item cujo áudio nem começou é pedir
+        # um erro do servidor sem ganho nenhum.
+        if item_cortado is None or milissegundos <= 0:
+            return
+
+        try:
+            async with self.lock_envio:
+                await self._enviar_para_sessao(
+                    conexao.conversation.item.truncate(
+                        item_id=item_cortado,
+                        content_index=0,
+                        audio_end_ms=milissegundos,
+                    )
+                )
+
+        except Exception as erro:
+            # _enviar_para_sessao já marcou conexao_travada se foi o
+            # transporte; o laço de supervisão cuida disso. Aqui só não
+            # pode deixar a exceção subir e derrubar a recepção.
+            print(
+                "[INTERRUPÇÃO] Não consegui avisar o servidor até onde "
+                f"a fala foi ouvida: {erro!r}"
+            )
+
+    # ================================================================
     # REPRODUÇÃO
     # ================================================================
 
@@ -1519,16 +1591,41 @@ class OpenAIRealtimeWorker(QThread):
             channels=CANAIS,
         ) as saida:
             while self.ativo:
-                audio_bytes = await fila_saida.get()
+                item_id, audio_bytes = await fila_saida.get()
+
+                # Um bloco pode ter entrado na fila no instante entre o
+                # corte e o descarte da fila em _interromper_fala.
+                if item_id is not None and item_id in self.itens_interrompidos:
+                    continue
+
+                # Item novo: a contagem do que foi ouvido recomeça.
+                if item_id != self.item_audio_tocando:
+                    self.item_audio_tocando = item_id
+                    self.bytes_tocados_item = 0
 
                 self.alfred_falando = True
-                self.limpar_fila_microfone(fila_microfone)
+
+                # Mesma exceção de receber_eventos: com interrupção, os
+                # blocos do usuário que chegaram enquanto o ALFRED fala
+                # são exatamente os que precisam chegar ao servidor.
+                if not self.interrupcao_habilitada:
+                    self.limpar_fila_microfone(fila_microfone)
 
                 self.nivel_audio.emit(
                     self.calcular_nivel_audio(audio_bytes)
                 )
 
                 await asyncio.to_thread(saida.write, audio_bytes)
+
+                # Cortado DURANTE o write: _interromper_fala já soltou o
+                # microfone e zerou as barras. Agendar a liberação de
+                # novo aqui só faria as barras piscarem para zero 0,8s
+                # depois, no meio da fala do usuário.
+                if item_id is not None and item_id in self.itens_interrompidos:
+                    continue
+
+                # Só conta DEPOIS de escrito — ver _milissegundos_tocados.
+                self.bytes_tocados_item += len(audio_bytes)
 
                 if self.tarefa_liberar_microfone:
                     self.tarefa_liberar_microfone.cancel()

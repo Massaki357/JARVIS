@@ -12,11 +12,10 @@ import mss
 # [CURSO] Pillow transforma a captura bruta em uma imagem
 # [CURSO] e permite convertê-la para JPEG em memória.
 from PIL import Image
-# [CURSO] Cliente oficial usado para chamar o modelo Gemini.
-from google import genai
-# [CURSO] types fornece estruturas da API,
-# [CURSO] como Part e GenerateContentConfig.
-from google.genai import types
+# Camada única de chamada de agente do projeto (LangChain). Substitui
+# o cliente do SDK do Gemini que era construído neste arquivo — ver
+# jarvis/servicos/agentes/.
+from jarvis.servicos import agentes
 
 # [CURSO] Importa a chave configurada no projeto.
 from jarvis.nucleo.config import GEMINI_API_KEY
@@ -28,6 +27,11 @@ MODELO_LOCALIZADOR = os.getenv(
     "GEMINI_VISION_MODEL",
     "gemini-3.1-flash-lite",
 )
+
+# Teto de espera da consulta ao modelo visual, em segundos. Curto de
+# propósito: quem pediu o clique está esperando o mouse se mexer, e
+# desistir com uma mensagem clara é melhor do que uma espera muda.
+TIMEOUT_SEGUNDOS = 20
 
 # [CURSO] Define a confiança mínima aceita.
 # [CURSO] Resultados abaixo de 0.78 são recusados para evitar cliques incertos.
@@ -226,34 +230,61 @@ def localizar_elemento_na_tela(alvo):
         f"Elemento solicitado: {alvo}"
     )
 
-    # [CURSO] Cria o cliente autenticado do Gemini.
-    client = genai.Client(api_key=GEMINI_API_KEY)
-
-    # [CURSO] Envia o prompt e a imagem para o modelo.
-    resposta = client.models.generate_content(
-        model=MODELO_LOCALIZADOR,
-        # [CURSO] A requisição contém texto e imagem no mesmo pedido.
-        contents=[
-            prompt,
-            # [CURSO] Converte os bytes JPEG em uma parte multimodal.
-            types.Part.from_bytes(
-                data=captura["imagem"],
-                mime_type="image/jpeg",
-            ),
-        ],
-        # [CURSO] Configura resposta determinística e estruturada.
-        config=types.GenerateContentConfig(
-            # [CURSO] Temperature 0 reduz variações e criatividade.
-            temperature=0,
-            # [CURSO] Solicita que a resposta seja JSON.
-            response_mime_type="application/json",
-            # [CURSO] Obriga a resposta a seguir o esquema definido.
-            response_schema=esquema,
+    # Uma chamada de agente como qualquer outra do projeto: texto +
+    # imagem + esquema de resposta, pela camada de
+    # jarvis/servicos/agentes/. O esquema acima continua sendo
+    # exigido do modelo (a camada o repassa como response_format), e
+    # temperatura 0 continua reduzindo variação — o que mudou é que
+    # isto deixou de ser um cliente do Gemini escrito à mão aqui.
+    #
+    # TIMEOUT: não existia nenhum antes. Esta função move o mouse de
+    # verdade, e uma chamada pendurada deixaria o usuário esperando um
+    # clique que nunca vem, sem mensagem nenhuma.
+    resposta = agentes.executar(
+        agentes.PedidoAgente(
+            provedor="gemini",
+            modelo=MODELO_LOCALIZADOR,
+            api_key=GEMINI_API_KEY,
+            texto=prompt,
+            imagem=captura["imagem"],
+            esquema_resposta=esquema,
+            temperatura=0,
+            timeout=TIMEOUT_SEGUNDOS,
         ),
+        agentes.PoliticaRepeticao(rotulo="localizador_clique"),
     )
 
-    # [CURSO] Converte a resposta textual em dicionário.
-    dados = _extrair_json(resposta.text)
+    # Falhar aqui nunca pode virar um clique: sem resposta do modelo,
+    # não há coordenada, e a recusa é a única saída segura.
+    if not resposta.sucesso:
+        return {
+            "sucesso": False,
+            "mensagem": (
+                "Não consegui consultar o modelo visual agora. "
+                "Nenhum clique foi executado."
+            ),
+        }
+
+    # A camada já devolve o JSON decodificado quando pediu esquema.
+    # _extrair_json continua como plano B para o caso de o modelo
+    # embrulhar a resposta num bloco de código Markdown.
+    dados = resposta.dados
+
+    if not isinstance(dados, dict):
+        try:
+            dados = _extrair_json(resposta.texto)
+
+        except (ValueError, TypeError):
+            dados = None
+
+    if not isinstance(dados, dict):
+        return {
+            "sucesso": False,
+            "mensagem": (
+                "A resposta do modelo visual veio em formato "
+                "inesperado. Nenhum clique foi executado."
+            ),
+        }
 
     # [CURSO] Lê com segurança o indicador de localização.
     encontrado = bool(dados.get("encontrado", False))

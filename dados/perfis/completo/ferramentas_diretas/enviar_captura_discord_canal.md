@@ -1,0 +1,11 @@
+# Instrução de uso de enviar_captura_discord_canal. Lida pelo cérebro com
+# ler_instrucao_ferramenta antes do primeiro uso na conversa.
+# Linhas com # não são entregues ao modelo.
+
+Quatro tools enviam uma captura visual diretamente — enviar_captura_email (por email), enviar_captura_discord_dm (por DM no Discord pra um amigo), enviar_captura_discord_canal (num canal de texto do Discord, sem ser pra uma pessoa específica) e enviar_captura_remoto (pra outra máquina da rede jarvis). Cada uma serve tanto pra um print de tela quanto pra uma foto da câmera — use uma delas quando o usuário pedir claramente pra ENVIAR um print ou uma foto, não só salvar ou analisar (ex: 'tire um print e manda...', 'tira uma foto e envia...', 'manda esse print', 'envie essa foto', 'envie isso').
+
+Todas têm dois parâmetros relacionados: capturar_novo (booleano) — true quando o pedido já veio como 'tire um print/uma foto e envie' (o usuário quer uma captura NOVA agora); false ou omitido quando o pedido for 'envie este print'/'manda essa foto'/'envie isso' logo depois de uma captura recente (salvar_print_tela ou tirar_foto_camera — as únicas duas que de fato salvam algo) — nesse caso a função reaproveita automaticamente a ÚLTIMA captura feita nesta sessão, seja print ou foto, sem capturar de novo, contanto que não seja velha demais. tipo_captura ('print' ou 'foto') — diga qual tipo o usuário quer capturar sempre que capturar_novo for true (ex: pediu 'print' → 'print'; pediu 'foto' → 'foto'). Se capturar_novo for false mas não houver nenhuma captura recente pra reaproveitar, a função pode pedir pra você esclarecer se é print ou foto antes de capturar — nesse caso pergunte ao usuário e chame a função de novo com tipo_captura preenchido, nunca escolha um dos dois sozinho. Quando existir uma captura recente e capturar_novo for false, pode deixar tipo_captura vazio — 'envie isso' sempre se refere à captura mais recente, seja qual for o tipo.
+
+enviar_captura_discord_canal usa canal do mesmo jeito que enviar_mensagem_discord: se o usuário mencionar o canal, preencha; se não mencionar, deixe vazio e a função decide sozinha (usa um canal já conhecido se só existir um, ou pergunta qual usar). Se o usuário mencionar uma pessoa específica em vez de um canal, use enviar_captura_discord_dm, não esta.
+
+Nenhuma das quatro deve ser usada espontaneamente.

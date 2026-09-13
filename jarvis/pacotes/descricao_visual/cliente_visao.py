@@ -4,11 +4,10 @@
 #
 # DOIS PROVEDORES, escolhidos por config.provedor_visao():
 #
-#   "gemini"  (padrão) — SDK google-genai, a mesma já usada pelo
-#             cérebro de voz do Gemini, com a GEMINI_API_KEY que o
-#             projeto já exige para funcionar.
-#   "mistral" — POST /v1/chat/completions, reaproveitando a
-#             MISTRAL_API_KEY de jarvis/pacotes/identificacao_visual/.
+#   "gemini"  (padrão) — a mesma GEMINI_API_KEY que o projeto já exige
+#             para funcionar.
+#   "mistral" — reaproveitando a MISTRAL_API_KEY de
+#             jarvis/pacotes/identificacao_visual/.
 #
 # POR QUE O PADRÃO É O GEMINI, e não a Mistral (que seria o
 # reaproveitamento mais óbvio, já que identificacao_visual usa visão
@@ -30,20 +29,27 @@
 # descrever_camera não são uma segunda opinião, são a visão primária,
 # e não têm nenhuma independência a preservar.
 #
-# Formato do request da Mistral confirmado na documentação oficial
-# antes de escrever qualquer código: o item de imagem é
-# {"type": "image_url", "image_url": "<string>"} — o valor é uma
-# STRING PLANA (data URI base64), NÃO um objeto {"url": ...} como a
-# OpenAI usa. Errar essa forma não falha de modo óbvio.
-import base64
-
-import requests
-
+# UM CAMINHO SÓ PARA OS DOIS PROVEDORES. Antes deste arquivo passar
+# por jarvis/servicos/agentes/ (LangChain), ele tinha duas
+# implementações inteiras lado a lado — _descrever_gemini com o SDK
+# google-genai e timeout em milissegundos, _descrever_mistral com
+# requests.post e o formato de imagem próprio da Mistral (image_url
+# como STRING PLANA, não o objeto {"url": ...} da OpenAI; errar essa
+# forma não falhava de modo óbvio, e por isso estava anotado aqui).
+# Hoje o provedor é UM CAMPO do pedido, e a diferença de protocolo é
+# problema do LangChain.
 from jarvis.nucleo import prompts
+from jarvis.servicos import agentes
 
 from . import config
 
-_ENDPOINT_MISTRAL = "https://api.mistral.ai/v1/chat/completions"
+# Qual chave e qual modelo cada provedor usa. As variáveis continuam
+# sendo as mesmas de sempre, no config.py deste pacote — a camada de
+# agentes nunca lê .env por conta própria.
+_PROVEDORES = {
+    "gemini": ("GEMINI_API_KEY", "MODELO_GEMINI"),
+    "mistral": ("MISTRAL_API_KEY", "MODELO_MISTRAL"),
+}
 
 
 # Devolve (sucesso, texto). Nunca levanta exceção — mesma convenção
@@ -65,198 +71,80 @@ def descrever(imagem_bytes, pergunta, origem):
     # Resolvido a cada chamada (nunca fixado na importação): assim
     # tanto a variável manual quanto a regra automática valem já na
     # próxima chamada, sem reiniciar o app.
-    if config.provedor_visao() == "mistral":
-        return _descrever_mistral(imagem_bytes, texto_pergunta, origem)
+    provedor = config.provedor_visao()
 
-    return _descrever_gemini(imagem_bytes, texto_pergunta, origem)
+    if provedor not in _PROVEDORES:
+        provedor = "gemini"
 
+    nome_chave, nome_modelo = _PROVEDORES[provedor]
+    api_key = getattr(config, nome_chave, None)
 
-# ====================================================================
-# GEMINI
-# ====================================================================
-def _descrever_gemini(imagem_bytes, pergunta, origem):
-    if not config.GEMINI_API_KEY:
-        return False, _falha(origem, "a GEMINI_API_KEY não está configurada")
-
-    # Import adiado: só quem realmente usa este provedor paga o custo
-    # de carregar o SDK.
-    from google import genai
-    from google.genai import types
-
-    try:
-        # TIMEOUT OBRIGATÓRIO. O SDK não tem um por padrão, e esta
-        # chamada roda na thread do roteamento, dentro de um
-        # asyncio.to_thread que também não tem wait_for por fora — uma
-        # chamada pendurada travaria o turno de voz para sempre, sem
-        # levantar nada. É a mesma classe de travamento silencioso já
-        # corrigida várias vezes neste projeto. Em milissegundos, que
-        # é o que HttpOptions espera.
-        cliente = genai.Client(
-            api_key=config.GEMINI_API_KEY,
-            http_options=types.HttpOptions(
-                timeout=config.TIMEOUT_SEGUNDOS * 1000,
-            ),
-        )
-
-        resposta = cliente.models.generate_content(
-            model=config.MODELO_GEMINI,
-            contents=[
-                types.Part.from_bytes(
-                    data=imagem_bytes,
-                    mime_type="image/jpeg",
-                ),
-                pergunta,
-            ],
-            config=types.GenerateContentConfig(
-                system_instruction=prompts.DESCRICAO_VISUAL_INSTRUCAO,
-                # Sem isto o SDK imprime um aviso sobre chamada
-                # automática de função a cada chamada — ruído puro no
-                # painel de console, já que aqui não há ferramenta
-                # nenhuma envolvida.
-                automatic_function_calling=(
-                    types.AutomaticFunctionCallingConfig(disable=True)
-                ),
-            ),
-        )
-
-        texto = (resposta.text or "").strip()
-
-    except Exception as erro:
-        # O SDK levanta tipos próprios (ServerError, ClientError...);
-        # capturar amplo é o certo aqui, porque esta função nunca pode
-        # deixar uma exceção escapar para o turno de voz.
+    if not api_key:
         return False, _falha(
-            origem,
-            f"o modelo de visão falhou ({type(erro).__name__}: "
-            f"{str(erro)[:150]})",
+            origem, f"a {nome_chave} não está configurada"
         )
 
-    if not texto:
+    resposta = agentes.executar(
+        agentes.PedidoAgente(
+            provedor=provedor,
+            modelo=getattr(config, nome_modelo),
+            api_key=api_key,
+            texto=texto_pergunta,
+            imagem=imagem_bytes,
+            instrucao_sistema=prompts.DESCRICAO_VISUAL_INSTRUCAO,
+            # TIMEOUT OBRIGATÓRIO, em SEGUNDOS. Esta chamada roda na
+            # thread do roteamento, dentro de um asyncio.to_thread que
+            # também não tem wait_for por fora — uma chamada pendurada
+            # travaria o turno de voz para sempre, sem levantar nada.
+            # É a mesma classe de travamento silencioso já corrigida
+            # várias vezes neste projeto, e a camada de agentes a
+            # torna impossível: não existe modelo sem timeout.
+            timeout=config.TIMEOUT_SEGUNDOS,
+        ),
+        agentes.PoliticaRepeticao(rotulo="descricao_visual"),
+    )
+
+    if not resposta.sucesso:
+        return False, _falha(origem, _motivo_do_erro(resposta, provedor))
+
+    if not resposta.texto:
         return False, _falha(origem, "a descrição voltou vazia")
 
-    return True, texto
+    return True, resposta.texto
 
 
-# ====================================================================
-# MISTRAL
-# ====================================================================
-def _descrever_mistral(imagem_bytes, pergunta, origem):
-    if not config.MISTRAL_API_KEY:
-        return False, _falha(origem, "a MISTRAL_API_KEY não está configurada")
-
-    imagem_base64 = base64.b64encode(imagem_bytes).decode("utf-8")
-
-    try:
-        resposta = requests.post(
-            _ENDPOINT_MISTRAL,
-            headers={
-                "Authorization": f"Bearer {config.MISTRAL_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": config.MODELO_MISTRAL,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": prompts.DESCRICAO_VISUAL_INSTRUCAO,
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": pergunta,
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": (
-                                    f"data:image/jpeg;base64,{imagem_base64}"
-                                ),
-                            },
-                        ],
-                    },
-                ],
-            },
-            timeout=config.TIMEOUT_SEGUNDOS,
+# Traduz a falha para o motivo que o usuário vai ouvir.
+#
+# Mesma lição já aprendida no roteamento hierárquico: sem o detalhe
+# real, um erro recuperável fica indistinguível de qualquer outro.
+# Em especial o 429 da Mistral, que significa duas coisas diferentes:
+# quando o cabeçalho diz que o limite por minuto é 0, mandar esperar
+# seria mandar esperar por algo que não vai reabrir sozinho.
+def _motivo_do_erro(resposta, provedor):
+    if resposta.tipo_erro == agentes.erros.TEMPO:
+        return (
+            f"o modelo de visão demorou mais de "
+            f"{config.TIMEOUT_SEGUNDOS}s"
         )
 
-    except requests.Timeout:
-        return False, _falha(
-            origem,
-            f"o modelo de visão demorou mais de {config.TIMEOUT_SEGUNDOS}s",
-        )
+    if resposta.tipo_erro == agentes.erros.AUTENTICACAO:
+        return f"a chave de API da {provedor} é inválida ou expirou"
 
-    except requests.RequestException as erro:
-        return False, _falha(origem, f"houve uma falha de conexão ({erro})")
+    if resposta.tipo_erro == agentes.erros.LIMITE:
+        limite = resposta.cabecalho_do_erro("x-ratelimit-limit-req-minute")
 
-    if resposta.status_code == 401:
-        return False, _falha(
-            origem, "a chave de API da Mistral é inválida ou expirou"
-        )
-
-    if resposta.status_code == 429:
-        # Distingue "acabou a cota" de "rápido demais". Quando o
-        # próprio cabeçalho diz que o limite por minuto é 0, chamar
-        # isso de "limite por minuto" mandaria o usuário esperar por
-        # algo que não vai reabrir sozinho — foi exatamente esse tipo
-        # de mensagem imprecisa que atrasou o diagnóstico do rate
-        # limit da Groq.
-        limite = resposta.headers.get("x-ratelimit-limit-req-minute")
-
-        if limite is not None and limite.strip() in ("0", "0.0"):
-            return False, _falha(
-                origem,
-                "a chave da Mistral está sem cota disponível "
-                "(limite por minuto zerado, não é espera passageira)",
+        if limite is not None and str(limite).strip() in ("0", "0.0"):
+            return (
+                f"a chave da {provedor} está sem cota disponível "
+                "(limite por minuto zerado, não é espera passageira)"
             )
 
-        return False, _falha(
-            origem,
-            "o limite de requisições por minuto da Mistral foi atingido",
+        return (
+            f"o limite de requisições por minuto da {provedor} foi "
+            "atingido"
         )
 
-    if resposta.status_code != 200:
-        return False, _falha(
-            origem,
-            f"o modelo de visão retornou um erro (HTTP "
-            f"{resposta.status_code}): {_detalhe(resposta)}",
-        )
-
-    try:
-        dados = resposta.json()
-        texto = (dados["choices"][0]["message"]["content"] or "").strip()
-
-    except (ValueError, KeyError, IndexError) as erro:
-        return False, _falha(origem, f"a resposta veio inesperada ({erro})")
-
-    if not texto:
-        return False, _falha(origem, "a descrição voltou vazia")
-
-    return True, texto
-
-
-# Mesma lição já aprendida no roteamento hierárquico: sem o corpo da
-# resposta, um erro recuperável fica indistinguível de qualquer outro.
-def _detalhe(resposta):
-    try:
-        corpo = resposta.json()
-
-    except ValueError:
-        return (resposta.text or "").strip()[:200]
-
-    if isinstance(corpo, dict):
-        erro = corpo.get("error")
-
-        if isinstance(erro, dict):
-            return str(erro.get("message") or erro)[:200]
-
-        if erro:
-            return str(erro)[:200]
-
-        if corpo.get("message"):
-            return str(corpo["message"])[:200]
-
-    return str(corpo)[:200]
+    return f"o modelo de visão falhou ({resposta.erro})"
 
 
 def _falha(origem, motivo):

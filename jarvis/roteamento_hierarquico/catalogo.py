@@ -294,6 +294,41 @@ CATALOGO_CURTO = {
         "Delega uma tarefa de texto pontual (pergunta rápida, "
         "resumo, ou segunda opinião) para outro provedor de IA.",
     ),
+    "buscar_ferramenta": (
+        "delegacao",
+        "Pergunta a um sub-agente qual ferramenta atende a um pedido "
+        "do usuário, e devolve as instruções de como executá-la.",
+    ),
+    "executar_ferramenta": (
+        "delegacao",
+        "Executa uma ferramenta pelo nome, para um cérebro que não a "
+        "tem declarada na própria sessão.",
+    ),
+    "ler_instrucao_ferramenta": (
+        "delegacao",
+        "Devolve as instruções de uso de uma ferramenta antes de o "
+        "cérebro usá-la.",
+    ),
+}
+
+
+# Ferramentas que EXISTEM (e por isso estão no dicionário acima, para
+# a tela de perfis mostrar um resumo delas e para
+# verificar_catalogo_atualizado ficar em dia) mas que NUNCA devem ser
+# oferecidas à etapa 1 deste roteador.
+#
+# Hoje as três tools de jarvis/pacotes/agente_ferramentas/, e o motivo
+# é que elas seriam circulares AQUI: aquele pacote existe para um
+# cérebro com tool calling nativo perguntar "qual ferramenta eu uso?"
+# e depois executar o que descobriu. A etapa 1 deste roteador JÁ É
+# essa pergunta, e a etapa 2 JÁ É essa execução — apontá-las
+# significaria gastar uma chamada de LLM para descobrir que deve
+# gastar outra com a mesma pergunta, e o resultado seria um texto de
+# instruções virando a resposta falada ao usuário.
+FERRAMENTAS_FORA_DO_ROTEAMENTO = {
+    "buscar_ferramenta",
+    "executar_ferramenta",
+    "ler_instrucao_ferramenta",
 }
 
 
@@ -307,6 +342,9 @@ def montar_texto_catalogo():
     por_categoria = {chave: [] for chave, _rotulo in CATEGORIAS}
 
     for nome, (categoria, resumo) in CATALOGO_CURTO.items():
+        if nome in FERRAMENTAS_FORA_DO_ROTEAMENTO:
+            continue
+
         por_categoria[categoria].append((nome, resumo))
 
     blocos = []

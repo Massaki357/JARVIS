@@ -36,7 +36,8 @@ jarvis/
   gemini/cliente_live.py    o worker da sessão Live
   ui/                       janela_principal, janela_chat,
                             janela_envio_arquivo, janela_camera
-  servicos/                 visao/, email/, memoria/ (infra compartilhada)
+  servicos/                 visao/, email/, memoria/, agentes/
+                            (infra compartilhada)
   pacotes/                  um subpacote por integração/ferramenta
 ```
 
@@ -51,8 +52,8 @@ comentário.
 ## O contrato: duas funções por pacote
 
 Todo pacote de tools isolado (`rede_jarvis`, `casa_inteligente`,
-`delegacao_ia`, `admin_terminal`, `identificacao_planta`, `identificacao_visual`, ...)
-expõe exatamente duas funções no seu `__init__.py`:
+`delegacao_ia`, `agente_ferramentas`, `admin_terminal`, `identificacao_planta`,
+`identificacao_visual`, ...) expõe exatamente duas funções no seu `__init__.py`:
 
 ### `obter_function_declarations() -> list[types.FunctionDeclaration]`
 Retorna a lista de `types.FunctionDeclaration` desse pacote, prontas
@@ -173,6 +174,119 @@ elif nome == "...":
     # tools nativas do cliente, inalteradas
     ...
 ```
+
+## Como um pacote consulta uma LLM
+
+Um pacote NUNCA abre um cliente de LLM por conta própria. Toda consulta
+a um modelo de texto ou de visão — Gemini, OpenAI, Groq, Cerebras ou
+Mistral — passa por `jarvis/servicos/agentes/` (LangChain), que é o
+segundo contrato deste projeto, ao lado das duas funções acima.
+
+Um pedido entra, uma resposta sai, e `executar()` **nunca levanta
+exceção**:
+
+```python
+from jarvis.servicos import agentes
+
+resposta = agentes.executar(
+    agentes.PedidoAgente(
+        provedor="groq",                  # gemini|openai|groq|cerebras|mistral
+        modelo=config.MODELO_GROQ,        # do config.py DO PACOTE
+        api_key=config.GROQ_API_KEY,      # idem — a camada não lê .env
+        texto=pergunta,
+        timeout=config.TIMEOUT_SEGUNDOS,  # em SEGUNDOS, sempre
+    ),
+    agentes.PoliticaRepeticao(rotulo="nome_do_pacote"),
+)
+
+if not resposta.sucesso:
+    return False, f"Não deu certo: {resposta.erro}"
+
+return True, resposta.texto
+```
+
+Os outros três casos são o MESMO pedido com um campo a mais:
+
+| preciso de | campo no `PedidoAgente` | onde vem a resposta |
+|---|---|---|
+| visão (imagem) | `imagem=<bytes JPEG>` | `resposta.texto` |
+| chamada de ferramenta | `ferramentas=<esquemas>` | `resposta.primeira_chamada()` |
+| JSON | `json_esperado=True` ou `esquema_resposta=<dict>` | `resposta.dados` |
+
+Os esquemas de ferramenta saem das MESMAS
+`obter_function_declarations()` que o contrato padrão já exige — use
+`agentes.ferramentas.obter_esquemas(nomes, PACOTES_REGISTRADOS)`.
+Nenhuma descrição de tool é reescrita para isso.
+
+Além de `sucesso`/`texto`/`erro`, a `RespostaAgente` traz
+`tipo_erro` (`LIMITE`, `TEMPO`, `AUTENTICACAO`, `FERRAMENTA_INDEVIDA`,
+`DESCONHECIDO`) para decidir o que dizer ao usuário sem reler status
+HTTP, `uso` (tokens) e `latencia_segundos`. Use `resposta.como_tupla()`
+quando o pacote só quiser devolver o `(sucesso, texto)` de sempre.
+
+**O que a camada NÃO cobre**: os três cérebros de voz
+(`jarvis/cerebro/`), que são sessões de áudio bidirecional em tempo
+real, e as integrações HTTP que não são LLM (`identificacao_planta`,
+`pesquisa_web`). Detalhes e restrições em **docs/agentes.md**.
+
+### Um pacote pode ser um sub-agente
+
+`agente_ferramentas` é o primeiro pacote cuja tool inteira é uma
+consulta a outro modelo: o cérebro chama
+`buscar_ferramenta("o usuário pediu para verificar a tela dele")` e
+recebe de volta QUAL ferramenta usar e como executá-la, parâmetro a
+parâmetro. Ele não precisa de nenhum wiring extra — é o contrato
+padrão das duas funções, e nada mais.
+
+Dois pontos valem para qualquer sub-agente futuro:
+
+- **O catálogo dele é derivado, nunca escrito à mão.** Nome e resumo
+  saem de `perfis/catalogo_ferramentas.catalogo_completo()`; descrição
+  completa e parâmetros saem da própria `FunctionDeclaration` do
+  pacote dono da tool.
+- **Um pacote que está em `PACOTES_REGISTRADOS` não pode importar
+  `jarvis.nucleo.registro_pacotes` no topo do arquivo** — o ciclo
+  impede o app de subir. Importe dentro da função.
+
+### O seu pacote provavelmente NÃO será declarado ao cérebro
+
+Desde a economia de tokens, uma ferramenta de pacote nasce **oculta**:
+ela é registrada e executável, mas não entra no `tools` da sessão (que
+custa ~10 mil tokens por turno quando tudo é declarado). O cérebro a
+encontra com `buscar_ferramenta` e a roda com `executar_ferramenta`.
+
+Na prática isso não muda nada no seu pacote — o contrato é o mesmo, e
+`despachar()` é chamado igual. Mas duas coisas importam:
+
+- **A descrição da sua `FunctionDeclaration` ficou MAIS importante**,
+  não menos: é ela que o sub-agente devolve ao cérebro como "o que
+  essa ferramenta faz e como chamar". Trave de segurança escrita lá
+  continua chegando ao modelo.
+- **Se a sua tool depender de o worker reconhecer o NOME dela** —
+  captura de imagem, mutex visual, silêncio de áudio —, registre-a na
+  lista correspondente de `registro_pacotes.py`. Isso a mantém
+  declarada automaticamente, e é obrigatório: por
+  `executar_ferramenta` o nome que chega ao worker é
+  `"executar_ferramenta"`, e esses comportamentos falhariam em
+  silêncio.
+
+### Onde escrever as regras de uso de uma ferramenta nova
+
+**Não no `sistema.md`.** Ele deixou de ser o manual das ferramentas: é pago em
+todo turno e ficou só com identidade, segurança e o fluxo de uso. As regras vão
+para o perfil, num de dois lugares, conforme a ferramenta for declarada ou não:
+
+- **ferramenta oculta** (o caso normal de um pacote novo) → uma seção `## ...`
+  em `dados/perfis/completo/manual_ferramentas.md`, que **cite o nome da
+  ferramenta** — é assim que o sub-agente a encontra e a entrega junto com a
+  recomendação;
+- **ferramenta direta** (nativa, ou registrada numa das três listas especiais) →
+  uma linha em `dados/perfis/completo/ferramentas_diretas/lista_ferramentas_diretas.md`
+  (`nome: o que faz — quando pode ser usada`, que vira a descrição do schema)
+  e as instruções completas em `ferramentas_diretas/<nome>.md`, que o cérebro lê
+  com `ler_instrucao_ferramenta` antes do primeiro uso.
+
+Detalhes e restrições em **docs/agente_ferramentas.md**.
 
 ## Wiring extra por pacote (além do contrato padrão)
 
@@ -1121,6 +1235,51 @@ interrupção falsa ou uma resposta confusa. Isso é uma limitação conhecida e
 deste modo simples (o projeto não implementa cancelamento de eco/AEC) — não é algo a
 "corrigir" numa reimplementação futura, a menos que isso mude de decisão
 explicitamente.
+
+### O mesmo conceito no worker da OpenAI Realtime
+
+O `OpenAIRealtimeWorker` lê a MESMA preferência (`interrupcao_ativa()`), uma vez
+no `__init__`. O conceito é igual; o protocolo não, e as diferenças importam para
+quem reimplementar:
+
+- **Quem detecta a fala do usuário é o `server_vad`**, pelo evento
+  `input_audio_buffer.speech_started` (confirmado na documentação oficial e no
+  SDK instalado, `InputAudioBufferSpeechStartedEvent`). Não existe um campo
+  `interrupted` como no Gemini.
+- **Quem cancela a resposta é o servidor**: com interrupção ligada, a sessão sobe
+  com `turn_detection = {"type": "server_vad", "interrupt_response": True}`. Com
+  ela desligada, o dicionário continua exatamente `{"type": "server_vad"}`, sem
+  campo nenhum a mais.
+- **O cliente precisa contar ao servidor até onde o usuário OUVIU**, com
+  `conversation.item.truncate(item_id, content_index=0, audio_end_ms)`. O servidor
+  gera o áudio mais rápido que o tempo real, então sem isso o modelo acharia que
+  disse a frase inteira. `audio_end_ms` é calculado pelos bytes que o
+  alto-falante já terminou de tocar — nunca pelos que chegaram —, e arredonda
+  para BAIXO: a documentação diz que um valor acima da duração real volta erro.
+  Por isso a `fila_saida` desse worker carrega `(item_id, bytes)`, não só bytes.
+- **Deltas atrasados da fala cortada são descartados** (`itens_interrompidos`),
+  senão o ALFRED voltaria a falar por cima do usuário segundos depois do corte.
+- **As três barreiras do microfone consultam UMA função** (`_microfone_bloqueado`),
+  em vez de três cópias da condição como no worker do Gemini. `processando_ferramenta`
+  continua bloqueando o microfone sempre, com ou sem interrupção.
+- **A limpeza da fila do microfone durante a fala só acontece sem interrupção.**
+  Com ela ligada, jogar fora os blocos do usuário enquanto o ALFRED fala engoliria
+  justamente o começo da interrupção.
+
+Verificado offline em `testes/testar_openai_realtime_interrupcao.py` (24
+verificações). O que só uma chamada real confirma: que o `server_vad` detecta a voz
+a tempo e que o servidor cancela a resposta.
+
+### Barras de escuta (as 24 barras embaixo da esfera)
+
+Os três cérebros emitem `nivel_audio` com o nível do MICROFONE enquanto o ALFRED
+está calado, e com o nível da própria voz dele enquanto fala. Antes, só o cérebro
+local fazia a primeira parte. O ponto de emissão é o laço de ENVIO do microfone
+(nunca o callback do dispositivo, que é sensível a tempo), e a condição
+`not self.alfred_falando` existe para os dois níveis não brigarem no mesmo sinal —
+numa interrupção, o microfone assume assim que a fala é cortada. Não exigiu nenhuma
+mudança na interface: `VisualizadorAlfred.definir_nivel_audio` só anima, não troca
+rótulo nenhum.
 
 ## navegador_web — substituiu o navegador_jarvis (Playwright)
 

@@ -2649,6 +2649,17 @@ class GeminiLiveWorker(QThread):
                     ):
                         continue
 
+                    # Anima as barras da esfera enquanto ESCUTA, como o
+                    # cérebro local já fazia — antes, aqui elas só se
+                    # mexiam com a voz do ALFRED. Só quando ele está
+                    # calado: falando, quem move as barras é a própria
+                    # voz dele (reproduzir_audio), e os dois níveis no
+                    # mesmo sinal fariam a animação piscar.
+                    if not self.alfred_falando:
+                        self.nivel_audio.emit(
+                            self.calcular_nivel_audio(audio_bytes)
+                        )
+
                     # Envia o bloco de áudio atual para o Gemini Live.
                     await self._enviar_para_sessao(
                         sessao.send_realtime_input(

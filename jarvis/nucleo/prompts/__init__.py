@@ -165,7 +165,7 @@ CONTEXTO_ARQUIVO_ENVIADO = _carregar_arquivo(
 # devolvidos como resultado da tool a QUALQUER cérebro ativo, não
 # prompts para os provedores em si (provedores.py manda o "conteudo"
 # cru, sem nenhuma instrução hardcoded própria — ver a nota em
-# _chamar_completions).
+# provedores._consultar).
 # ============================================================
 
 DELEGACAO_INDISPONIVEL = _carregar_arquivo("geral/delegacao_indisponivel.md")
@@ -284,9 +284,14 @@ CONSOLIDACAO_RESUMO_CONVERSA = _carregar_arquivo(
 # vez por chamada — nunca o texto do usuário) para se beneficiar do
 # cache automático de prompt da Groq. Pede uma decisão binária:
 # responder direto (sem ferramenta nenhuma) ou apontar candidatas
-# pelo nome, num formato de marcador simples de analisar — nunca
-# JSON, que dependeria de um recurso da API (response_format) ainda
-# não confirmado ao vivo pra esse modelo.
+# pelo nome, num formato de marcador simples de analisar — e não
+# JSON, porque quando este prompt foi escrito o response_format ainda
+# não tinha sido confirmado ao vivo pra esse modelo. Ele JÁ FOI
+# confirmado desde então (ver AGENTE_FERRAMENTAS_BUSCA logo abaixo,
+# que usa modo JSON no mesmo openai/gpt-oss-20b); o formato de
+# marcador daqui continua como está porque muda-lo forçaria a etapa 1
+# inteira a ser remedida, e ela funciona — não porque o recurso
+# faltasse.
 ROTEAMENTO_ETAPA1_INSTRUCAO = _carregar_arquivo(
     "geral/roteamento_etapa1_instrucao.md"
 )
@@ -298,6 +303,29 @@ ROTEAMENTO_ETAPA1_INSTRUCAO = _carregar_arquivo(
 # chamada, não neste texto.
 ROTEAMENTO_ETAPA2_INSTRUCAO = _carregar_arquivo(
     "geral/roteamento_etapa2_instrucao.md"
+)
+
+
+# ============================================================
+# AGENTE_FERRAMENTAS (jarvis/pacotes/agente_ferramentas/) — o
+# sub-agente na Groq que descobre QUAL ferramenta atende a um pedido.
+# Prompt de "geral/" e não de um cérebro específico: o cérebro ativo
+# (Gemini Live, OpenAI Realtime ou voz_local) é quem chama a tool, e o
+# sub-agente responde igual para qualquer um deles.
+#
+# {catalogo} é a lista nome + descrição, montada por
+# agente_ferramentas/catalogo.py a partir das FunctionDeclaration
+# reais; {limite} é quantos nomes ele pode devolver de uma vez.
+#
+# Modo JSON (response_format), ao contrário da etapa 1 do roteamento
+# hierárquico: confirmado ao vivo no openai/gpt-oss-20b antes de este
+# prompt ser escrito. Mesmo assim, os nomes que voltarem são
+# conferidos contra o catálogo real em código — modo JSON garante
+# SINTAXE, nunca conteúdo.
+# ============================================================
+
+AGENTE_FERRAMENTAS_BUSCA = _carregar_arquivo(
+    "geral/agente_ferramentas_busca.md"
 )
 
 

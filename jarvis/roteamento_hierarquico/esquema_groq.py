@@ -1,126 +1,38 @@
-# Converte as FunctionDeclaration do Gemini (o formato que TODOS os
-# pacotes deste projeto já expõem em obter_function_declarations())
-# para o formato de "tools" da API de Chat Completions da
-# OpenAI/Groq — usado aqui na etapa 2 do roteamento hierárquico,
-# depois que a etapa 1 já reduziu a lista a 1-3 ferramentas
-# candidatas.
-#
-# Atenção ao formato de destino: Chat Completions ANINHA tudo dentro
-# de "function" ({"type": "function", "function": {"name", ...}}) —
-# diferente do formato ACHATADO que jarvis/cerebro/openai_realtime/esquema.py
-# usa pra Realtime API ({"type", "name", "description", "parameters"}
-# direto). Por isso este é um conversor próprio, não uma reexportação
-# do de lá.
-#
-# A normalização de tipo (o SDK do Gemini serializa "OBJECT"/
-# "STRING"/"ARRAY"; o esquema JSON da OpenAI espera minúsculas) é a
-# MESMA lógica recursiva nos dois casos — reaproveitada daqui em vez
-# de duplicada, porque é lógica de schema JSON genérica, sem nada
-# específico de Realtime.
-import json
+"""
+Conversão das FunctionDeclaration do Gemini para o formato de tools
+da etapa 2 do roteamento.
 
-from jarvis.cerebro.openai_realtime.esquema import _normalizar_no
+ESTE MÓDULO VIROU UMA FACHADA. A conversão em si mudou de casa: foi
+para jarvis/servicos/agentes/ferramentas.py, junto com o resto da
+camada de agentes, porque deixou de ser "o conversor da Groq" —
+é o mesmo dicionário que o bind_tools() do LangChain entende em
+QUALQUER provedor. Manter duas cópias da mesma conversão era
+exatamente o tipo de duplicação que a camada existe para acabar.
 
+Os nomes daqui continuam existindo, com a mesma assinatura e o mesmo
+comportamento, porque medir_custo.py e o roteador já os importavam —
+não havia motivo para quebrar isso. Código novo deve chamar
+jarvis.servicos.agentes.ferramentas direto.
 
-# Uma FunctionDeclaration -> um dict de tool da Chat Completions.
-# Retorna None se a declaração vier em formato inesperado, para uma
-# ferramenta malformada nunca derrubar o turno inteiro — mesma
-# postura defensiva do conversor da Realtime API.
-def converter_declaracao(declaracao):
-    try:
-        bruto = declaracao.to_json_dict()
+O que era verdade e continua sendo, sobre o formato de destino: ele
+ANINHA tudo dentro de "function" ({"type": "function", "function":
+{"name", ...}}), diferente do formato ACHATADO que
+jarvis/cerebro/openai_realtime/esquema.py usa para a Realtime API
+({"type", "name", "description", "parameters"} direto). São dois
+formatos distintos da mesma OpenAI, e trocá-los não falha de modo
+óbvio.
+"""
 
-    except Exception:
-        return None
+from jarvis.servicos.agentes.ferramentas import (
+    converter_declaracao,
+    interpretar_argumentos,
+    obter_esquemas as obter_schemas_completos,
+    obter_todos_os_esquemas as obter_todos_os_schemas,
+)
 
-    nome = bruto.get("name")
-
-    if not nome:
-        return None
-
-    parametros = bruto.get("parameters") or {
-        "type": "object",
-        "properties": {},
-    }
-
-    return {
-        "type": "function",
-        "function": {
-            "name": nome,
-            "description": bruto.get("description", ""),
-            "parameters": _normalizar_no(parametros),
-        },
-    }
-
-
-# Monta os schemas completos SÓ das ferramentas cujo nome está em
-# nomes_candidatos — nunca das 45 de uma vez. Procura o nome em cada
-# pacote de pacotes_registrados, na ordem da lista (mesma convenção
-# de despacho já usada em toda parte do projeto: para no primeiro
-# pacote que reconhece o nome).
-def obter_schemas_completos(nomes_candidatos, pacotes_registrados):
-    candidatos_restantes = set(nomes_candidatos)
-    schemas = []
-
-    for pacote in pacotes_registrados:
-        if not candidatos_restantes:
-            break
-
-        try:
-            declaracoes = pacote.obter_function_declarations()
-
-        except Exception:
-            continue
-
-        for declaracao in declaracoes:
-            if declaracao.name not in candidatos_restantes:
-                continue
-
-            convertido = converter_declaracao(declaracao)
-
-            if convertido:
-                schemas.append(convertido)
-
-            candidatos_restantes.discard(declaracao.name)
-
-    return schemas
-
-
-# Monta os schemas de TODAS as ferramentas de pacotes_registrados —
-# usado só por medir_custo.py, pra reconstruir o cenário monolítico
-# original (todas as 45 de uma vez) como referência de comparação.
-# Nunca usado pelo roteador em operação normal.
-def obter_todos_os_schemas(pacotes_registrados):
-    schemas = []
-
-    for pacote in pacotes_registrados:
-        try:
-            declaracoes = pacote.obter_function_declarations()
-
-        except Exception:
-            continue
-
-        for declaracao in declaracoes:
-            convertido = converter_declaracao(declaracao)
-
-            if convertido:
-                schemas.append(convertido)
-
-    return schemas
-
-
-# Os argumentos de um tool_call da Chat Completions chegam como uma
-# STRING JSON (igual à Realtime API). Um JSON inválido nunca deve
-# derrubar o turno: vira dicionário vazio, e a própria função
-# despachada devolve a mensagem de parâmetro faltando.
-def interpretar_argumentos(bruto):
-    if isinstance(bruto, dict):
-        return bruto
-
-    try:
-        argumentos = json.loads(bruto or "{}")
-
-    except (json.JSONDecodeError, TypeError):
-        return {}
-
-    return argumentos if isinstance(argumentos, dict) else {}
+__all__ = [
+    "converter_declaracao",
+    "interpretar_argumentos",
+    "obter_schemas_completos",
+    "obter_todos_os_schemas",
+]

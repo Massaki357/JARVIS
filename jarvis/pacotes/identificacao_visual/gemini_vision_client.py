@@ -26,7 +26,17 @@
 # segunda passada menos independente a uma falha honesta pode forçá-la
 # —, mas é uma escolha consciente do usuário, não mais o padrão
 # silencioso que era antes.
+#
+# A CHAMADA em si passa por jarvis/servicos/agentes/ (LangChain),
+# igual à da Mistral aqui do lado. Antes, os dois clientes deste
+# pacote mandavam a MESMA imagem para a MESMA pergunta em dois
+# formatos diferentes — SDK google-genai com types.Part.from_bytes de
+# um lado, POST com data URI base64 do outro — e o timeout de um era
+# contado em milissegundos e o do outro em segundos. Agora é um
+# PedidoAgente só, com a imagem em bytes e o timeout em segundos, nos
+# dois.
 from jarvis.nucleo import prompts
+from jarvis.servicos import agentes
 
 from . import config
 
@@ -52,57 +62,30 @@ def consultar(imagem_bytes, pergunta):
             "nenhuma imagem foi capturada da câmera"
         )
 
-    # Import adiado: só quem realmente usa este provedor paga o custo
-    # de carregar o SDK.
-    from google import genai
-    from google.genai import types
-
-    try:
-        # TIMEOUT OBRIGATÓRIO (em milissegundos). O SDK não tem um por
-        # padrão, e esta chamada é feita de dentro de um
-        # asyncio.to_thread sem wait_for por fora — uma chamada
-        # pendurada travaria o turno para sempre sem levantar nada.
-        cliente = genai.Client(
+    resposta = agentes.executar(
+        agentes.PedidoAgente(
+            provedor="gemini",
+            modelo=config.MODELO_GEMINI,
             api_key=config.GEMINI_API_KEY,
-            http_options=types.HttpOptions(
-                timeout=config.TIMEOUT_SEGUNDOS * 1000,
-            ),
-        )
+            texto=pergunta or prompts.VISAO_PERGUNTA_PADRAO,
+            imagem=imagem_bytes,
+            # TIMEOUT OBRIGATÓRIO, em SEGUNDOS. Esta chamada é feita
+            # de dentro de um asyncio.to_thread sem wait_for por fora
+            # — uma chamada pendurada travaria o turno para sempre sem
+            # levantar nada. A camada de agentes não deixa construir
+            # um modelo sem timeout, o que fecha essa porta de vez.
+            timeout=config.TIMEOUT_SEGUNDOS,
+        ),
+        agentes.PoliticaRepeticao(rotulo="identificacao_visual"),
+    )
 
-        resposta = cliente.models.generate_content(
-            model=config.MODELO_GEMINI,
-            contents=[
-                types.Part.from_bytes(
-                    data=imagem_bytes,
-                    mime_type="image/jpeg",
-                ),
-                pergunta or prompts.VISAO_PERGUNTA_PADRAO,
-            ],
-            config=types.GenerateContentConfig(
-                # Sem isto o SDK imprime um aviso sobre chamada
-                # automática de função a cada chamada — ruído puro no
-                # painel de console, já que aqui não há ferramenta
-                # nenhuma envolvida.
-                automatic_function_calling=(
-                    types.AutomaticFunctionCallingConfig(disable=True)
-                ),
-            ),
-        )
+    if not resposta.sucesso:
+        return False, _mensagem_indisponivel(resposta.erro)
 
-        texto = (resposta.text or "").strip()
-
-    except Exception as erro:
-        # O SDK levanta tipos próprios (ServerError, ClientError...);
-        # capturar amplo é o certo aqui, porque esta função nunca pode
-        # deixar uma exceção escapar para o turno de voz.
-        return False, _mensagem_indisponivel(
-            f"{type(erro).__name__}: {str(erro)[:150]}"
-        )
-
-    if not texto:
+    if not resposta.texto:
         return False, _mensagem_indisponivel("a resposta voltou vazia")
 
-    return True, texto
+    return True, resposta.texto
 
 
 def _mensagem_indisponivel(motivo):

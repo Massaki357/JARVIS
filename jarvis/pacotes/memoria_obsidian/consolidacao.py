@@ -16,12 +16,12 @@
 import os
 import re
 import threading
-import time
 from datetime import datetime, timedelta
 
 # Instrução de resumo enviada ao Gemini na consolidação — centralizada
 # em jarvis/nucleo/prompts/, seção MEMORIA_OBSIDIAN.
 from jarvis.nucleo import prompts
+from jarvis.servicos import agentes
 
 from . import config, escritor, notas
 
@@ -185,47 +185,53 @@ def _nome_resumo(momento=None):
 # retentativa eles significavam simplesmente pular a operação. Como
 # isto sempre roda numa thread de fundo, sem ninguém esperando ao
 # vivo, esperar alguns segundos não custa nada.
+#
+# A retentativa continua sendo a MESMA (3 tentativas, esperando 8s e
+# depois 16s), mas quem a executa agora é a política da camada de
+# agentes em vez de um for/time.sleep escrito aqui — e o genai.Client
+# que este arquivo construía à mão virou um PedidoAgente. Ver
+# jarvis/servicos/agentes/.
+#
+# TIMEOUT: o cliente que existia aqui não tinha nenhum, e este código
+# roda numa thread de fundo — uma chamada pendurada ficaria pendurada
+# para sempre, sem ninguém olhando. A camada de agentes não permite
+# construir um modelo sem timeout; o valor é folgado de propósito,
+# porque resumir memórias não tem usuário esperando.
+TIMEOUT_CONSOLIDACAO_SEGUNDOS = 60
+
+
 def _chamar_modelo_texto(pedido):
     chave = (os.getenv("GEMINI_API_KEY") or "").strip()
 
     if not chave:
         return False, "GEMINI_API_KEY não configurada."
 
-    ultimo_erro = ""
+    resposta = agentes.executar(
+        agentes.PedidoAgente(
+            provedor="gemini",
+            modelo=config.MODELO_CONSOLIDACAO,
+            api_key=chave,
+            texto=pedido,
+            timeout=TIMEOUT_CONSOLIDACAO_SEGUNDOS,
+        ),
+        agentes.PoliticaRepeticao(
+            tentativas=config.TENTATIVAS_CONSOLIDACAO,
+            espera_base=config.ESPERA_ENTRE_TENTATIVAS_SEGUNDOS,
+            espera_maxima=(
+                config.ESPERA_ENTRE_TENTATIVAS_SEGUNDOS
+                * config.TENTATIVAS_CONSOLIDACAO
+            ),
+            rotulo="MEMORIA",
+        ),
+    )
 
-    for tentativa in range(config.TENTATIVAS_CONSOLIDACAO):
-        if tentativa:
-            time.sleep(
-                config.ESPERA_ENTRE_TENTATIVAS_SEGUNDOS * tentativa
-            )
+    if not resposta.sucesso:
+        return False, f"Falha ao chamar o modelo: {resposta.erro}"
 
-        try:
-            from google import genai
+    if not resposta.texto:
+        return False, "O modelo devolveu uma resposta vazia."
 
-            cliente = genai.Client(api_key=chave)
-
-            resposta = cliente.models.generate_content(
-                model=config.MODELO_CONSOLIDACAO,
-                contents=pedido,
-            )
-
-            texto = (getattr(resposta, "text", "") or "").strip()
-
-            if texto:
-                return True, texto
-
-            ultimo_erro = "O modelo devolveu uma resposta vazia."
-
-        except Exception as erro:
-            ultimo_erro = f"Falha ao chamar o modelo: {erro}"
-
-            print(
-                f"[MEMORIA] Tentativa {tentativa + 1} de "
-                f"{config.TENTATIVAS_CONSOLIDACAO} falhou: "
-                f"{str(erro)[:120]}"
-            )
-
-    return False, ultimo_erro
+    return True, resposta.texto
 
 
 # Pede ao Gemini um resumo condensado das notas arquivadas. Devolve

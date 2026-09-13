@@ -142,6 +142,30 @@ EXIGIR_AUTENTICACAO = os.getenv(
     "true",
 ).strip().lower() not in ("false", "0", "nao", "não")
 
+# Se as ferramentas "simples" de pacote são declaradas ao cérebro ou
+# descobertas sob demanda pelo sub-agente
+# (jarvis/pacotes/agente_ferramentas/).
+#
+# Padrão True, e a economia é a razão de existir: medido neste
+# projeto, o prefixo de toda chamada era 18.182 tokens — 10.580 de
+# schema de ferramenta e 8.282 de instrução de sistema — e um cérebro
+# de voz caro paga isso em TODO turno. Com as 40 simples fora do
+# prefixo e o manual delas movido para fora do prompt, sobra menos da
+# metade.
+#
+# Colocar FERRAMENTAS_SOB_DEMANDA=false no .env devolve o
+# comportamento antigo (toda ferramenta declarada, prompt inteiro).
+# É a saída se o modelo começar a se comportar pior sem ver a lista —
+# o risco real desta troca é ele deixar de perceber que PODE fazer
+# algo, não executar algo errado.
+#
+# Quem aplica isto é perfis.preparar_chamada(), único ponto por onde
+# os dois cérebros resolvem quais ferramentas declarar.
+FERRAMENTAS_SOB_DEMANDA = os.getenv(
+    "FERRAMENTAS_SOB_DEMANDA",
+    "true",
+).strip().lower() not in ("false", "0", "nao", "não")
+
 # Tempo, em segundos, sem atividade REAL (fala do ALFRED ou execução
 # de uma função — nunca só ruído captado pelo microfone) durante uma
 # chamada ativa antes de encerrá-la automaticamente. Ver
@@ -181,6 +205,16 @@ def config_schema():
                 "Nome de identidade do assistente (padrão: ALFRED — "
                 "vale já na próxima chamada; também editável direto "
                 "na tela principal)"
+            ),
+            "sensivel": False,
+            "obrigatoria": False,
+        },
+        {
+            "nome": "FERRAMENTAS_SOB_DEMANDA",
+            "rotulo": (
+                "Descobrir ferramentas sob demanda em vez de declarar "
+                "todas (true/false, padrão true — economiza mais da "
+                "metade dos tokens de cada turno)"
             ),
             "sensivel": False,
             "obrigatoria": False,

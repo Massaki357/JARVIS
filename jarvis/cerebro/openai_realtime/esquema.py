@@ -18,34 +18,20 @@ formato de chat completions, que aninha tudo dentro de "function".
 
 import json
 
-
-# O SDK do Gemini serializa o tipo como "OBJECT"/"STRING"/"ARRAY"; o
-# esquema JSON usado pela OpenAI espera minúsculas. A conversão é
-# recursiva porque um parâmetro pode ter properties aninhadas e items
-# de array.
-def _normalizar_no(no):
-    if not isinstance(no, dict):
-        return no
-
-    convertido = {}
-
-    for chave, valor in no.items():
-        if chave == "type" and isinstance(valor, str):
-            convertido[chave] = valor.lower()
-
-        elif chave == "properties" and isinstance(valor, dict):
-            convertido[chave] = {
-                nome: _normalizar_no(sub)
-                for nome, sub in valor.items()
-            }
-
-        elif chave == "items":
-            convertido[chave] = _normalizar_no(valor)
-
-        else:
-            convertido[chave] = valor
-
-    return convertido
+# A normalização de tipo do esquema JSON ("OBJECT" -> "object", e
+# assim por diante, recursivamente) nasceu neste arquivo, mas hoje
+# mora em jarvis/servicos/agentes/ferramentas.py: ela é usada tanto
+# aqui quanto pela camada de agentes, e deixá-la aqui dentro criava um
+# ciclo de importação (agentes -> cerebro.openai_realtime ->
+# registro_pacotes -> delegacao_ia -> agentes) que impedia o app de
+# subir. Mesma lição de PACOTES_REGISTRADOS: o que dois lados usam não
+# pode morar dentro de um deles.
+#
+# O nome local continua _normalizar_no para o resto deste arquivo não
+# mudar.
+from jarvis.servicos.agentes.ferramentas import (
+    normalizar_esquema as _normalizar_no,
+)
 
 
 # Uma FunctionDeclaration -> um dict de tool da Realtime API. Retorna

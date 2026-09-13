@@ -58,6 +58,7 @@ from pathlib import Path
 from jarvis.caminhos import PASTA_PERFIS, garantir_pasta
 
 from . import catalogo_ferramentas
+from . import ferramentas_diretas
 
 # Protege leitura e escrita concorrente dos perfis e do índice. A
 # janela de perfis roda na thread da GUI e o início da chamada roda na
@@ -329,13 +330,83 @@ def filtrar_declaracoes(declaracoes, permitidas):
     lista que chega aqui já é a verdade daquele provedor.
     """
     if permitidas is None:
-        return list(declaracoes)
+        filtradas = list(declaracoes)
 
-    return [
-        declaracao
-        for declaracao in declaracoes
-        if getattr(declaracao, "name", None) in permitidas
-    ]
+    else:
+        filtradas = [
+            declaracao
+            for declaracao in declaracoes
+            if getattr(declaracao, "name", None) in permitidas
+        ]
+
+    # Troca a descrição longa de cada ferramenta DIRETA pela linha curta
+    # da lista do perfil (ver ferramentas_diretas.py). Continua sem ler
+    # disco: a lista já foi carregada por preparar_chamada, que os dois
+    # workers rodam com asyncio.to_thread logo antes desta função. É
+    # aqui porque este é o único ponto por onde as declarações dos dois
+    # cérebros passam antes de irem para a sessão — inclusive as nativas
+    # do Gemini, que não são alcançáveis de nenhum outro lugar.
+    return ferramentas_diretas.aplicar_descricoes_curtas(filtradas)
+
+
+def _sem_as_ocultas(permitidas):
+    """
+    Tira do conjunto DECLARÁVEL as ferramentas que o cérebro descobre
+    sob demanda (jarvis/pacotes/agente_ferramentas/).
+
+    É AQUI, e em nenhum outro lugar, que "o perfil habilita" deixa de
+    ser a mesma coisa que "o cérebro declara". As duas noções se
+    separaram quando o prefixo de 18 mil tokens por turno virou
+    problema de custo:
+
+      habilitada = o perfil permite usar (não mudou nada)
+      declarada  = vai no `tools` da sessão e é paga em todo turno
+
+    Uma ferramenta oculta continua HABILITADA: buscar_ferramenta a
+    encontra e executar_ferramenta a executa. O perfil segue mandando
+    em quem pode o quê — desligar uma ferramenta no perfil continua
+    desligando de verdade, porque o sub-agente também filtra pelo
+    perfil (ver agente_ferramentas/catalogo._nomes_permitidos).
+
+    Esta função é o único ponto de aplicação porque preparar_chamada()
+    é o único ponto por onde os dois workers resolvem a lista — e foi
+    o que permitiu fazer tudo isso sem editar cliente_live.py nem
+    cliente_realtime.py.
+
+    Nunca levanta: se a derivação falhar, devolve `permitidas` intacto
+    e a chamada abre com tudo declarado, que é o comportamento antigo
+    e funciona. Falhar caro é melhor que falhar mudo.
+    """
+    # Imports adiados: este módulo é a camada de dados dos perfis, e é
+    # importado por testes e scripts onde carregar o registro de
+    # pacotes inteiro seria peso à toa.
+    from jarvis.nucleo.config import FERRAMENTAS_SOB_DEMANDA
+
+    if not FERRAMENTAS_SOB_DEMANDA:
+        return permitidas
+
+    try:
+        from jarvis.nucleo.registro_pacotes import ferramentas_ocultas
+
+        ocultas = ferramentas_ocultas()
+
+        if not ocultas:
+            return permitidas
+
+        # None é o curinga "todas as registradas". Para poder subtrair,
+        # ele vira o conjunto concreto de agora.
+        if permitidas is None:
+            permitidas = set(catalogo_ferramentas.nomes_disponiveis())
+
+        return set(permitidas) - ocultas
+
+    except Exception as erro:
+        print(
+            "[PERFIL] Não consegui resolver as ferramentas sob "
+            f"demanda; declarando todas. ({erro})"
+        )
+
+        return permitidas
 
 
 def preparar_chamada(slug=None):
@@ -378,12 +449,18 @@ def preparar_chamada(slug=None):
     """
     slug = slug or perfil_ativo()
 
+    # A lista curta das ferramentas diretas desta chamada vai para a
+    # memória AQUI, fora do laço de eventos — filtrar_declaracoes, que
+    # vem logo depois nos dois workers, só lê dessa memória. Nunca
+    # levanta: sem lista, a chamada só usa as descrições longas.
+    ferramentas_diretas.carregar_para_chamada(slug)
+
     try:
         perfil = carregar_perfil(slug)
 
         return {
             "slug": perfil["slug"],
-            "permitidas": (
+            "permitidas": _sem_as_ocultas(
                 None
                 if perfil["ferramentas"] is TODAS_AS_FERRAMENTAS
                 else set(perfil["ferramentas"])

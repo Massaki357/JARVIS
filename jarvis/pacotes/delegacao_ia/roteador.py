@@ -21,8 +21,8 @@ MAPA_PROVEDOR_FALLBACK = {
 
 # Textos devolvidos ao Gemini como resultado da tool (não prompts
 # para Groq/Cerebras/OpenAI em si — ver jarvis/nucleo/prompts/,
-# seção DELEGACAO_IA, e o comentário em provedores._chamar_completions
-# sobre o "prompt" real ser o conteudo cru vindo do próprio Gemini).
+# seção DELEGACAO_IA, e o comentário em provedores._consultar sobre o
+# "prompt" real ser o conteudo cru vindo do próprio Gemini).
 MENSAGEM_INDISPONIVEL = prompts.DELEGACAO_INDISPONIVEL
 
 # Diferente de MENSAGEM_INDISPONIVEL: aqui a falha PRECISA ser

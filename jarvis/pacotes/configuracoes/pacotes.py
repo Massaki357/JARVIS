@@ -10,6 +10,7 @@
 # jarvis/pacotes/configuracoes/window.py.
 import jarvis.pacotes.abrir_aplicativo.config as abrir_aplicativo_config
 import jarvis.pacotes.admin_terminal.config as admin_terminal_config
+import jarvis.pacotes.agente_ferramentas.config as agente_ferramentas_config
 import jarvis.pacotes.ativacao_voz.config as ativacao_voz_config
 import jarvis.pacotes.casa_inteligente.config as casa_inteligente_config
 import jarvis.pacotes.criar_arquivo.config as criar_arquivo_config
@@ -48,6 +49,10 @@ PACOTES_COM_CONFIG = [
     ("Rede Jarvis (comandos remotos via MQTT)", rede_jarvis_config),
     ("Casa Inteligente (Tuya)", casa_inteligente_config),
     ("Delegação de IA (Groq / Cerebras / OpenAI)", delegacao_ia_config),
+    (
+        "Sub-agente de Ferramentas (Groq)",
+        agente_ferramentas_config,
+    ),
     ("Comandos Administrativos", admin_terminal_config),
     ("Identificação de Plantas (Pl@ntNet)", identificacao_planta_config),
     ("Segunda Opinião Visual (Mistral)", identificacao_visual_config),

@@ -1,102 +1,117 @@
-# requests é suficiente aqui: Groq, Cerebras e OpenAI expõem uma API
-# de completions compatível com o formato da OpenAI
-# (POST .../chat/completions), então não precisamos de um SDK
-# diferente por provedor.
-import requests
+"""
+Os quatro provedores de texto da delegação — Groq, Cerebras, OpenAI e
+Gemini — todos pelo mesmo caminho: jarvis/servicos/agentes/.
+
+O QUE MUDOU AQUI, E O QUE NÃO MUDOU
+===================================
+
+NÃO mudou o contrato: cada consultar_* continua devolvendo
+(sucesso, texto_ou_mensagem_de_erro) e continua sem levantar exceção
+nunca. O roteador deste pacote não precisou saber de nada disso.
+
+MUDOU a implementação. Antes eram DUAS coisas diferentes no mesmo
+arquivo:
+
+  - um _chamar_completions com requests.post, que servia Groq,
+    Cerebras e OpenAI porque as três expõem a API no formato da
+    OpenAI (montando o cabeçalho Authorization, o corpo, e lendo
+    dados["choices"][0]["message"]["content"] na mão);
+  - um consultar_gemini separado, com o SDK google-genai, porque o
+    Gemini NÃO expõe esse formato — com timeout em milissegundos
+    enquanto o outro contava segundos, e com um
+    automatic_function_calling=disable só para calar um aviso do SDK.
+
+Agora os quatro são a mesma chamada. O LangChain cobre a diferença
+de protocolo, e a diferença de timeout deixou de existir: a camada de
+agentes conta em segundos para todo mundo.
+
+A CEREBRAS continua alcançada pelo formato da OpenAI (ChatOpenAI com
+base_url), pelo mesmo motivo de sempre — a API dela é compatível.
+O porquê de não ser o langchain-cerebras está em
+jarvis/servicos/agentes/modelos.py: a partir da 0.7.0 ele exige
+Python <3.13, e esta venv é 3.13.
+"""
+
+from jarvis.servicos import agentes
 
 from . import config
 
 
-# Faz uma chamada de completions simples (sem streaming) a um
-# endpoint compatível com a API da OpenAI. Nunca lança exceção —
-# sempre retorna (sucesso: bool, texto_ou_mensagem_de_erro: str).
-def _chamar_completions(
-    url,
-    api_key,
+def _consultar(
+    provedor,
     modelo,
+    api_key,
+    nome_da_chave,
     prompt,
     json_esperado=False,
     timeout=None,
 ):
-    corpo = {
-        "model": modelo,
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt,
-            }
-        ],
-        "stream": False,
-    }
+    """
+    Uma consulta de texto a um provedor. Nunca levanta exceção —
+    sempre devolve (sucesso, texto_ou_mensagem_de_erro).
 
-    # Modo JSON nativo do provedor. Quem pede isto (a criação de
-    # perfil) já valida o JSON em código de qualquer jeito — isto só
-    # reduz a chance de vir texto solto em volta, não substitui a
-    # validação.
-    if json_esperado:
-        corpo["response_format"] = {"type": "json_object"}
+    nome_da_chave é só para a mensagem de erro dizer QUAL variável
+    do .env está faltando; o valor dela nunca aparece em lugar
+    nenhum.
+    """
+    if not api_key:
+        return False, f"{nome_da_chave} não configurada no .env."
 
-    try:
-        resposta = requests.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json=corpo,
+    resposta = agentes.executar(
+        agentes.PedidoAgente(
+            provedor=provedor,
+            modelo=modelo,
+            api_key=api_key,
+            texto=prompt,
+            # Modo JSON nativo do provedor. Quem pede isto (a criação
+            # de perfil) já valida o JSON em código de qualquer jeito
+            # — isto só reduz a chance de vir texto solto em volta,
+            # não substitui a validação.
+            json_esperado=json_esperado,
             timeout=timeout or config.TIMEOUT_SEGUNDOS,
-        )
+        ),
+        agentes.PoliticaRepeticao(rotulo="delegacao_ia"),
+    )
 
-        resposta.raise_for_status()
+    if not resposta.sucesso:
+        return False, f"Falha na chamada ao provedor: {resposta.erro}"
 
-        dados = resposta.json()
+    if not resposta.texto:
+        return False, "O provedor devolveu uma resposta vazia."
 
-        texto = dados["choices"][0]["message"]["content"]
-
-        return True, texto.strip()
-
-    except requests.Timeout:
-        return False, "Tempo esgotado ao consultar o provedor."
-
-    except requests.RequestException as erro:
-        return False, f"Falha na chamada ao provedor: {erro}"
-
-    except (KeyError, IndexError, ValueError) as erro:
-        return False, f"Resposta inesperada do provedor: {erro}"
+    return True, resposta.texto
 
 
-def consultar_groq(prompt):
-    if not config.GROQ_API_KEY:
-        return False, "GROQ_API_KEY não configurada no .env."
-
-    return _chamar_completions(
-        "https://api.groq.com/openai/v1/chat/completions",
-        config.GROQ_API_KEY,
+def consultar_groq(prompt, json_esperado=False, timeout=None):
+    return _consultar(
+        "groq",
         config.MODELO_GROQ,
+        config.GROQ_API_KEY,
+        "GROQ_API_KEY",
         prompt,
+        json_esperado=json_esperado,
+        timeout=timeout,
     )
 
 
-def consultar_cerebras(prompt):
-    if not config.CEREBRAS_API_KEY:
-        return False, "CEREBRAS_API_KEY não configurada no .env."
-
-    return _chamar_completions(
-        "https://api.cerebras.ai/v1/chat/completions",
-        config.CEREBRAS_API_KEY,
+def consultar_cerebras(prompt, json_esperado=False, timeout=None):
+    return _consultar(
+        "cerebras",
         config.MODELO_CEREBRAS,
+        config.CEREBRAS_API_KEY,
+        "CEREBRAS_API_KEY",
         prompt,
+        json_esperado=json_esperado,
+        timeout=timeout,
     )
 
 
 def consultar_openai(prompt, json_esperado=False, timeout=None):
-    if not config.OPENAI_API_KEY:
-        return False, "OPENAI_API_KEY não configurada no .env."
-
-    return _chamar_completions(
-        "https://api.openai.com/v1/chat/completions",
-        config.OPENAI_API_KEY,
+    return _consultar(
+        "openai",
         config.MODELO_OPENAI,
+        config.OPENAI_API_KEY,
+        "OPENAI_API_KEY",
         prompt,
         json_esperado=json_esperado,
         timeout=timeout,
@@ -105,51 +120,19 @@ def consultar_openai(prompt, json_esperado=False, timeout=None):
 
 def consultar_gemini(prompt, json_esperado=False, timeout=None):
     """
-    Consulta o Gemini. Mesma assinatura e mesmo contrato dos outros
-    três — (sucesso, texto_ou_erro), nunca levanta exceção.
+    O Gemini pela MESMA função dos outros três.
 
-    Não passa por _chamar_completions porque o Gemini NÃO expõe a API
-    no formato da OpenAI: usa o SDK google-genai, que o projeto já
-    tem como dependência obrigatória.
+    Antes este era o caso especial do arquivo, com um cliente e um
+    tratamento de erro próprios só porque o protocolo era outro. Com
+    a camada de agentes, o protocolo é problema do LangChain, e o
+    Gemini vira mais uma linha igual às de cima.
     """
-    if not config.GEMINI_API_KEY:
-        return False, "GEMINI_API_KEY não configurada no .env."
-
-    try:
-        from google import genai
-        from google.genai import types
-
-        cliente = genai.Client(api_key=config.GEMINI_API_KEY)
-
-        opcoes = {
-            "http_options": types.HttpOptions(
-                timeout=(timeout or config.TIMEOUT_SEGUNDOS) * 1000
-            ),
-            # Sem isto o SDK imprime um aviso sobre "automatic function
-            # calling" a cada chamada — barulho que cairia direto no
-            # painel de console do app, que duplica o stdout. Não
-            # usamos AFC aqui: queremos texto de volta, não chamada de
-            # função.
-            "automatic_function_calling": (
-                types.AutomaticFunctionCallingConfig(disable=True)
-            ),
-        }
-
-        if json_esperado:
-            opcoes["response_mime_type"] = "application/json"
-
-        resposta = cliente.models.generate_content(
-            model=config.MODELO_GEMINI,
-            contents=prompt,
-            config=types.GenerateContentConfig(**opcoes),
-        )
-
-        texto = (getattr(resposta, "text", "") or "").strip()
-
-        if not texto:
-            return False, "O Gemini devolveu uma resposta vazia."
-
-        return True, texto
-
-    except Exception as erro:
-        return False, f"Falha na chamada ao Gemini: {erro}"
+    return _consultar(
+        "gemini",
+        config.MODELO_GEMINI,
+        config.GEMINI_API_KEY,
+        "GEMINI_API_KEY",
+        prompt,
+        json_esperado=json_esperado,
+        timeout=timeout,
+    )

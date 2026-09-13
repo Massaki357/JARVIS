@@ -2018,168 +2018,226 @@ def testar_falha_de_roteamento(worker):
 # 6d. RETRY DE RATE LIMIT E CORPO DO ERRO DA GROQ
 # ====================================================================
 def testar_retry_groq():
-    titulo("6d. Retry no 429 da Groq e preservação do corpo do erro")
+    titulo("6d. Retry no limite da Groq e preservação do motivo do erro")
+
+    from types import SimpleNamespace
+
+    from langchain_core.messages import AIMessage
 
     from jarvis.roteamento_hierarquico import config as config_rot
     from jarvis.roteamento_hierarquico import roteador
+    from jarvis.servicos import agentes
+    from jarvis.servicos.agentes import agente as motor
 
-    class RespostaFalsa:
-        def __init__(self, status, corpo=None, texto="", headers=None):
-            self.status_code = status
-            self._corpo = corpo
-            self.text = texto
-            self.headers = headers or {}
+    # Com o LangChain, a falha não chega mais como uma resposta HTTP
+    # lida dentro do roteador: chega como EXCEÇÃO do SDK do provedor,
+    # carregando a resposta original em .response. Quem a interpreta é
+    # jarvis/servicos/agentes/erros.py — e é por isso que os primeiros
+    # checks deste teste mudaram de endereço sem mudar de assunto.
+    class ErroFalso(Exception):
+        def __init__(self, status, mensagem, headers=None):
+            super().__init__(mensagem)
+            self.response = SimpleNamespace(
+                status_code=status,
+                headers=headers or {},
+            )
 
-        def json(self):
-            if self._corpo is None:
-                raise ValueError("sem json")
+    MENSAGEM_429 = (
+        "Rate limit reached for model `openai/gpt-oss-20b` ... "
+        "on tokens per minute (TPM): Limit 8000, Used 6406. "
+        "Please try again in 975ms."
+    )
 
-            return self._corpo
+    erro_429 = ErroFalso(429, MENSAGEM_429)
 
-    corpo_429 = {
-        "error": {
-            "message": (
-                "Rate limit reached for model `openai/gpt-oss-20b` ... "
-                "on tokens per minute (TPM): Limit 8000, Used 6406. "
-                "Please try again in 975ms."
-            ),
-            "code": "rate_limit_exceeded",
-        }
-    }
-
-    # O corpo do erro é preservado — sem isto, um 429 recuperável fica
-    # indistinguível de qualquer outro erro HTTP.
-    detalhe = roteador._detalhe_do_erro(RespostaFalsa(429, corpo_429))
+    # O motivo real é preservado — sem isto, um limite recuperável fica
+    # indistinguível de qualquer outra falha.
+    detalhe = agentes.erros.descrever(erro_429)
 
     checar(
         "tokens per minute" in detalhe and "8000" in detalhe,
-        f"o corpo do erro da Groq é preservado ({detalhe[:60]}...)",
+        f"o motivo do erro da Groq é preservado ({detalhe[:60]}...)",
     )
 
     checar(
-        roteador._detalhe_do_erro(
-            RespostaFalsa(500, None, "Internal Server Error")
-        )
-        == "Internal Server Error",
-        "resposta sem JSON cai no texto cru, sem estourar",
+        agentes.erros.classificar(erro_429) == agentes.erros.LIMITE,
+        "e um 429 é classificado como limite de uso",
     )
+
+    checar(
+        agentes.erros.classificar(ErroFalso(401, "invalid_api_key"))
+        == agentes.erros.AUTENTICACAO,
+        "enquanto um 401 é classificado como autenticação",
+    )
+
+    def espera(erro, tentativa):
+        return agentes.erros.espera_sugerida(
+            erro,
+            tentativa,
+            config_rot.ESPERA_BASE_RATE_LIMIT,
+            config_rot.ESPERA_MAXIMA_RATE_LIMIT,
+        )
 
     # retry-after do servidor é respeitado, e limitado pelo teto.
     checar(
-        roteador._espera_do_retry(
-            RespostaFalsa(429, corpo_429, headers={"retry-after": "1"}), 0
-        )
-        == 1.0,
+        espera(ErroFalso(429, MENSAGEM_429, {"retry-after": "1"}), 0) == 1.0,
         "o retry-after do servidor é respeitado",
     )
 
     checar(
-        roteador._espera_do_retry(
-            RespostaFalsa(429, corpo_429, headers={"retry-after": "999"}), 0
-        )
+        espera(ErroFalso(429, MENSAGEM_429, {"retry-after": "999"}), 0)
         == config_rot.ESPERA_MAXIMA_RATE_LIMIT,
         f"e limitado a {config_rot.ESPERA_MAXIMA_RATE_LIMIT}s "
         "(o valor vem de fora)",
     )
 
+    # Sem o cabeçalho, a espera dita DENTRO da mensagem ainda vale —
+    # continua sendo o servidor falando, não um chute nosso.
+    checar(
+        abs(espera(erro_429, 0) - 0.975) < 0.001,
+        f'o "try again in 975ms" da mensagem é lido ({espera(erro_429, 0)})',
+    )
+
     esperas = [
-        roteador._espera_do_retry(RespostaFalsa(429, corpo_429), tentativa)
+        espera(ErroFalso(429, "Rate limit reached"), tentativa)
         for tentativa in range(3)
     ]
 
     checar(
         esperas[0] < esperas[1] <= config_rot.ESPERA_MAXIMA_RATE_LIMIT,
-        f"sem retry-after, o backoff cresce {esperas}",
+        f"sem nenhum dos dois, o backoff cresce {esperas}",
     )
 
-    # O retry em si: 429 duas vezes, sucesso na terceira.
-    chamadas = {"n": 0}
-    dormidas = []
+    # --- O retry em si, agora medido dentro da camada de agentes ------
+    #
+    # O ponto de mock desceu um nível: antes era requests.post dentro do
+    # roteador, agora é o modelo do LangChain que a camada constrói.
+    # O que está sendo verificado é o mesmo de sempre.
+    class ModeloFalso:
+        def __init__(self, sequencia, registro):
+            self.sequencia = sequencia
+            self.registro = registro
 
-    def post_falso(*args, **kwargs):
-        chamadas["n"] += 1
+        # bind_tools/bind devolvem o próprio modelo: aqui não há
+        # ferramenta nem formato para amarrar.
+        def bind_tools(self, *args, **kwargs):
+            return self
 
-        if chamadas["n"] < 3:
-            return RespostaFalsa(429, corpo_429, headers={"retry-after": "0"})
+        def bind(self, *args, **kwargs):
+            return self
 
-        return RespostaFalsa(200, {"choices": [], "usage": {}})
+        def invoke(self, mensagens):
+            self.registro["chamadas"] += 1
+            self.registro["papeis"].append(
+                [type(m).__name__ for m in mensagens]
+            )
 
-    original_post = roteador.requests.post
-    original_sleep = roteador.time.sleep
+            indice = min(
+                self.registro["chamadas"] - 1, len(self.sequencia) - 1
+            )
+            item = self.sequencia[indice]
 
-    roteador.requests.post = post_falso
-    roteador.time.sleep = dormidas.append
+            if isinstance(item, Exception):
+                raise item
 
-    try:
-        sucesso, dados, _ = roteador._chamar_groq([], "modelo")
+            return item
 
-        checar(
-            sucesso and chamadas["n"] == 3,
-            f"429 é repetido até dar certo ({chamadas['n']} tentativas)",
+    def rodar(sequencia, historico=None):
+        """Uma etapa do roteador com respostas pré-programadas."""
+        registro = {"chamadas": 0, "dormidas": [], "papeis": []}
+
+        criar_original = motor.modelos.criar_modelo
+        sleep_original = motor.time.sleep
+
+        motor.modelos.criar_modelo = (
+            lambda *a, **k: ModeloFalso(sequencia, registro)
         )
+        motor.time.sleep = registro["dormidas"].append
 
-        checar(
-            len(dormidas) == 2,
-            f"e esperou entre as tentativas ({dormidas})",
-        )
+        try:
+            resposta = roteador._consultar(
+                roteador._pedido_groq(
+                    "instrução de sistema",
+                    "uma frase qualquer",
+                    "modelo-de-teste",
+                    historico=historico,
+                )
+            )
 
-        # Estourando as tentativas, devolve a explicação REAL.
-        chamadas["n"] = 0
-        dormidas.clear()
+        finally:
+            motor.modelos.criar_modelo = criar_original
+            motor.time.sleep = sleep_original
 
-        roteador.requests.post = lambda *a, **k: RespostaFalsa(
-            429, corpo_429, headers={"retry-after": "0"}
-        )
+        return resposta, registro
 
-        sucesso, dados, _ = roteador._chamar_groq([], "modelo")
+    # 429 duas vezes, sucesso na terceira.
+    resposta, registro = rodar(
+        [erro_429, erro_429, AIMessage(content="deu certo")]
+    )
 
-        checar(
-            not sucesso and "tokens per minute" in dados,
-            "esgotadas as tentativas, o motivo real chega a quem chamou",
-        )
+    checar(
+        resposta.sucesso and registro["chamadas"] == 3,
+        f"429 é repetido até dar certo ({registro['chamadas']} tentativas)",
+    )
 
-        checar(
-            len(dormidas) == config_rot.TENTATIVAS_RATE_LIMIT - 1,
-            "e não dorme depois da última tentativa "
-            f"({len(dormidas)} esperas para "
-            f"{config_rot.TENTATIVAS_RATE_LIMIT} tentativas)",
-        )
+    checar(
+        len(registro["dormidas"]) == 2,
+        f"e esperou entre as tentativas ({registro['dormidas']})",
+    )
 
-        # Erro que NÃO é 429 não é repetido: seria gastar o tempo do
-        # usuário para receber o mesmo erro.
-        chamadas["n"] = 0
+    # Estourando as tentativas, devolve a explicação REAL.
+    resposta, registro = rodar([erro_429])
 
-        def post_400(*args, **kwargs):
-            chamadas["n"] += 1
+    checar(
+        not resposta.sucesso and "tokens per minute" in resposta.erro,
+        "esgotadas as tentativas, o motivo real chega a quem chamou",
+    )
 
-            return RespostaFalsa(400, {"error": {"message": "modelo invalido"}})
+    checar(
+        registro["chamadas"] == config_rot.TENTATIVAS_RATE_LIMIT,
+        f"gastando o orçamento inteiro ({registro['chamadas']} de "
+        f"{config_rot.TENTATIVAS_RATE_LIMIT})",
+    )
 
-        roteador.requests.post = post_400
+    checar(
+        len(registro["dormidas"]) == config_rot.TENTATIVAS_RATE_LIMIT - 1,
+        "e não dorme depois da última tentativa "
+        f"({len(registro['dormidas'])} esperas para "
+        f"{config_rot.TENTATIVAS_RATE_LIMIT} tentativas)",
+    )
 
-        sucesso, dados, _ = roteador._chamar_groq([], "modelo")
+    # Erro que NÃO é 429 não é repetido: seria gastar o tempo do
+    # usuário para receber o mesmo erro.
+    resposta, registro = rodar([ErroFalso(400, "modelo invalido")])
 
-        checar(
-            not sucesso and chamadas["n"] == 1,
-            "erro que não é 429 volta na primeira tentativa",
-        )
+    checar(
+        not resposta.sucesso and registro["chamadas"] == 1,
+        f"erro que não é 429 volta na primeira tentativa "
+        f"({registro['chamadas']} chamada)",
+    )
 
-        checar(
-            "400" in dados and "modelo invalido" in dados,
-            f"com status e motivo juntos ({dados})",
-        )
+    checar(
+        "modelo invalido" in resposta.erro,
+        f"com o motivo junto ({resposta.erro})",
+    )
 
-    finally:
-        roteador.requests.post = original_post
-        roteador.time.sleep = original_sleep
+    # A instrução de sistema e o histórico chegam como mensagens do
+    # LangChain, na ordem certa — é o que substituiu a lista de dicts
+    # {"role": ...} que este teste inspecionava antes.
+    _, registro = rodar(
+        [AIMessage(content="ok")],
+        historico=[{"role": "assistant", "content": "falei antes"}],
+    )
+
+    checar(
+        registro["papeis"]
+        and registro["papeis"][0]
+        == ["SystemMessage", "AIMessage", "HumanMessage"],
+        f"sistema + histórico + usuário, nessa ordem "
+        f"({registro['papeis'][0] if registro['papeis'] else []})",
+    )
 
 
-# ====================================================================
-# 6e. CAPTURA DE IMAGEM PARA AS FERRAMENTAS VISUAIS DO CATÁLOGO
-# ====================================================================
-# identificar_planta e consultar_segunda_opiniao_visual são
-# alcançáveis pelo roteamento, mas dependem de alguém capturar a
-# imagem e injetá-la em args — no cliente do Gemini quem faz isso é o
-# próprio cliente. Sem o equivalente aqui, as duas falhavam sempre.
 def testar_captura_para_ferramentas_visuais(worker):
     titulo("6e. Captura de imagem para as ferramentas visuais")
 
@@ -3187,10 +3245,19 @@ def testar_texto_da_resposta(worker):
 def testar_tool_call_indevida():
     titulo("6j. O 400 de chamada de ferramenta indevida")
 
+    from types import SimpleNamespace
+
+    from langchain_core.messages import AIMessage
+
     from jarvis.roteamento_hierarquico import config as config_rot
     from jarvis.roteamento_hierarquico import roteador
+    from jarvis.servicos import agentes
+    from jarvis.servicos.agentes import agente as motor
 
-    detectar = roteador._e_chamada_de_ferramenta_indevida
+    # O reconhecimento mudou de arquivo junto com o resto da
+    # classificação de erro, mas continua sendo exatamente a mesma
+    # regra — ver jarvis/servicos/agentes/erros.py.
+    detectar = agentes.erros.e_chamada_de_ferramenta_indevida
 
     checar(
         detectar("Tool choice is none, but model called a tool"),
@@ -3208,64 +3275,79 @@ def testar_tool_call_indevida():
         "e não confunde com 401, 429, None ou vazio",
     )
 
-    class RespostaFalsa:
-        def __init__(self, status, mensagem):
-            self.status_code = status
-            self._corpo = {"error": {"message": mensagem}}
-            self.text = mensagem
-            self.headers = {}
-
-        def json(self):
-            return self._corpo
+    class ErroFalso(Exception):
+        def __init__(self, status, mensagem, headers=None):
+            super().__init__(mensagem)
+            self.response = SimpleNamespace(
+                status_code=status,
+                headers=headers or {},
+            )
 
     MSG_TOOL = "Tool choice is none, but model called a tool"
-    SUCESSO = {
-        "choices": [{"message": {"content": "FERRAMENTAS: salvar_memoria"}}],
-        "usage": {"total_tokens": 1500},
-    }
 
-    class RespostaOk:
-        status_code = 200
-        text = ""
-        headers = {}
+    SUCESSO = AIMessage(content="FERRAMENTAS: salvar_memoria")
 
-        def json(self):
-            return SUCESSO
+    class ModeloFalso:
+        def __init__(self, sequencia, registro):
+            self.sequencia = sequencia
+            self.registro = registro
 
-    def rodar(sequencia, mensagens=None):
-        """_chamar_groq com respostas pré-programadas, sem tocar a rede."""
-        estado = {"n": 0, "dormiu": []}
+        def bind_tools(self, *args, **kwargs):
+            return self
 
-        def post_falso(*a, **k):
-            i = min(estado["n"], len(sequencia) - 1)
-            estado["n"] += 1
+        def bind(self, *args, **kwargs):
+            return self
 
-            return sequencia[i]
+        def invoke(self, mensagens):
+            self.registro["chamadas"] += 1
 
-        post_original = roteador.requests.post
-        sleep_original = roteador.time.sleep
-        roteador.requests.post = post_falso
-        roteador.time.sleep = lambda s: estado["dormiu"].append(s)
+            indice = min(
+                self.registro["chamadas"] - 1, len(self.sequencia) - 1
+            )
+            item = self.sequencia[indice]
+
+            if isinstance(item, Exception):
+                raise item
+
+            return item
+
+    def rodar(sequencia):
+        """Uma etapa do roteador com respostas pré-programadas."""
+        registro = {"chamadas": 0, "dormidas": []}
+
+        criar_original = motor.modelos.criar_modelo
+        sleep_original = motor.time.sleep
+
+        motor.modelos.criar_modelo = (
+            lambda *a, **k: ModeloFalso(sequencia, registro)
+        )
+        motor.time.sleep = registro["dormidas"].append
 
         try:
-            sucesso, dados, _ = roteador._chamar_groq(
-                mensagens or [], "modelo-de-teste"
+            resposta = roteador._consultar(
+                roteador._pedido_groq(
+                    "instrução de sistema",
+                    "salve isso na memória",
+                    "modelo-de-teste",
+                )
             )
 
         finally:
-            roteador.requests.post = post_original
-            roteador.time.sleep = sleep_original
+            motor.modelos.criar_modelo = criar_original
+            motor.time.sleep = sleep_original
 
-        return sucesso, dados, estado["n"], estado["dormiu"]
+        return (
+            resposta,
+            registro["chamadas"],
+            registro["dormidas"],
+        )
 
     # Falha uma vez e acerta na segunda — o caso comum.
-    sucesso, dados, n, dormiu = rodar(
-        [RespostaFalsa(400, MSG_TOOL), RespostaOk()]
-    )
+    resposta, n, dormiu = rodar([ErroFalso(400, MSG_TOOL), SUCESSO])
 
-    checar(sucesso and n == 2, f"repete e acerta na 2ª tentativa ({n} chamadas)")
+    checar(resposta.sucesso and n == 2, f"repete e acerta na 2ª tentativa ({n} chamadas)")
     checar(
-        dados["choices"][0]["message"]["content"] == "FERRAMENTAS: salvar_memoria",
+        resposta.texto == "FERRAMENTAS: salvar_memoria",
         "e entrega a resposta boa, não o erro",
     )
     checar(
@@ -3274,38 +3356,43 @@ def testar_tool_call_indevida():
     )
 
     # Falhando sempre, desiste no orçamento (nunca laço infinito).
-    sucesso, dados, n, _ = rodar([RespostaFalsa(400, MSG_TOOL)])
+    resposta, n, _ = rodar([ErroFalso(400, MSG_TOOL)])
 
     checar(
-        not sucesso and n == config_rot.TENTATIVAS_TOOL_CALL_INDEVIDA,
+        not resposta.sucesso
+        and n == config_rot.TENTATIVAS_TOOL_CALL_INDEVIDA,
         f"desiste após {config_rot.TENTATIVAS_TOOL_CALL_INDEVIDA} "
         f"tentativas ({n} chamadas)",
     )
     checar(
-        "Tool choice is none" in str(dados),
+        "Tool choice is none" in resposta.erro,
         "e preserva o erro original da Groq na mensagem final",
+    )
+    checar(
+        resposta.tipo_erro == agentes.erros.FERRAMENTA_INDEVIDA,
+        "marcando o tipo, que é o que o plano B vai consultar",
     )
 
     # A regra de NÃO repetir os outros 4xx continua valendo.
-    sucesso, _, n, _ = rodar([RespostaFalsa(401, "invalid_api_key")])
-    checar(not sucesso and n == 1, f"401 não repete ({n} chamada)")
+    resposta, n, _ = rodar([ErroFalso(401, "invalid_api_key")])
+    checar(not resposta.sucesso and n == 1, f"401 não repete ({n} chamada)")
 
-    sucesso, _, n, _ = rodar([RespostaFalsa(400, "malformed body")])
-    checar(not sucesso and n == 1, f"400 comum não repete ({n} chamada)")
+    resposta, n, _ = rodar([ErroFalso(400, "malformed body")])
+    checar(not resposta.sucesso and n == 1, f"400 comum não repete ({n} chamada)")
 
     # Os dois orçamentos (429 e 400) são independentes: um 429 no meio
     # não pode consumir as tentativas reservadas ao 400. Com um contador
     # único, o 429 da 2ª chamada gastaria a última tentativa do 400 e a
     # 3ª nunca aconteceria.
-    sucesso, _, n, _ = rodar(
+    resposta, n, _ = rodar(
         [
-            RespostaFalsa(400, MSG_TOOL),
-            RespostaFalsa(429, "Rate limit reached"),
-            RespostaOk(),
+            ErroFalso(400, MSG_TOOL),
+            ErroFalso(429, "Rate limit reached"),
+            SUCESSO,
         ]
     )
     checar(
-        sucesso and n == 3,
+        resposta.sucesso and n == 3,
         f"429 no meio não consome as tentativas do 400 ({n} chamadas)",
     )
 
@@ -3319,36 +3406,29 @@ def testar_tool_call_indevida():
 
     vistas = []
 
-    def groq_falso(mensagens, modelo, tools=None, tool_choice=None):
-        vistas.append([m["role"] for m in mensagens])
+    def consulta_falsa(pedido):
+        vistas.append(list(pedido.historico or []))
 
         # Com histórico, falha sempre do jeito relatado. Sem, funciona.
-        tem_historico = any(m["role"] == "assistant" for m in mensagens)
-
-        if tem_historico:
-            return (
+        if pedido.historico:
+            return agentes.RespostaAgente(
                 False,
-                f"Falha na chamada à Groq (400): {MSG_TOOL}",
-                0.1,
+                erro=f"Falha na chamada à Groq (400): {MSG_TOOL}",
+                tipo_erro=agentes.erros.FERRAMENTA_INDEVIDA,
             )
 
         # Sem histórico funciona — e devolve uma resposta de CONVERSA
         # (sem a linha "FERRAMENTAS:"), de propósito: assim o turno
         # termina na etapa 1 e o que se observa aqui é só a repetição
         # dela, sem a etapa 2 entrando na contagem.
-        return (
+        return agentes.RespostaAgente(
             True,
-            {
-                "choices": [
-                    {"message": {"content": "Claro, vou lembrar disso."}}
-                ],
-                "usage": {"total_tokens": 1200},
-            },
-            0.1,
+            texto="Claro, vou lembrar disso.",
+            uso=agentes.UsoTokens(total=1200),
         )
 
-    original = roteador._chamar_groq
-    roteador._chamar_groq = groq_falso
+    original = roteador._consultar
+    roteador._consultar = consulta_falsa
 
     try:
         resultado = roteador.processar_turno(
@@ -3357,7 +3437,7 @@ def testar_tool_call_indevida():
         )
 
     finally:
-        roteador._chamar_groq = original
+        roteador._consultar = original
 
     checar(
         len(vistas) == 2,
@@ -3367,11 +3447,11 @@ def testar_tool_call_indevida():
 
     if len(vistas) == 2:
         checar(
-            "assistant" in vistas[0],
+            any(m["role"] == "assistant" for m in vistas[0]),
             "a primeira tentativa leva o histórico",
         )
         checar(
-            vistas[1] == ["system", "user"],
+            vistas[1] == [],
             f"e a segunda vai SEM o histórico ({vistas[1]})",
         )
 
@@ -3382,17 +3462,17 @@ def testar_tool_call_indevida():
 
     # Sem histórico nenhum não existe plano B — e não pode inventar um.
     vistas.clear()
-    roteador._chamar_groq = lambda *a, **k: (
+    roteador._consultar = lambda pedido: agentes.RespostaAgente(
         False,
-        f"Falha na chamada à Groq (400): {MSG_TOOL}",
-        0.1,
+        erro=f"Falha na chamada à Groq (400): {MSG_TOOL}",
+        tipo_erro=agentes.erros.FERRAMENTA_INDEVIDA,
     )
 
     try:
         resultado = roteador.processar_turno("qualquer coisa", [])
 
     finally:
-        roteador._chamar_groq = original
+        roteador._consultar = original
 
     checar(
         resultado.falhou,
@@ -3400,9 +3480,6 @@ def testar_tool_call_indevida():
     )
 
 
-# ====================================================================
-# 7. RECUSAS EXPLÍCITAS DO QUE O MODO LOCAL NÃO FAZ
-# ====================================================================
 def testar_recusas(worker):
     titulo("7. Recusas explícitas (o que o protocolo local não permite)")
 

@@ -215,25 +215,29 @@ def medir_cenario_monolitico():
 
     schemas = esquema_groq.obter_todos_os_schemas(PACOTES_REGISTRADOS)
 
-    mensagens = [
-        {"role": "user", "content": FRASE_COM_FERRAMENTA},
-    ]
-
-    # Reaproveita o helper de baixo nível do próprio roteador — são o
-    # mesmo módulo/pacote, não uma dependência externa.
-    sucesso, dados, latencia = roteador._chamar_groq(
-        mensagens,
-        config.MODELO_GROQ_ETAPA1,
-        tools=schemas,
-        tool_choice="auto",
+    # Reaproveita os helpers do próprio roteador — são o mesmo
+    # módulo/pacote, não uma dependência externa. Desde a migração
+    # para jarvis/servicos/agentes/, o que volta é uma RespostaAgente
+    # em vez do corpo JSON cru da Groq; o uso de tokens sai dela no
+    # MESMO formato de chave de antes (prompt_tokens /
+    # completion_tokens / prompt_tokens_details.cached_tokens), que é
+    # justamente o que _descricao_cache abaixo precisa.
+    resposta = roteador._consultar(
+        roteador._pedido_groq(
+            None,
+            FRASE_COM_FERRAMENTA,
+            config.MODELO_GROQ_ETAPA1,
+            ferramentas=schemas,
+        )
     )
 
-    if not sucesso:
-        print(f"    falhou: {dados}")
+    if not resposta.sucesso:
+        print(f"    falhou: {resposta.erro}")
 
         return None
 
-    usage = dados.get("usage", {})
+    usage = resposta.uso.como_dicionario_provedor()
+    latencia = resposta.latencia_segundos
 
     print(f"    {len(schemas)} ferramentas no schema")
     print(

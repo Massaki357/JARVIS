@@ -38,6 +38,11 @@ from jarvis.pacotes import casa_inteligente
 # (Groq/Cerebras/OpenAI).
 from jarvis.pacotes import delegacao_ia
 
+# Sub-agente que descobre QUAL ferramenta atende a um pedido, lendo o
+# catálogo com a descrição de cada uma. Devolve instruções ao cérebro;
+# nunca executa a ferramenta — quem executa é o próprio cérebro.
+from jarvis.pacotes import agente_ferramentas
+
 # Execução de comandos de terminal com privilégio de administrador,
 # local a esta máquina. Deliberadamente não conectado a rede_jarvis.
 from jarvis.pacotes import admin_terminal
@@ -122,6 +127,7 @@ PACOTES_REGISTRADOS = [
     rede_jarvis,
     casa_inteligente,
     delegacao_ia,
+    agente_ferramentas,
     admin_terminal,
     configuracoes,
     identificacao_planta,
@@ -198,3 +204,81 @@ TOOLS_QUE_PRECISAM_DE_IMAGEM = {
     "descrever_tela": "tela",
     "descrever_camera": "camera",
 }
+
+
+# ============================================================
+# VISIBILIDADE: o que o cérebro DECLARA vs. o que ele pode EXECUTAR
+# ============================================================
+#
+# Estas duas coisas deixaram de ser a mesma. Um cérebro de voz caro
+# (Gemini Live, OpenAI Realtime) paga o schema de TODA ferramenta
+# declarada em TODO turno — eram 10.580 tokens de prefixo, medidos. A
+# maior parte disso é manual de ferramenta que ele não vai usar neste
+# turno.
+#
+# Então a maioria das ferramentas deixou de ser declarada: o cérebro
+# descobre a certa com buscar_ferramenta e a executa por
+# executar_ferramenta (jarvis/pacotes/agente_ferramentas/). Ela
+# continua REGISTRADA e executável — só não ocupa espaço no prefixo.
+#
+# O QUE NUNCA PODE SER OCULTADO, e por quê:
+#
+# 1. As NATIVAS dos clientes de voz. Elas não são despachadas por
+#    pacote nenhum: vivem dentro do worker e dependem da sessão viva.
+#    Esta lista nem as enxerga — ela só fala de pacotes.
+#
+# 2. As três listas acima (TOOLS_QUE_PRECISAM_DE_IMAGEM,
+#    TOOLS_SILENCIOSAS, TOOLS_QUE_CAPTURAM_SOZINHAS). Os dois workers
+#    decidem pelo NOME DA FUNÇÃO QUE O MODELO CHAMOU se capturam a
+#    imagem, se seguram o mutex visual e se descartam o áudio do
+#    turno. Chamadas por executar_ferramenta, o nome que chega ao
+#    worker é "executar_ferramenta" e os três comportamentos sumiriam
+#    EM SILÊNCIO — que é exatamente o bug documentado logo acima em
+#    TOOLS_QUE_PRECISAM_DE_IMAGEM (pedir para olhar a tela e ouvir que
+#    deu erro na câmera). Elas continuam declaradas, e o cérebro as
+#    chama direto.
+#
+# 3. As tools do PRÓPRIO agente_ferramentas. Esconder a porta de
+#    entrada atrás dela mesma tranca o cérebro do lado de fora.
+FERRAMENTAS_SEMPRE_DECLARADAS = (
+    "buscar_ferramenta",
+    "executar_ferramenta",
+    "ler_instrucao_ferramenta",
+)
+
+
+def nomes_de_pacote():
+    """Todo nome de ferramenta exposto por um pacote registrado."""
+    nomes = set()
+
+    for pacote in PACOTES_REGISTRADOS:
+        try:
+            declaracoes = pacote.obter_function_declarations()
+
+        except Exception:
+            continue
+
+        nomes.update(declaracao.name for declaracao in declaracoes)
+
+    return nomes
+
+
+def ferramentas_ocultas():
+    """
+    As ferramentas de pacote que NÃO vão no prefixo do cérebro —
+    alcançáveis por buscar_ferramenta + executar_ferramenta.
+
+    DERIVADA, nunca escrita à mão: é o conjunto de pacote menos as
+    exceções acima. Um pacote novo entra aqui sozinho e já nasce
+    barato; um pacote novo que precise de imagem, de mutex ou de
+    silêncio entra na lista certa mais acima e é automaticamente
+    poupado daqui.
+    """
+    excecoes = (
+        set(TOOLS_QUE_PRECISAM_DE_IMAGEM)
+        | set(TOOLS_SILENCIOSAS)
+        | set(TOOLS_QUE_CAPTURAM_SOZINHAS)
+        | set(FERRAMENTAS_SEMPRE_DECLARADAS)
+    )
+
+    return nomes_de_pacote() - excecoes
