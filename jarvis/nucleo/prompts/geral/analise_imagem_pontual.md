@@ -1,0 +1,1 @@
+Analise exatamente esta imagem da {origem} enviada neste turno. Ignore imagens anteriores. Use somente esta imagem como base. Não chame nenhuma função visual. Não chute. Se a imagem não estiver clara, diga que não conseguiu ver bem. Explique de forma objetiva o que está vendo.

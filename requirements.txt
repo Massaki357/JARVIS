@@ -1,12 +1,52 @@
 google-genai
-openai
 PySide6
 python-dotenv
-sounddevice 
-numpy 
-mss 
-opencv-python 
+sounddevice
+numpy
+mss
+opencv-python
 pillow
-pywhatkit
-ddgs
 requests
+psutil
+win11toast
+google-api-python-client
+paho-mqtt
+tuya-connector-python
+pywin32
+pypdf
+discord.py
+vosk
+openai
+ddgs
+# Detecção de fala do modo local (Silero VAD). Só o onnxruntime:
+# o pacote silero-vad do PyPI exige torch+torchaudio (~250 MB) mesmo
+# no caminho ONNX, para rodar um modelo de 1,2 MB. O modelo em si é
+# baixado e fica em cache na primeira chamada, como o do Vosk —
+# ver jarvis/cerebro/voz_local/vad_silero.py.
+onnxruntime
+
+# LangChain — a camada única de chamada de agente do projeto
+# (jarvis/servicos/agentes/). Toda consulta a uma LLM de texto ou de
+# visão passa por aqui: delegação, roteamento hierárquico, segunda
+# opinião visual, descrição de tela/câmera, consolidação de memória e
+# localização visual de clique. Os três cérebros de VOZ
+# (jarvis/cerebro/) não usam o LangChain — são sessões de áudio
+# bidirecional em tempo real, que ele não modela.
+langchain>=1.4
+langchain-google-genai>=4.4
+langchain-groq>=1.1.3
+langchain-mistralai>=1.1.6
+
+# langchain-openai PRECISA ficar em 1.6.2 ou acima: as versões 0.3.x
+# exigem openai<3 e REBAIXARIAM o pacote openai que o cérebro de voz
+# da OpenAI Realtime (jarvis/cerebro/openai_realtime/) usa. O pip
+# escolhe a 0.3.x sozinho se este piso não estiver aqui — foi o que
+# aconteceu na primeira resolução de dependências desta migração.
+langchain-openai>=1.6.2
+
+# A CEREBRAS NÃO tem pacote próprio aqui de propósito: o
+# langchain-cerebras 0.7.0+ exige Python <3.13 e este projeto roda em
+# 3.13, e a única versão instalável (0.6.0) arrasta justamente o
+# langchain-openai <1 que rebaixaria o openai. Como a API da Cerebras
+# é compatível com a da OpenAI, ela é alcançada por ChatOpenAI com
+# base_url — ver jarvis/servicos/agentes/modelos.py.

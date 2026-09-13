@@ -1,0 +1,1 @@
+Não foi possível consultar uma segunda opinião agora (falha ao acessar a OpenAI). Responda a solicitação você mesmo, com seu próprio raciocínio, e avise ao usuário que não conseguiu confirmar essa resposta com uma segunda IA neste momento.

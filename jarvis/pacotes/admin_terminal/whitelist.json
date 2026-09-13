@@ -1,0 +1,58 @@
+[
+    {
+        "tipo": "exato",
+        "padrao": "winget upgrade --all",
+        "descricao": "Atualiza todos os apps instalados via winget (gerenciador oficial do Windows)."
+    },
+    {
+        "tipo": "prefixo",
+        "padrao": "winget upgrade ",
+        "regex_resto": "^[A-Za-z0-9._-]+$",
+        "descricao": "Atualiza um app específico via winget, pelo ID do pacote (ex: 'winget upgrade Mozilla.Firefox'). Só permite ID de pacote (letras/números/ponto/hífen/underscore) depois do prefixo — nenhum outro caractere."
+    },
+    {
+        "tipo": "exato",
+        "padrao": "sfc /scannow",
+        "descricao": "Verifica e repara arquivos de sistema do Windows (System File Checker)."
+    },
+    {
+        "tipo": "exato",
+        "padrao": "dism /online /cleanup-image /restorehealth",
+        "descricao": "Repara a imagem do Windows via DISM. Comando de longa duração — a tool deve ser chamada com execucao_longa=true."
+    },
+    {
+        "tipo": "exato",
+        "padrao": "powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e",
+        "descricao": "Ativa o plano de energia 'Equilibrado' (GUID padrão do Windows)."
+    },
+    {
+        "tipo": "exato",
+        "padrao": "powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
+        "descricao": "Ativa o plano de energia 'Alto desempenho' (GUID padrão do Windows)."
+    },
+    {
+        "tipo": "exato",
+        "padrao": "powercfg /setactive a1841308-3541-4fab-bc81-f71556f20b4a",
+        "descricao": "Ativa o plano de energia 'Economia de energia' (GUID padrão do Windows)."
+    },
+    {
+        "tipo": "exato",
+        "padrao": "ipconfig /flushdns",
+        "descricao": "Limpa o cache de DNS local."
+    },
+    {
+        "tipo": "exato",
+        "padrao": "ipconfig /release",
+        "descricao": "Libera o endereço IP atual da placa de rede."
+    },
+    {
+        "tipo": "exato",
+        "padrao": "ipconfig /renew",
+        "descricao": "Renova o endereço IP da placa de rede."
+    },
+    {
+        "tipo": "exato",
+        "padrao": "cleanmgr /sagerun:1",
+        "descricao": "Roda a limpeza de disco com o perfil salvo em 'cleanmgr /sageset:1'. Esse perfil precisa ser configurado manualmente uma vez (rodando 'cleanmgr /sageset:1' e marcando as opções desejadas) antes deste comando funcionar como esperado."
+    }
+]

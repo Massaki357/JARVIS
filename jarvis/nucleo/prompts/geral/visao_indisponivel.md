@@ -1,0 +1,1 @@
+Não foi possível obter uma segunda opinião ({provedor}: {motivo}). Responda usando só sua própria visão e avise o usuário que não conseguiu confirmar com uma segunda fonte desta vez.

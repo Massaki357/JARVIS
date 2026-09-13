@@ -1,0 +1,15 @@
+# jarvis/pacotes/criar_arquivo/
+
+> Contexto detalhado deste módulo, extraído do CLAUDE.md raiz. Leia antes de editar arquivos desta área.
+
+## Arquitetura e decisões de design
+
+- `jarvis/pacotes/criar_arquivo/` — creates a simple text file by spoken request (`criar_arquivo(nome, conteudo, pasta=None, extensao="txt")`), restricted to an explicit folder allowlist. Same isolated-package contract (see docs/INTEGRATION.md); the one `.env` variable it reads, `PASTAS_PERMITIDAS_CRIACAO` (comma-separated absolute paths, defaulting to this machine's Desktop/Documents/Downloads if unset), is exposed via `config_schema()` and registered in `jarvis/pacotes/configuracoes/pacotes.py`.
+     - **`pasta` is never a raw path — always resolved against the allowlist's folder names.** A spoken folder name ("Downloads", "Área de Trabalho") is matched (exact, then substring, accent/case-insensitive) only against the `name` of each `Path` already in `config.pastas_permitidas()`; a name that doesn't resolve is rejected with the actual list of allowed folders, never guessed and never treated as a filesystem path in its own right.
+     - **Two independent containment checks, not one** — same defense-in-depth principle as `jarvis/servicos/email/leitor.py::baixar_anexo`: `nome` is sanitized (`os.path.basename` + accent-stripping + a character whitelist, same regex as `leitor.py`'s `_nome_arquivo_seguro`) into a single filename component that can never itself be a path, and then, separately, the fully-resolved destination path is re-checked to actually sit inside the resolved destination folder immediately before writing. Neither check alone is trusted to be sufficient.
+     - **Overwrite protection and content limits, both non-silent.** An existing file is never overwritten — it gets a timestamp suffix, same `_caminho_sem_sobrescrever` technique as `jarvis/servicos/email/leitor.py`. Content beyond `LIMITE_CARACTERES_CONTEUDO` (5000 chars — this is for a short voice-dictated note, not a document) is truncated with a note appended to the spoken result, never silently rejected nor silently cut with no explanation — same convention as `chat_jarvis`'s file-drop text truncation.
+     - Verified live: creating a file in an allowed folder (succeeded, correct content); requesting a folder outside the allowlist (rejected, with the actual allowed-folder list read back); creating a second file with the same name (first file untouched, second got a timestamp suffix, no overwrite).
+
+## Restrições a preservar ao editar
+
+- `criar_arquivo` must never write outside `config.pastas_permitidas()` — `pasta` is always resolved against that allowlist's folder *names*, never treated as a raw filesystem path from voice/model text. Keep both containment checks in `escritor.py` (the sanitized single-component filename, and the separate resolved-path-inside-destination-folder check right before the write) — neither replaces the other.

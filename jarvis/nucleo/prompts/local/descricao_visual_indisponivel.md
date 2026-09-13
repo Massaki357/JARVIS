@@ -1,0 +1,1 @@
+Não consegui ver a {origem} agora porque {motivo}.

@@ -1,0 +1,1 @@
+[SISTEMA] O usuário acabou de enviar a imagem '{nome}' como contexto adicional — considere essa imagem na conversa.

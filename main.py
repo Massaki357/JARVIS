@@ -1,84 +1,199 @@
-# Ativar o ambiente virtual:
-# .\venv\Scripts\Activate.ps1
-
-# [CURSO] sys fornece acesso aos argumentos da linha de comando
-# [CURSO] e permite finalizar corretamente a aplicação.
 import sys
 
-# [CURSO] qInstallMessageHandler permite interceptar mensagens internas do Qt.
-# [CURSO] Neste projeto ele é usado para ocultar apenas um aviso conhecido de DPI.
-from PySide6.QtCore import qInstallMessageHandler
-
-# [CURSO] QApplication é o núcleo de qualquer aplicação Qt.
-# [CURSO] Ela controla o loop de eventos da interface.
 from PySide6.QtWidgets import QApplication
 
-# [CURSO] Importa a janela principal da versão futurista.
-from ui.main_window import MainWindow
+from jarvis.ui.janela_principal import MainWindow
+
+from jarvis.nucleo.sinalizador import obter_sinalizador
+
+from jarvis.nucleo.preferencias import aplicar_prioridade
+
+from jarvis.ui.painel_dispositivos import (
+    aplicar_preferencias as aplicar_dispositivos,
+)
+
+from jarvis.pacotes import ativacao_voz
+
+from jarvis.pacotes import memoria_obsidian
+
+_janela_configuracoes = None
 
 
-# [CURSO] Esta função recebe todas as mensagens emitidas pelo Qt.
-# [CURSO] O objetivo é esconder apenas um aviso específico,
-# [CURSO] mantendo todos os demais avisos e erros visíveis.
-def filtro_mensagens_qt(
-    tipo,
-    contexto,
-    mensagem,
-):
-    """
-    Oculta somente o aviso conhecido de DPI do Qt no Windows.
-    Outros avisos e erros continuam aparecendo normalmente.
-    """
+def _abrir_configuracoes():
+    global _janela_configuracoes
 
-    # [CURSO] Garante que a mensagem seja tratada como texto.
-    mensagem = str(
-        mensagem
+    from jarvis.pacotes.configuracoes.window import ConfiguracoesWindow
+
+    _janela_configuracoes = ConfiguracoesWindow()
+    _janela_configuracoes.show()
+
+
+_janela_principal = None
+
+_janela_chat = None
+
+
+def _obter_worker_ativo():
+    if _janela_principal is None:
+        return None
+
+    return _janela_principal.live_worker
+
+
+def _abrir_chat():
+    global _janela_chat
+
+    from jarvis.ui.janela_chat import ChatWindow
+
+    _janela_chat = ChatWindow(
+        obter_worker_ativo=_obter_worker_ativo,
+        ao_fechar=_ao_fechar_chat,
     )
+    _janela_chat.show()
 
-    # [CURSO] Se a mensagem for exatamente o aviso conhecido de DPI,
-    # [CURSO] simplesmente encerramos a função sem exibi-la.
-    if (
-        "SetProcessDpiAwarenessContext() failed"
-        in mensagem
-    ):
+
+def _ao_fechar_chat():
+    global _janela_chat
+    _janela_chat = None
+
+
+def _repassar_resposta_texto(texto):
+    if _janela_chat is not None:
+        _janela_chat.adicionar_resposta_assistente(texto)
+
+
+_janela_envio_arquivo = None
+
+
+def _abrir_envio_arquivo():
+    global _janela_envio_arquivo
+
+    from jarvis.ui.janela_envio_arquivo import EnvioArquivoWindow
+
+    _janela_envio_arquivo = EnvioArquivoWindow(
+        obter_worker_ativo=_obter_worker_ativo,
+        ao_fechar=_ao_fechar_envio_arquivo,
+    )
+    _janela_envio_arquivo.show()
+
+
+def _ao_fechar_envio_arquivo():
+    global _janela_envio_arquivo
+    _janela_envio_arquivo = None
+
+
+_janela_camera = None
+
+
+def _abrir_camera():
+    global _janela_camera
+
+    if _janela_camera is not None:
+        _janela_camera.raise_()
+        _janela_camera.activateWindow()
         return
 
-    # [CURSO] Todas as demais mensagens continuam sendo enviadas
-    # [CURSO] normalmente para a saída de erro do terminal.
-    sys.stderr.write(
-        mensagem + "\n"
-    )
+    from jarvis.ui.janela_camera import JanelaCamera
+
+    _janela_camera = JanelaCamera(ao_fechar=_ao_fechar_camera)
+    _janela_camera.show()
 
 
-# [CURSO] Função principal da aplicação.
+def _fechar_camera():
+    if _janela_camera is not None:
+        _janela_camera.close()
+
+
+def _ao_fechar_camera():
+    global _janela_camera
+    _janela_camera = None
+
+
+_janela_perfil = None
+
+
+def _abrir_perfil():
+    global _janela_perfil
+
+    if _janela_perfil is not None:
+        _janela_perfil.recarregar_perfis()
+        _janela_perfil.raise_()
+        _janela_perfil.activateWindow()
+        return
+
+    from jarvis.ui.janela_perfil import JanelaPerfil
+
+    _janela_perfil = JanelaPerfil(ao_fechar=_ao_fechar_perfil)
+    _janela_perfil.show()
+
+
+def _ao_fechar_perfil():
+    global _janela_perfil
+    _janela_perfil = None
+
+
+def _callback_ativacao_detectada():
+    obter_sinalizador().solicitou_iniciar_chamada_por_voz.emit()
+
+
+def _iniciar_chamada_por_voz():
+    if _janela_principal is not None:
+        _janela_principal.iniciar_chamada_por_voz()
+
+
 def main():
-    # [CURSO] Instala o filtro ANTES da criação do QApplication.
-    # [CURSO] Assim qualquer mensagem emitida pelo Qt já passará
-    # [CURSO] por este filtro desde o início.
-    qInstallMessageHandler(
-        filtro_mensagens_qt
-    )
+    global _janela_principal
 
-    # [CURSO] Cria a aplicação Qt.
-    app = QApplication(
-        sys.argv
-    )
+    aplicar_prioridade()
 
-    # [CURSO] Cria a janela principal.
+    memoria_obsidian.iniciar()
+
+    aplicar_dispositivos()
+
+    app = QApplication(sys.argv)
+
     window = MainWindow()
 
-    # [CURSO] Exibe a janela na tela.
-    window.show()
+    _janela_principal = window
 
-    # [CURSO] Inicia o loop de eventos do Qt.
-    # [CURSO] A aplicação permanece executando até o usuário fechá-la.
-    sys.exit(
-        app.exec()
+    obter_sinalizador().solicitou_abrir_configuracoes.connect(
+        _abrir_configuracoes
     )
 
+    obter_sinalizador().solicitou_abrir_chat.connect(
+        _abrir_chat
+    )
+    obter_sinalizador().solicitou_abrir_envio_arquivo.connect(
+        _abrir_envio_arquivo
+    )
 
-# [CURSO] Este bloco garante que a função main()
-# [CURSO] seja executada apenas quando este arquivo
-# [CURSO] for iniciado diretamente.
+    obter_sinalizador().solicitou_abrir_camera.connect(
+        _abrir_camera
+    )
+    obter_sinalizador().solicitou_fechar_camera.connect(
+        _fechar_camera
+    )
+
+    obter_sinalizador().solicitou_abrir_perfil.connect(
+        _abrir_perfil
+    )
+
+    obter_sinalizador().solicitou_iniciar_chamada_por_voz.connect(
+        _iniciar_chamada_por_voz
+    )
+
+    ativacao_voz.iniciar(
+        callback_ativacao=_callback_ativacao_detectada
+    )
+
+    obter_sinalizador().resposta_texto_recebida.connect(
+        _repassar_resposta_texto
+    )
+
+    window.show()
+
+    sys.exit(app.exec())
+
+
 if __name__ == "__main__":
     main()

@@ -1,0 +1,9 @@
+{
+  "slug": "completo",
+  "nome": "jarvis completo",
+  "descricao": "O jarvis completo: todas as ferramentas registradas e o prompt de sistema original do projeto.",
+  "ferramentas": null,
+  "padrao": true,
+  "criado_em": "2026-09-04T08:36:57",
+  "atualizado_em": "2026-09-04T10:48:40"
+}

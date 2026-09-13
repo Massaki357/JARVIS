@@ -1,0 +1,1 @@
+[SISTEMA] O usuário acabou de te chamar agora, dizendo a frase de ativação por voz. Cumprimente-o brevemente, perguntando como pode ajudar — por exemplo algo como 'Como posso ajudar?' — antes de qualquer outra coisa.
