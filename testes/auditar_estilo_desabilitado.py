@@ -1,52 +1,3 @@
-# Auditoria de estilo: todo widget interativo do app tem que MUDAR de
-# aparência ao ser desabilitado.
-#
-# Como rodar (com o venv ativo, na raiz do projeto):
-#
-#     python testes/auditar_estilo_desabilitado.py
-#
-# Sai com código 1 se achar qualquer widget que não muda, ou qualquer
-# medição inconclusiva. Nenhuma dependência além do que o app já usa.
-#
-# A CLASSE DE BUG QUE ISTO EXISTE PRA PEGAR
-# =========================================
-#
-# jarvis/ui/estilo.py sobrescreve a aparência padrão do sistema para
-# quase todo widget. O visual de "desabilitado" que o Windows daria de
-# graça vai junto — então, se o QSS não define explicitamente a
-# variante :disabled daquele widget, ele fica IDÊNTICO habilitado e
-# desabilitado, e o usuário só descobre que não pode clicar tentando.
-#
-# Isso aconteceu de verdade duas vezes, por dois motivos diferentes:
-#
-# 1. ESPECIFICIDADE. Um seletor de ID (QPushButton#botaoNav) é mais
-#    específico que a pseudo-classe :disabled num seletor de tipo
-#    (QPushButton:disabled). Ter a regra genérica no arquivo não basta:
-#    ela não alcança nenhum widget com objectName estilizado. Cada um
-#    precisa da sua "#id:disabled".
-# 2. AUSÊNCIA. QTextEdit, QLineEdit e QComboBox simplesmente não
-#    tinham regra :disabled nenhuma no projeto inteiro.
-#
-# POR QUE MEDIR PIXEL, E NÃO LER O QSS
-# ====================================
-#
-# Um teste que procurasse a string "#botaoNav:disabled" dentro de
-# estilo.py provaria só que alguém escreveu aquela linha — não que ela
-# vence a cascata, não que ela alcança o widget certo, e não pegaria
-# um widget estilizado no próprio arquivo dele (painel_console.py,
-# painel_dispositivos.py, painel_provedor.py estilizam a si mesmos, e
-# a regra deles vence a global). Renderizar os dois estados e comparar
-# os bytes responde a pergunta que interessa: o usuário vê diferença?
-#
-# A MEDIDA DE CONTROLE NÃO É OPCIONAL
-# ===================================
-#
-# Habilitar/desabilitar um widget pode mover o foco para um irmão, e
-# foco muda a borda neste app. Isso já produziu um falso negativo
-# real: o #registro apareceu numa rodada e sumiu na seguinte. Por isso
-# cada widget é medido três vezes — habilitado, habilitado de novo
-# (controle) e desabilitado. Se os dois primeiros já diferem, a
-# medição é INCONCLUSIVA e falha, nunca "passa".
 import io
 import sys
 from pathlib import Path
@@ -68,16 +19,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# Tipos com que o usuário interage e que, portanto, têm um estado
-# desabilitado perceptível. QLabel fica de fora de propósito: não é
-# interativo, e o app não desabilita rótulo.
-#
-# QListWidget entrou depois das outras, e por um motivo concreto: a
-# lista de ferramentas da tela de perfil pinta cada item com
-# setForeground, e cor por item VENCE o QSS — a regra
-# QListWidget:disabled não apagava aquele vermelho, e a lista travada
-# ficava idêntica à editável. É a mesma família de bug com uma origem
-# a mais (cor por item, não só especificidade de seletor).
 TIPOS_INTERATIVOS = (
     QPushButton,
     QComboBox,
@@ -88,11 +29,6 @@ TIPOS_INTERATIVOS = (
 
 
 def imagem_bytes(widget):
-    """
-    Bytes do widget renderizado, ou None quando o Qt não consegue
-    rasterizar (widget dentro de uma seção recolhida, por exemplo) —
-    nesse caso ele é pulado, nunca comparado com lixo.
-    """
     imagem = widget.grab().toImage()
 
     if imagem.isNull():
@@ -116,27 +52,9 @@ def auditar_janela(janela, nome_janela, app, achados, inconclusivos):
         if not isinstance(widget, TIPOS_INTERATIVOS):
             continue
 
-        # Widget interno criado pelo próprio Qt (o popup do QComboBox,
-        # por exemplo) não é widget do app.
         if widget.width() < 2 or widget.height() < 2:
             continue
 
-        # Widget de EXIBIÇÃO, não de interação: transparente ao mouse E
-        # sem foco por teclado. O usuário não tem como interagir com
-        # ele, então "mudar de aparência ao desabilitar" não quer dizer
-        # nada — não existe estado desabilitado perceptível para algo
-        # que nunca foi habilitado no sentido de receber ação.
-        #
-        # O caso concreto é o chat sobreposto à esfera
-        # (jarvis/ui/painel_chat_sobreposto.py): é um QTextEdit somente
-        # leitura, WA_TransparentForMouseEvents e NoFocus, e ainda por
-        # cima começa vazio — então nem cor de texto diferente teria o
-        # que recolorir.
-        #
-        # A regra é por PROPRIEDADE, nunca por nome de widget: se
-        # alguém tornar esse painel interativo um dia, os dois
-        # atributos mudam e ele volta a ser auditado sozinho. Uma lista
-        # de exceções por nome é que apodreceria.
         if (
             widget.testAttribute(Qt.WA_TransparentForMouseEvents)
             and widget.focusPolicy() == Qt.NoFocus
@@ -184,14 +102,6 @@ def auditar_janela(janela, nome_janela, app, achados, inconclusivos):
 
 
 def auditar_estado_encerrando(janela_principal, app, achados):
-    """
-    O botão de chamada tem um SEGUNDO estado visual, que não é
-    :disabled: a propriedade dinâmica encerrando="true"
-    (jarvis/ui/janela_principal.py). Propriedade dinâmica em QSS só
-    reaplica depois de unpolish/polish — esquecer isso faz o botão
-    trocar de texto e não trocar de cor. Mesma família de bug, então é
-    medida aqui do mesmo jeito.
-    """
     botao = janela_principal.btn_chamada
 
     botao.clearFocus()
@@ -238,9 +148,6 @@ def main():
     principal = MainWindow()
 
     janelas = [
-        # MainWindow carrega PainelConsole, PainelDispositivos,
-        # PainelNome e PainelProvedor como filhos — os quatro entram
-        # nesta varredura junto com ela.
         (principal, "janela_principal (+ painéis)"),
         (JanelaPerfil(), "janela_perfil"),
         (ChatWindow(obter_worker_ativo=lambda: None), "janela_chat"),
@@ -250,10 +157,6 @@ def main():
         ),
     ]
 
-    # JanelaCamera: a webcam é neutralizada de propósito. A janela só
-    # precisa ser construída e desenhada, nunca filmar nada — abrir o
-    # dispositivo de verdade num teste roubaria a câmera de quem
-    # estivesse usando.
     from unittest.mock import patch
 
     with patch(
@@ -323,8 +226,6 @@ def main():
 
     for janela, _nome in janelas:
         try:
-            # MainWindow encerra a chamada no closeEvent; marcar como
-            # encerramento manual evita a reconexão automática.
             if hasattr(janela, "encerramento_manual"):
                 janela.encerramento_manual = True
 

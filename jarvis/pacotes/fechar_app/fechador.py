@@ -1,14 +1,3 @@
-# Fecha um app já resolvido pelo nome real do processo (vindo de
-# processos.buscar_processo) — nunca aceita nome/comando/caminho
-# arbitrário vindo direto da fala do usuário, só um nome de processo
-# que o próprio psutil já enxerga rodando de verdade.
-#
-# Fechamento GRACIOSO primeiro: manda WM_CLOSE pra(s) janela(s)
-# principal(is) do processo, dando chance dele perguntar "salvar
-# antes de fechar?" se tiver essa lógica própria. Só recorre a
-# terminate()/kill() se o processo não tiver nenhuma janela visível
-# (rodando em segundo plano) ou não responder ao WM_CLOSE dentro de
-# TIMEOUT_FECHAMENTO_GRACIOSO_SEGUNDOS.
 import os
 import time
 
@@ -17,8 +6,7 @@ import win32con
 import win32gui
 import win32process
 
-# Processos que o ALFRED NUNCA fecha, custe o que custar — núcleo do
-# próprio Windows. Comparação sempre em minúsculas.
+# Nunca enfraquecer (docs/fechar_app.md).
 PROCESSOS_PROTEGIDOS = {
     "explorer.exe",
     "winlogon.exe",
@@ -27,29 +15,13 @@ PROCESSOS_PROTEGIDOS = {
     "svchost.exe",
 }
 
-# Tempo, em segundos, que um processo tem pra responder ao WM_CLOSE
-# (fechamento gracioso) antes de ser considerado sem resposta e
-# finalizado à força.
 TIMEOUT_FECHAMENTO_GRACIOSO_SEGUNDOS = 5
 
-# Intervalo entre verificações de "o processo já fechou?" durante a
-# espera graciosa.
 INTERVALO_VERIFICACAO_SEGUNDOS = 0.2
 
-# Tempo de espera, em segundos, depois de terminate()/kill() — dá uma
-# chance curta ao Windows de liberar o processo antes de reportar
-# falha.
 TIMEOUT_FECHAMENTO_FORCADO_SEGUNDOS = 2
 
 
-# nome_processo já é o nome REAL de um processo em execução (vindo de
-# processos.buscar_processo) — nunca comparado por prefixo/regex
-# solto, só igualdade exata (case-insensitive) contra a lista fixa
-# acima. O próprio processo do ALFRED (este interpretador em execução
-# agora) é protegido à parte, por PID — nunca por nome, porque
-# bloquear "python.exe"/"pythonw.exe" de forma genérica fecharia a
-# porta pra qualquer outro processo Python do usuário que nada tenha
-# a ver com o ALFRED.
 def _e_processo_protegido(nome_processo, pid):
     if nome_processo.lower() in PROCESSOS_PROTEGIDOS:
         return True
@@ -60,10 +32,6 @@ def _e_processo_protegido(nome_processo, pid):
     return False
 
 
-# Janelas visíveis e com título pertencentes a este PID — só essas
-# contam como "janela principal" pra fins de WM_CLOSE (uma janela sem
-# título costuma ser um componente interno, não a janela que o
-# usuário reconheceria como o programa aberto).
 def _janelas_principais_do_pid(pid):
     handles = []
 
@@ -101,8 +69,6 @@ def _pids_por_nome(nome_processo):
 
 
 def _fechar_um_processo(pid):
-    """Fecha um único PID (gracioso, depois forçado se preciso).
-    Retorna "gracioso", "forcado" ou "falha"."""
     try:
         processo = psutil.Process(pid)
 
@@ -113,6 +79,7 @@ def _fechar_um_processo(pid):
 
     for hwnd in handles:
         try:
+            # WM_CLOSE antes de terminate/kill: dá ao app a chance de pedir para salvar.
             win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
 
         except Exception:
@@ -127,8 +94,6 @@ def _fechar_um_processo(pid):
 
             time.sleep(INTERVALO_VERIFICACAO_SEGUNDOS)
 
-    # Sem janela visível (processo em segundo plano) ou não respondeu
-    # ao WM_CLOSE a tempo — força o fechamento.
     try:
         processo.terminate()
 
@@ -155,10 +120,6 @@ def _fechar_um_processo(pid):
         return "forcado"
 
 
-# Fecha TODOS os processos com o nome exato nome_processo (pode ser
-# mais de um — ex: várias janelas do mesmo navegador, cada uma seu
-# próprio processo). Retorna uma mensagem em português pronta pra
-# falar, nunca lança exceção.
 def fechar_processos_por_nome(nome_processo):
     pids = _pids_por_nome(nome_processo)
 

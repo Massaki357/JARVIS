@@ -1,10 +1,3 @@
-# Busca canais de texto dos servidores em que o bot está, por nome
-# falado. Mesma técnica de correspondência aproximada já usada em
-# jarvis/pacotes/fechar_app/processos.py e jarvis/pacotes/discord_jarvis/contatos.py
-# (normalização acento/caixa-insensível + exato -> parcial ->
-# difflib) — copiada aqui, não importada: cada pacote/módulo deste
-# projeto mantém sua própria cópia dessa lógica de propósito (ver
-# CLAUDE.md).
 import difflib
 import re
 import unicodedata
@@ -35,12 +28,6 @@ def _normalizar(texto):
     return texto.strip()
 
 
-# Encontra o(s) canal(is) cujo nome mais se aproxima de nome_falado,
-# entre todos os servidores em que o bot está. Retorna (candidato,
-# None) se achar exatamente um; (None, candidatos) se achar mais de
-# um — pode haver canais de mesmo nome em servidores diferentes,
-# então cada candidato retornado já inclui o nome do servidor pra
-# desambiguar; (None, []) se não achar nenhum.
 def buscar_canal(nome_falado):
     canais = cliente.listar_canais()
 
@@ -100,8 +87,5 @@ def buscar_canal(nome_falado):
     return None, []
 
 
-# Descrição de um canal pra mostrar numa lista de desambiguação —
-# inclui o servidor, já que pode haver canais de mesmo nome em
-# servidores diferentes.
 def descricao_canal(canal):
     return f"#{canal['nome']} (servidor: {canal['servidor']})"

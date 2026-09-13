@@ -1,32 +1,3 @@
-"""
-Verificação das proteções contra travamento no worker da OpenAI
-Realtime (jarvis/cerebro/openai_realtime/cliente_realtime.py).
-
-Rodar com o venv ativo, da raiz do projeto:
-
-    python testes/testar_openai_realtime_travamento.py
-
-100% OFFLINE: nenhuma parte abre conexão com a OpenAI, microfone ou
-alto-falante. A sessão é uma conexão falsa cujos envios podem ser
-configurados para pendurar para sempre — que é exatamente o cenário
-que travava a chamada inteira.
-
-Cobre duas correções:
-
-  ETAPA 1 — _enviar_para_sessao: todo envio tem timeout, marca
-            self.conexao_travada e SOLTA o self.lock_envio. Sem isso,
-            um envio pendurado segurava a trava para sempre e nenhuma
-            chamada de função conseguia responder o próprio
-            function_call_output — e o protocolo não deixa o modelo
-            voltar a falar sem essa resposta.
-
-  ETAPA 2 — self.tarefas_funcao_ativas: toda tarefa de chamada de
-            função fica referenciada (o asyncio só mantém referência
-            fraca a uma task rodando, então uma task esquecida pode
-            ser coletada no meio do caminho), é removida ao terminar,
-            e o limite simultâneo recusa RESPONDENDO, nunca em
-            silêncio.
-"""
 import asyncio
 import os
 import sys
@@ -35,8 +6,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# Qt sem janela: o worker herda de QThread e precisa de um
-# QCoreApplication existindo para ser construído com segurança.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
@@ -62,16 +31,7 @@ def checar(condicao, descricao):
         print(f"  FALHA {descricao}")
 
 
-# ====================================================================
-# CONEXÃO FALSA
-# ====================================================================
-
-
 class EnvioFalso:
-    """Um endpoint de envio da sessão (item.create, response.create,
-    input_audio_buffer.append). Registra o que recebeu e, se
-    pendurar=True, nunca devolve."""
-
     def __init__(self, dono, rotulo):
         self.dono = dono
         self.rotulo = rotulo
@@ -80,7 +40,7 @@ class EnvioFalso:
         self.dono.enviados.append((self.rotulo, kwargs))
 
         if self.dono.pendurar:
-            await asyncio.Event().wait()   # nunca resolve
+            await asyncio.Event().wait()
 
         return None
 
@@ -112,21 +72,14 @@ class ConexaoFalsa:
 
 
 def novo_worker():
-    """Worker construído sem tocar em rede, perfil ou disco."""
     trabalhador = OpenAIRealtimeWorker(slug_perfil="completo")
     trabalhador.lock_envio = asyncio.Lock()
     return trabalhador
 
 
-# ====================================================================
-# PARTE 1 — ETAPA 1: timeout em todo envio
-# ====================================================================
-
-
 async def parte1_timeout_de_envio():
     print("\n[1] ETAPA 1 - timeout em todo envio para a sessao")
 
-    # Timeout curto só para o teste não levar 10s de verdade.
     original = cliente_realtime.TIMEOUT_ENVIO_SESSAO_SEGUNDOS
     cliente_realtime.TIMEOUT_ENVIO_SESSAO_SEGUNDOS = 1
 
@@ -158,7 +111,6 @@ async def parte1_timeout_de_envio():
             "marca self.conexao_travada",
         )
 
-        # Envio normal: não marca nada.
         trabalhador_ok = novo_worker()
         conexao_ok = ConexaoFalsa(pendurar=False)
 
@@ -179,11 +131,6 @@ async def parte1_timeout_de_envio():
         cliente_realtime.TIMEOUT_ENVIO_SESSAO_SEGUNDOS = original
 
 
-# ====================================================================
-# PARTE 2 — ETAPA 1: a trava de envio é SOLTA no timeout
-# ====================================================================
-
-
 async def parte2_trava_e_solta():
     print("\n[2] ETAPA 1 - o timeout solta o self.lock_envio")
 
@@ -194,7 +141,6 @@ async def parte2_trava_e_solta():
         trabalhador = novo_worker()
         conexao = ConexaoFalsa(pendurar=True)
 
-        # Primeira chamada de função: vai pendurar no envio e estourar.
         primeira = asyncio.create_task(
             trabalhador.processar_chamada_de_funcao(
                 conexao,
@@ -219,8 +165,6 @@ async def parte2_trava_e_solta():
             "a trava e SOLTA depois do timeout (era o congelamento)",
         )
 
-        # É isto que importa: uma segunda chamada de função consegue
-        # adquirir a trava em vez de esperar para sempre.
         segunda = asyncio.create_task(
             trabalhador.processar_chamada_de_funcao(
                 conexao,
@@ -252,11 +196,6 @@ async def parte2_trava_e_solta():
         cliente_realtime.TIMEOUT_ENVIO_SESSAO_SEGUNDOS = original
 
 
-# ====================================================================
-# PARTE 3 — ETAPA 2: as tarefas ficam rastreadas
-# ====================================================================
-
-
 async def parte3_rastreamento():
     print("\n[3] ETAPA 2 - rastreamento das tarefas de chamada de funcao")
 
@@ -275,14 +214,13 @@ async def parte3_rastreamento():
     )
 
     await tarefa
-    await asyncio.sleep(0)   # deixa o done_callback rodar
+    await asyncio.sleep(0)
 
     checar(
         len(trabalhador.tarefas_funcao_ativas) == 0,
         "a tarefa sai da lista ao terminar (a lista nao cresce)",
     )
 
-    # Cancelamento normal não é reportado como falha.
     erros = []
     trabalhador.erro_recebido.connect(erros.append)
 
@@ -305,7 +243,6 @@ async def parte3_rastreamento():
         "a tarefa cancelada tambem sai da lista",
     )
 
-    # Uma exceção que escape aparece, em vez de sumir em silêncio.
     async def explode():
         raise RuntimeError("falha simulada")
 
@@ -320,11 +257,6 @@ async def parte3_rastreamento():
         len(erros) == 1 and "explode" in erros[0],
         "excecao que escapa e reportada, nao engolida",
     )
-
-
-# ====================================================================
-# PARTE 4 — ETAPA 2: o limite recusa RESPONDENDO
-# ====================================================================
 
 
 async def parte4_limite_simultaneo():
@@ -370,11 +302,6 @@ async def parte4_limite_simultaneo():
     )
 
 
-# ====================================================================
-# PARTE 5 — caminho normal permanece intacto
-# ====================================================================
-
-
 async def parte5_caminho_normal():
     print("\n[5] REGRESSAO - o caminho rapido nao mudou")
 
@@ -411,9 +338,6 @@ async def parte5_caminho_normal():
         not trabalhador.processando_ferramenta,
         "processando_ferramenta volta a False no fim",
     )
-
-
-# ====================================================================
 
 
 async def principal():

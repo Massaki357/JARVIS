@@ -1,13 +1,7 @@
-# Usado só para montar a FunctionDeclaration deste pacote — mesmo
-# padrão dos demais pacotes isolados (ver docs/INTEGRATION.md).
 from google.genai import types
 
 from . import escritor
 
-# ============================================================
-# Contrato padrão do projeto (ver docs/INTEGRATION.md): todo pacote de
-# tools expõe obter_function_declarations() e despachar().
-# ============================================================
 
 _FUNCTION_DECLARATIONS = [
     types.FunctionDeclaration(

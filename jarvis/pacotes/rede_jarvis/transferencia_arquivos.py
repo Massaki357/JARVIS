@@ -9,14 +9,6 @@ from PySide6.QtCore import QObject, Signal, Qt
 LIMITE_MQTT_BYTES = int(config.LIMITE_MQTT_MB * 1024 * 1024)
 
 
-# ============================================================
-# Envio (lado de quem manda o arquivo)
-# ============================================================
-
-# Implementa o envio de um arquivo local para outra máquina.
-# argumentos precisa conter "caminho" (arquivo local) e
-# "maquina_destino". Até LIMITE_MQTT_MB, envia direto pelo MQTT;
-# acima disso, usa o Google Drive como intermediário.
 def enviar_arquivo(origem, argumentos):
     caminho = (argumentos or {}).get("caminho")
     maquina_destino = (argumentos or {}).get("maquina_destino")
@@ -62,8 +54,6 @@ def enviar_arquivo(origem, argumentos):
 
 
 def _enviar_via_drive(caminho_arquivo, maquina_destino):
-    # Import tardio para evitar import circular (mqtt_listener
-    # também importa este módulo para tratar arquivos recebidos).
     from . import mqtt_listener
 
     email_destino = mqtt_listener.consultar_client_email(
@@ -151,9 +141,6 @@ def _obter_servico_drive():
     )
 
 
-# Lê o client_email da credencial de Service Account desta máquina —
-# usado para responder à consulta que outra máquina faz antes de
-# compartilhar um arquivo grande via Drive.
 def obter_client_email_local():
     if not config.GOOGLE_SERVICE_ACCOUNT_JSON:
         return None
@@ -170,13 +157,6 @@ def obter_client_email_local():
         return None
 
 
-# ============================================================
-# Recebimento (lado de quem recebe o arquivo)
-# ============================================================
-
-# Chamado pelo listener quando um arquivo chega direto pelo MQTT
-# (dentro do limite) — inclui também as capturas de tela avulsas,
-# tratadas como um arquivo recebido.
 def receber_arquivo(origem, nome_sugerido, conteudo):
     threading.Thread(
         target=_processar_recebimento,
@@ -185,9 +165,6 @@ def receber_arquivo(origem, nome_sugerido, conteudo):
     ).start()
 
 
-# Chamado pelo listener quando chega um aviso de arquivo grande via
-# Drive: baixa o arquivo, processa o recebimento e depois apaga a
-# cópia do Drive.
 def baixar_e_receber_arquivo_drive(origem, id_arquivo, nome_arquivo):
     try:
         servico = _obter_servico_drive()
@@ -247,15 +224,6 @@ def _processar_recebimento(origem, nome_sugerido, conteudo):
         )
 
 
-# ============================================================
-# Ponte com a thread de UI (QFileDialog só pode rodar na thread do
-# Qt, mas o pedido de salvar chega de uma thread de background do
-# listener do MQTT). Sinais Qt são thread-safe: emitir de
-# qualquer thread executa o slot conectado na thread onde o QObject
-# receptor "mora" — desde que esse QObject tenha sido criado na
-# thread principal, o que preparar_ponte_gui() garante.
-# ============================================================
-
 class _PonteSalvarArquivo(QObject):
     pedido_salvar = Signal(str, object)
 
@@ -286,9 +254,6 @@ class _PonteSalvarArquivo(QObject):
 _ponte = None
 
 
-# Deve ser chamada a partir da thread principal (GUI) durante a
-# inicialização do pacote, para que o QObject da ponte "nasça" na
-# thread certa (ver jarvis/pacotes/rede_jarvis/__init__.py).
 def preparar_ponte_gui():
     global _ponte
 
@@ -298,8 +263,6 @@ def preparar_ponte_gui():
 
 def _perguntar_onde_salvar(nome_sugerido):
     if _ponte is None:
-        # preparar_ponte_gui() não foi chamada; usa o fallback
-        # automático diretamente.
         return None
 
     contexto = {

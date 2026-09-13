@@ -1,30 +1,7 @@
-"""
-Cotação atual e histórico de preços de ações (Twelve Data).
-
-Trazido do JARVIS COMPLETO (actions/consulta_acoes_action.py) e
-reembalado no contrato padrão de pacote isolado deste projeto — ver
-docs/INTEGRATION.md. Lá ele só existia para o provedor OpenAI
-Realtime; aqui é um pacote normal, então funciona igual nos dois
-cérebros de voz (Gemini Live e OpenAI Realtime), sem nenhuma fiação
-extra.
-
-acoes.py devolve estruturas Python (dict/list) porque foi escrito
-para ser serializado direto no output de uma tool da OpenAI. O
-contrato deste projeto exige que despachar() devolva uma STRING
-pronta para o modelo falar, então a formatação para texto acontece
-aqui, e não lá — assim acoes.py continua idêntico ao original.
-"""
-
-# Usado só para montar as FunctionDeclaration deste pacote — mesmo
-# padrão dos demais pacotes isolados (ver docs/INTEGRATION.md).
 from google.genai import types
 
 from . import acoes
 
-# ============================================================
-# Contrato padrão do projeto (ver docs/INTEGRATION.md): todo pacote de
-# tools expõe obter_function_declarations() e despachar().
-# ============================================================
 
 _FUNCTION_DECLARATIONS = [
     types.FunctionDeclaration(
@@ -89,11 +66,6 @@ _FUNCTION_DECLARATIONS = [
     ),
 ]
 
-# Quantos candles do histórico entram no texto devolvido ao modelo.
-# O parâmetro quantidade da tool continua valendo para a consulta em
-# si (a tendência é calculada sobre o período inteiro); este limite
-# existe só para não despejar 30 linhas de candle no contexto de uma
-# conversa falada.
 MAXIMO_CANDLES_NO_TEXTO = 8
 
 
@@ -111,8 +83,6 @@ def _numero(valor, casas=2):
 
 
 def _texto_cotacao(resultado):
-    # Falha geral (sem chave, rede fora, limite de requisições) vem
-    # como {"erro": "..."} — ver consultar_cotacao em acoes.py.
     if "erro" in resultado and len(resultado) == 1:
         return resultado["erro"]
 
@@ -139,7 +109,6 @@ def _texto_cotacao(resultado):
 
 
 def _texto_historico(ticker, intervalo, candles):
-    # Falha vem como [{"erro": "..."}] — ver consultar_historico.
     if len(candles) == 1 and "erro" in candles[0]:
         return candles[0]["erro"]
 
@@ -154,9 +123,6 @@ def _texto_historico(ticker, intervalo, candles):
     fechamento_inicial = primeiro.get("fechamento")
     fechamento_final = ultimo.get("fechamento")
 
-    # Tendência do período INTEIRO consultado, não só dos candles que
-    # entram no texto abaixo — é justamente o que a tool existe para
-    # embasar.
     if fechamento_inicial and fechamento_final:
         variacao = (
             (fechamento_final - fechamento_inicial)
@@ -198,7 +164,6 @@ def despachar(nome_funcao, argumentos):
     if nome_funcao == "consultar_cotacao_acao":
         tickers = argumentos.get("tickers") or []
 
-        # O modelo às vezes manda um ticker solto em vez de lista.
         if isinstance(tickers, str):
             tickers = [tickers]
 

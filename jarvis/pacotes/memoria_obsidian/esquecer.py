@@ -1,18 +1,6 @@
-# Apagar uma memória do vault.
-#
-# Duas regras herdadas do sistema antigo
-# (jarvis/servicos/memoria/gerenciador.py) que NÃO se perdem na
-# migração:
-#
-#   1. Recusa a pedidos de apagar tudo de uma vez. É uma regra de
-#      segurança, não uma limitação técnica.
-#   2. Nunca apaga por adivinhação: se mais de uma nota casa com o
-#      que foi pedido, devolve a lista para o jarvis perguntar qual,
-#      em vez de escolher a primeira.
 from . import config, notas
 
-# Conjunto herdado do gerenciador antigo, ampliado com as variações
-# que aparecem naturalmente ao falar.
+# Recusar apagar tudo é regra de segurança, não limitação.
 COMANDOS_APAGAR_TUDO = {
     "tudo",
     "todas",
@@ -46,8 +34,6 @@ def esquecer_memoria(titulo):
 
     referencia = notas.normalizar(titulo)
 
-    # Segurança contra exclusão em massa — mantida exatamente com o
-    # mesmo espírito do sistema antigo.
     if referencia in COMANDOS_APAGAR_TUDO:
         return (
             "Por segurança, não apago todas as memórias em uma única "
@@ -66,7 +52,6 @@ def esquecer_memoria(titulo):
             "Nada foi apagado."
         )
 
-    # Ambiguidade: devolve os candidatos e não apaga nada.
     if len(encontradas) > 1:
         nomes = ", ".join(n["titulo"] for n in encontradas[:5])
 

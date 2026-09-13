@@ -1,7 +1,3 @@
-# Janela de configurações — mostra e permite editar as variáveis do
-# .env, agrupadas por pacote. Cada pacote descreve seus próprios
-# campos via config_schema() (ver jarvis/pacotes/configuracoes/pacotes.py); esta
-# janela não conhece o nome de nenhuma variável de antemão.
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
@@ -20,13 +16,7 @@ from . import env_io
 from .pacotes import PACOTES_COM_CONFIG
 
 
-# Seção recolhível de uma categoria de configuração — substitui o
-# QGroupBox simples de antes. Com muitos pacotes registrados, a tela
-# de configurações virou uma lista longa demais pra achar um campo
-# específico; agora cada categoria começa FECHADA, e um clique no
-# cabeçalho abre só aquela (as outras continuam como estavam).
 class _SecaoRecolhivel(QWidget):
-
     def __init__(self, titulo, parent=None):
         super().__init__(parent)
 
@@ -36,10 +26,6 @@ class _SecaoRecolhivel(QWidget):
         layout.setContentsMargins(0, 0, 0, 8)
         layout.setSpacing(0)
 
-        # O próprio texto do botão carrega o indicador de estado (▸
-        # fechado / ▾ aberto) — mais simples que desenhar uma seta à
-        # parte, e já dá o feedback visual de clique do QPushButton
-        # (estado "pressionado" quando checked=True).
         self.botao_titulo = QPushButton()
         self.botao_titulo.setCheckable(True)
         self.botao_titulo.setChecked(False)
@@ -59,8 +45,6 @@ class _SecaoRecolhivel(QWidget):
         )
         self.botao_titulo.clicked.connect(self._alternar)
 
-        # Conteúdo (o formulário com os campos da categoria) — começa
-        # invisível, exatamente como o botão começa desmarcado.
         self.conteudo = QWidget()
         self.conteudo.setVisible(False)
         self.conteudo.setStyleSheet(
@@ -93,18 +77,7 @@ class _SecaoRecolhivel(QWidget):
         return self.layout_conteudo
 
 
-# Uma linha de campo. Duas variantes, conforme a entrada do schema:
-#
-# - "opcoes" presente: campo de SELEÇÃO (QComboBox) — pra variáveis
-#   com um conjunto fixo e conhecido de valores válidos (ex:
-#   PROVEDOR_IA), em vez de texto livre onde um erro de digitação
-#   passaria despercebido até o app já estar rodando com o valor
-#   errado. Cada opção é (valor_salvo_no_env, rótulo_exibido).
-# - Caso contrário: QLineEdit, como sempre foi — campos sensíveis
-#   ganham um botão "Mostrar"/"Ocultar" ao lado, começando mascarados
-#   (EchoMode.Password).
 class _CampoConfig:
-
     def __init__(self, entrada, valor_atual):
         self.nome = entrada["nome"]
         self.sensivel = bool(entrada.get("sensivel", False))
@@ -135,6 +108,7 @@ class _CampoConfig:
 
         self.campo = QLineEdit(self.valor_original)
 
+        # Valor sensível nunca aparece fora deste campo mascarado (CLAUDE.md).
         if self.sensivel:
             self.campo.setEchoMode(QLineEdit.EchoMode.Password)
 
@@ -154,12 +128,6 @@ class _CampoConfig:
             else QLineEdit.EchoMode.Password
         )
 
-    # O valor "original" de um campo de opções é normalizado contra
-    # a própria lista de opções antes de comparar — assim, um .env
-    # com "Gemini" (maiúscula) ou em branco não aparece como
-    # "alterado" só porque o usuário deixou o combo na opção que já
-    # equivalia ao valor real (mesma normalização de
-    # config.PROVEDOR_IA: .strip().lower()).
     def _valor_original_normalizado(self):
         if not self.opcoes:
             return self.valor_original
@@ -183,7 +151,6 @@ class _CampoConfig:
 
 
 class ConfiguracoesWindow(QWidget):
-
     def __init__(self):
         super().__init__()
 

@@ -1,51 +1,3 @@
-# Camada de dados dos perfis: ler e escrever perfis em disco, sem
-# nenhuma dependência de interface. Tudo que a Fase 2 (janela) e a
-# Fase 5 (início da chamada) vão precisar passa por aqui.
-#
-# Layout em disco
-# ===============
-#
-#     dados/perfis/
-#       indice.json              <- índice leve, DERIVADO (nunca à mão)
-#       completo/                <- um perfil = uma pasta autocontida
-#         perfil.json
-#         sistema.md
-#       consultor-investimentos/
-#         perfil.json
-#         sistema.md
-#
-# A PASTA é a fonte da verdade. O indice.json existe só para o select
-# da interface abrir instantaneamente sem ter que ler N pastas, e é
-# regravado a cada criação, edição e exclusão. Se ele sumir, ficar
-# corrompido ou divergir, reconstruir_indice() varre as pastas e o
-# refaz — o índice nunca é a única cópia de nada.
-#
-# Por que dois arquivos por perfil, e não um só
-# ============================================
-#
-# - perfil.json: os dados estruturados (nome de exibição, lista de
-#   ferramentas, metadados). JSON porque é lido por código, e escrito
-#   de uma vez só, atomicamente.
-# - sistema.md: o prompt de sistema, no MESMO formato do
-#   gemini_live_sistema.md que ele substitui — linhas de texto com
-#   cabeçalhos "##" que servem só de navegação humana e são
-#   descartados na hora de montar o texto enviado ao modelo (ver
-#   jarvis/nucleo/prompts/__init__.py::_montar_texto). Ele fica fora
-#   do JSON de propósito: um prompt de 22 mil caracteres espremido
-#   numa string JSON de uma linha só é ilegível num diff, que é
-#   exatamente o motivo pelo qual ele já tinha virado .md antes deste
-#   sistema de perfis existir.
-#
-# Onde o código mora vs. onde os dados moram
-# ==========================================
-#
-# Este módulo (código) fica em jarvis/nucleo/perfis/; os perfis
-# (dados) ficam em dados/perfis/. Separados porque um slug de perfil
-# é texto vindo do usuário e do modelo: se as duas coisas
-# dividissem a mesma pasta, um perfil chamado "armazenamento" viraria
-# uma pasta com o mesmo nome de um módulo Python ao lado. Assim,
-# dados/perfis/ contém só perfil, e nenhum nome de slug pode colidir
-# com nada.
 import json
 import os
 import re
@@ -60,64 +12,26 @@ from jarvis.caminhos import PASTA_PERFIS, garantir_pasta
 from . import catalogo_ferramentas
 from . import ferramentas_diretas
 
-# Protege leitura e escrita concorrente dos perfis e do índice. A
-# janela de perfis roda na thread da GUI e o início da chamada roda na
-# thread do worker — as duas podem tocar nestes arquivos. Mesmo
-# cuidado de jarvis/pacotes/memoria_obsidian/notas.py.
 _LOCK = threading.RLock()
 
-# Nome dos arquivos dentro da pasta de cada perfil.
 ARQUIVO_PERFIL = "perfil.json"
 ARQUIVO_SISTEMA = "sistema.md"
 
-# Índice central, único arquivo fora das pastas de perfil.
 ARQUIVO_INDICE = "indice.json"
 
-# Slug do perfil padrão — o jarvis completo, com todas as ferramentas
-# e o prompt que o projeto sempre usou. É uma entrada normal da mesma
-# estrutura (mesma pasta, mesmos dois arquivos), não um caso especial
-# hardcoded: a única coisa que o distingue é o campo "padrao": true no
-# perfil.json dele, que impede que ele seja apagado.
 SLUG_PADRAO = "completo"
 NOME_PADRAO = "jarvis completo"
 
-# Chave em config.json (jarvis/nucleo/preferencias.py) com o slug do
-# perfil escolhido para a PRÓXIMA chamada. Preferência local desta
-# máquina, igual a microfone/alto_falante — por isso config.json, e
-# não .env nem um arquivo novo.
 CHAVE_PERFIL_ATIVO = "perfil_ativo"
 
-# "ferramentas": null no perfil.json significa TODAS as ferramentas
-# registradas, resolvidas na hora. Guardar a lista explícita das 61 no
-# perfil padrão faria um pacote novo nascer desligado nele, em
-# silêncio — o padrão precisa continuar significando "tudo o que o
-# projeto tem hoje", não "tudo o que ele tinha no dia em que a pasta
-# foi criada".
 TODAS_AS_FERRAMENTAS = None
 
-# Nome de pasta que um perfil nunca pode ter: colidiria com o índice.
 _SLUGS_RESERVADOS = {"indice"}
 
 _CARACTERES_SLUG = re.compile(r"[^a-z0-9-]+")
 
 
-# ============================================================
-# Slug e caminhos
-# ============================================================
-
 def gerar_slug(nome):
-    """
-    Transforma um nome de exibição em slug de pasta: sem acento, em
-    minúsculas, só letras/números/hífen.
-
-    O nome vem do usuário ou do modelo, ou seja, entrada não
-    confiável: sem isto, um nome como "../../.env" viraria uma pasta
-    fora de dados/perfis/. Esta é a primeira camada; a garantia de
-    verdade é caminho_do_perfil(), que confere a contenção do caminho
-    já resolvido. Mesma dupla de camadas usada em
-    jarvis/pacotes/memoria_obsidian/notas.py e em
-    jarvis/pacotes/criar_arquivo/escritor.py.
-    """
     base = os.path.basename(str(nome or "").strip())
 
     base = unicodedata.normalize("NFD", base)
@@ -138,11 +52,6 @@ def gerar_slug(nome):
 
 
 def slug_disponivel(slug_base):
-    """
-    Devolve o slug_base, ou slug_base-2, -3... até achar uma pasta que
-    ainda não existe. Nunca sobrescreve um perfil existente só porque
-    dois nomes de exibição geraram o mesmo slug.
-    """
     slug = gerar_slug(slug_base)
 
     if not caminho_do_perfil(slug).exists():
@@ -157,11 +66,6 @@ def slug_disponivel(slug_base):
 
 
 def caminho_do_perfil(slug):
-    """
-    Caminho da pasta de um perfil, garantidamente DENTRO de
-    dados/perfis/. Levanta ValueError se o slug tentar escapar —
-    nunca devolve um caminho de fora "só avisando".
-    """
     limpo = str(slug or "").strip()
 
     if not limpo:
@@ -187,17 +91,7 @@ def caminho_do_indice():
     return Path(PASTA_PERFIS) / ARQUIVO_INDICE
 
 
-# ============================================================
-# Escrita atômica
-# ============================================================
-
 def _escrever_texto(caminho, texto):
-    """
-    Grava um arquivo de forma atômica (temporário + replace), mesma
-    técnica de jarvis/nucleo/preferencias.py e de
-    memoria_obsidian/notas.py: uma queda no meio da gravação não pode
-    deixar um perfil.json pela metade e quebrar a listagem de perfis.
-    """
     caminho = Path(caminho)
 
     garantir_pasta(caminho.parent)
@@ -215,23 +109,7 @@ def _escrever_json(caminho, dados):
     )
 
 
-# ============================================================
-# Ferramentas de um perfil
-# ============================================================
-
 def normalizar_ferramentas(ferramentas, validar=True):
-    """
-    Normaliza a lista de ferramentas de um perfil.
-
-    - None (TODAS_AS_FERRAMENTAS) passa direto: significa "todas as
-      registradas", resolvido só na hora do uso.
-    - Uma lista vira lista de strings sem repetição, na ordem em que
-      foram informadas, com FERRAMENTAS_SEMPRE_ATIVAS garantidas no
-      fim — um perfil não pode ficar sem como encerrar a chamada.
-    - Com validar=True, um nome que não existe no catálogo é ERRO
-      (ValueError), nunca é ignorado em silêncio. É a regra que a
-      Fase 3 vai aplicar à resposta do cérebro.
-    """
     if ferramentas is TODAS_AS_FERRAMENTAS:
         return TODAS_AS_FERRAMENTAS
 
@@ -266,28 +144,8 @@ def normalizar_ferramentas(ferramentas, validar=True):
     return resultado
 
 
+# Perfil padrão é imutável: editar_perfil levanta em vez de ignorar (docs/perfis.md).
 def ferramentas_editaveis(perfil):
-    """
-    Se a LISTA DE FERRAMENTAS deste perfil pode ser alterada.
-
-    Falso só para o perfil padrão, e isso é um invariante do sistema,
-    não uma preferência: o padrão é "o jarvis completo, todas as
-    ferramentas", guardado como o curinga None (TODAS_AS_FERRAMENTAS)
-    justamente para ser resolvido na hora do uso. Deixar editar essa
-    lista congelaria o curinga numa lista fixa, e todo pacote
-    adicionado ao projeto depois disso nasceria DESLIGADO no único
-    perfil que deveria ter tudo — sem erro, sem aviso, só descoberto
-    no dia em que alguém precisasse daquela ferramenta.
-
-    Um aviso na tela não resolveria isso: depende de alguém ler e
-    entender a implicação na hora certa. A trava, não.
-
-    Quem quer um subconjunto parecido com o padrão tem a opção certa:
-    criar um perfil novo. O resto dos metadados do padrão (nome de
-    exibição, descrição, prompt) continua editável normalmente.
-
-    Aceita o dict de carregar_perfil() ou o slug.
-    """
     if not isinstance(perfil, dict):
         perfil = carregar_perfil(perfil)
 
@@ -295,13 +153,6 @@ def ferramentas_editaveis(perfil):
 
 
 def ferramentas_efetivas(perfil):
-    """
-    Lista concreta de nomes de ferramenta de um perfil já carregado —
-    com o None do perfil padrão resolvido para todas as ferramentas
-    que existem AGORA.
-
-    Aceita o dict devolvido por carregar_perfil() ou o slug.
-    """
     if not isinstance(perfil, dict):
         perfil = carregar_perfil(perfil)
 
@@ -311,24 +162,8 @@ def ferramentas_efetivas(perfil):
     return list(perfil["ferramentas"])
 
 
+# Não lê disco: a lista curta já foi carregada em preparar_chamada.
 def filtrar_declaracoes(declaracoes, permitidas):
-    """
-    Reduz uma lista de FunctionDeclaration ao conjunto permitido.
-
-    Função pura: `permitidas` é None (todas, o curinga do perfil
-    padrão) ou um conjunto de nomes já resolvido por
-    preparar_chamada(). Não lê disco e não decide nada — quem decide,
-    inclusive o que fazer quando o perfil não carrega, é
-    preparar_chamada, num lugar só.
-
-    A INTERSEÇÃO É POR NOME, e é isso que resolve sozinho a assimetria
-    entre os dois provedores: o Gemini tem 16 ferramentas nativas e o
-    OpenAI Realtime tem 4, então um perfil que lista, por exemplo,
-    ler_emails simplesmente não encontra esse nome na lista que o
-    cliente OpenAI monta, e ele some sem erro. Não existe (nem deve
-    existir) uma tabela dizendo "esta ferramenta é só do Gemini" — a
-    lista que chega aqui já é a verdade daquele provedor.
-    """
     if permitidas is None:
         filtradas = list(declaracoes)
 
@@ -339,47 +174,11 @@ def filtrar_declaracoes(declaracoes, permitidas):
             if getattr(declaracao, "name", None) in permitidas
         ]
 
-    # Troca a descrição longa de cada ferramenta DIRETA pela linha curta
-    # da lista do perfil (ver ferramentas_diretas.py). Continua sem ler
-    # disco: a lista já foi carregada por preparar_chamada, que os dois
-    # workers rodam com asyncio.to_thread logo antes desta função. É
-    # aqui porque este é o único ponto por onde as declarações dos dois
-    # cérebros passam antes de irem para a sessão — inclusive as nativas
-    # do Gemini, que não são alcançáveis de nenhum outro lugar.
     return ferramentas_diretas.aplicar_descricoes_curtas(filtradas)
 
 
+# Nunca levanta: se falhar, declara tudo (caro, mas funciona).
 def _sem_as_ocultas(permitidas):
-    """
-    Tira do conjunto DECLARÁVEL as ferramentas que o cérebro descobre
-    sob demanda (jarvis/pacotes/agente_ferramentas/).
-
-    É AQUI, e em nenhum outro lugar, que "o perfil habilita" deixa de
-    ser a mesma coisa que "o cérebro declara". As duas noções se
-    separaram quando o prefixo de 18 mil tokens por turno virou
-    problema de custo:
-
-      habilitada = o perfil permite usar (não mudou nada)
-      declarada  = vai no `tools` da sessão e é paga em todo turno
-
-    Uma ferramenta oculta continua HABILITADA: buscar_ferramenta a
-    encontra e executar_ferramenta a executa. O perfil segue mandando
-    em quem pode o quê — desligar uma ferramenta no perfil continua
-    desligando de verdade, porque o sub-agente também filtra pelo
-    perfil (ver agente_ferramentas/catalogo._nomes_permitidos).
-
-    Esta função é o único ponto de aplicação porque preparar_chamada()
-    é o único ponto por onde os dois workers resolvem a lista — e foi
-    o que permitiu fazer tudo isso sem editar cliente_live.py nem
-    cliente_realtime.py.
-
-    Nunca levanta: se a derivação falhar, devolve `permitidas` intacto
-    e a chamada abre com tudo declarado, que é o comportamento antigo
-    e funciona. Falhar caro é melhor que falhar mudo.
-    """
-    # Imports adiados: este módulo é a camada de dados dos perfis, e é
-    # importado por testes e scripts onde carregar o registro de
-    # pacotes inteiro seria peso à toa.
     from jarvis.nucleo.config import FERRAMENTAS_SOB_DEMANDA
 
     if not FERRAMENTAS_SOB_DEMANDA:
@@ -393,8 +192,6 @@ def _sem_as_ocultas(permitidas):
         if not ocultas:
             return permitidas
 
-        # None é o curinga "todas as registradas". Para poder subtrair,
-        # ele vira o conjunto concreto de agora.
         if permitidas is None:
             permitidas = set(catalogo_ferramentas.nomes_disponiveis())
 
@@ -409,50 +206,10 @@ def _sem_as_ocultas(permitidas):
         return permitidas
 
 
+# FALHA FECHADA: perfil ilegível abre só com FERRAMENTAS_SEMPRE_ATIVAS (docs/perfis.md).
 def preparar_chamada(slug=None):
-    """
-    Tudo que uma sessão de voz precisa saber sobre o perfil dela,
-    resolvido de uma vez: quais ferramentas pode declarar, qual texto
-    de prompt usar, e o aviso a mostrar se algo deu errado.
-
-    Devolve {"slug", "permitidas", "prompt_bruto", "aviso"}:
-
-    - "permitidas": None = todas as registradas (curinga do perfil
-      padrão); um set = exatamente esses nomes.
-    - "aviso": string vazia quando deu tudo certo. Quando não, um texto
-      pronto para ir à INTERFACE (erro_recebido), não só ao console.
-
-    FALHA FECHADA, e isto é a regra mais importante da função. Se o
-    perfil pretendido não puder ser lido — pasta apagada, JSON
-    corrompido, slug inexistente — a chamada NÃO abre com o jarvis
-    completo. Ela abre com FERRAMENTAS_SEMPRE_ATIVAS e nada mais: dá
-    para conversar e para encerrar por voz, e nenhuma capacidade além
-    disso.
-
-    O contrário (o que esta função fazia antes) invertia o motivo de
-    existir de um perfil restrito: justamente quando o perfil da
-    floricultura falhasse, a chamada abriria com controle da casa,
-    terminal de administrador e e-mail — o pior caso de bug virando o
-    caso com MAIS poder. Um perfil que não carrega é uma intenção que
-    não pôde ser respeitada; o único palpite seguro é "nada".
-
-    O PROMPT, ao contrário das ferramentas, cai para o do perfil
-    padrão em vez de ficar vazio. Não é inconsistência: um prompt
-    vazio não é a versão "restrita" de um prompt, é um assistente sem
-    identidade, sem regras de segurança e sem o bloco de
-    autenticação. O texto do padrão é versionado no repositório e
-    sempre existe. Ferramenta de menos limita o que ele PODE FAZER;
-    prompt de menos só faz ele se comportar mal.
-
-    Nunca levanta exceção: uma chamada de voz não pode deixar de
-    acontecer porque um arquivo de perfil quebrou.
-    """
     slug = slug or perfil_ativo()
 
-    # A lista curta das ferramentas diretas desta chamada vai para a
-    # memória AQUI, fora do laço de eventos — filtrar_declaracoes, que
-    # vem logo depois nos dois workers, só lê dessa memória. Nunca
-    # levanta: sem lista, a chamada só usa as descrições longas.
     ferramentas_diretas.carregar_para_chamada(slug)
 
     try:
@@ -491,22 +248,12 @@ def preparar_chamada(slug=None):
 
 
 def _prompt_de_emergencia():
-    """
-    Texto do perfil padrão, para quando o perfil pretendido não
-    carrega. Se nem ele existir, devolve string vazia — nesse ponto o
-    projeto está sem o próprio prompt de sistema, e a chamada abrindo
-    calada ainda é melhor que não abrir.
-    """
     try:
         return carregar_perfil(SLUG_PADRAO)["prompt_sistema"]
 
     except (FileNotFoundError, ValueError, OSError, KeyError):
         return ""
 
-
-# ============================================================
-# Ler
-# ============================================================
 
 def _ler_perfil_json(pasta):
     dados = json.loads(
@@ -532,13 +279,6 @@ def existe(slug):
 
 
 def carregar_perfil(slug):
-    """
-    Carrega um perfil INTEIRO a partir da pasta dele: metadados,
-    lista de ferramentas e o texto do prompt de sistema.
-
-    Levanta FileNotFoundError se o perfil não existir. É a leitura da
-    fonte da verdade — nunca usa o índice.
-    """
     with _LOCK:
         pasta = caminho_do_perfil(slug)
 
@@ -579,25 +319,10 @@ def carregar_perfil(slug):
 
 
 def texto_sistema(slug):
-    """
-    Só o texto BRUTO do sistema.md de um perfil, do jeito que está no
-    arquivo — com os cabeçalhos "##" e as quebras de linha. É isto
-    que o QTextEdit da tela de edição mostra, e é a partir disto que
-    jarvis/nucleo/prompts/ monta o texto final enviado ao modelo.
-    """
     return carregar_perfil(slug)["prompt_sistema"]
 
 
 def listar_perfis():
-    """
-    Lista leve para o select da interface: [{"slug", "nome",
-    "padrao"}], lida do índice.
-
-    Se o índice não existir, estiver corrompido ou não bater com as
-    pastas que existem em disco, ele é reconstruído a partir das
-    pastas antes de responder — o índice nunca é a única cópia da
-    informação.
-    """
     with _LOCK:
         caminho = caminho_do_indice()
 
@@ -648,10 +373,6 @@ def listar_perfis():
         ]
 
 
-# ============================================================
-# Índice
-# ============================================================
-
 def _slugs_em_disco():
     pasta_base = Path(PASTA_PERFIS)
 
@@ -666,15 +387,6 @@ def _slugs_em_disco():
 
 
 def reconstruir_indice():
-    """
-    Varre dados/perfis/, lê o perfil.json de cada pasta e regrava o
-    indice.json. Devolve a mesma lista leve de listar_perfis().
-
-    Chamada automaticamente por toda operação de escrita e por
-    listar_perfis() quando o índice não bate com o disco. O perfil
-    padrão vem sempre primeiro; os demais em ordem alfabética de nome
-    de exibição, que é a ordem em que aparecem no select.
-    """
     with _LOCK:
         entradas = []
 
@@ -725,10 +437,6 @@ def reconstruir_indice():
         return entradas
 
 
-# ============================================================
-# Escrever
-# ============================================================
-
 def criar_perfil(
     nome,
     prompt_sistema,
@@ -738,14 +446,6 @@ def criar_perfil(
     padrao=False,
     validar_ferramentas=True,
 ):
-    """
-    Cria a pasta de um perfil novo com os dois arquivos preenchidos e
-    atualiza o índice. Devolve o perfil carregado.
-
-    O slug é derivado do nome (com sufixo numérico se já existir),
-    a menos que um seja passado explicitamente. Levanta ValueError se
-    o slug já existir ou se alguma ferramenta não existir no projeto.
-    """
     with _LOCK:
         nome = str(nome or "").strip()
 
@@ -760,11 +460,6 @@ def criar_perfil(
 
         pasta = caminho_do_perfil(slug)
 
-        # Checa o perfil.json, não a pasta: uma pasta que existe mas
-        # ainda não tem perfil.json é justamente o caso da migração
-        # do perfil padrão (o sistema.md chega primeiro, versionado no
-        # repositório, e os metadados são criados aqui). Um perfil de
-        # verdade — com perfil.json — nunca é sobrescrito.
         if existe(slug):
             raise ValueError(
                 f"Já existe um perfil com o slug {slug!r}."
@@ -802,8 +497,6 @@ def criar_perfil(
         return carregar_perfil(slug)
 
 
-# Sentinela para distinguir "não passou o argumento" de "passou None"
-# — necessário porque None é um valor VÁLIDO de ferramentas (todas).
 _NAO_INFORMADO = object()
 
 
@@ -815,13 +508,6 @@ def editar_perfil(
     descricao=None,
     validar_ferramentas=True,
 ):
-    """
-    Regrava os campos informados de um perfil existente e atualiza o
-    índice. Campo não informado fica como está.
-
-    Devolve o perfil recarregado. Levanta FileNotFoundError se o
-    perfil não existir, ValueError se alguma ferramenta não existir.
-    """
     with _LOCK:
         atual = carregar_perfil(slug)
         pasta = atual["pasta"]
@@ -840,13 +526,6 @@ def editar_perfil(
             validar=validar_ferramentas,
         )
 
-        # A LISTA DE FERRAMENTAS do perfil padrão é imutável — ver
-        # ferramentas_editaveis() acima para o porquê. A trava mora
-        # aqui, na camada de dados, e não só na tela: a tela desabilita
-        # os botões para explicar ao usuário, mas quem GARANTE é isto,
-        # que vale para qualquer chamador (a Fase 3, um script, um
-        # teste). Levanta em vez de ignorar em silêncio: uma edição
-        # aceita e não aplicada seria pior que uma recusa.
         if not ferramentas_editaveis(atual):
             if ferramentas is not TODAS_AS_FERRAMENTAS:
                 raise ValueError(
@@ -889,19 +568,6 @@ def editar_perfil(
 
 
 def apagar_perfil(slug):
-    """
-    Apaga a pasta inteira de um perfil e atualiza o índice.
-
-    Recusa apagar o perfil padrão: sem ele o app fica sem prompt de
-    sistema nenhum para começar uma chamada. Também recusa apagar
-    qualquer pasta que não tenha um perfil.json dentro — a exclusão
-    passa por caminho_do_perfil() (contenção dentro de dados/perfis/)
-    E por essa checagem, porque isto aqui é a única operação
-    destrutiva do módulo.
-
-    Se o perfil apagado era o ativo, a preferência volta para o
-    padrão em vez de apontar para uma pasta que não existe mais.
-    """
     with _LOCK:
         perfil = carregar_perfil(slug)
 
@@ -927,12 +593,7 @@ def apagar_perfil(slug):
         return True
 
 
-# ============================================================
-# Perfil ativo (preferência local desta máquina)
-# ============================================================
-
 def perfil_ativo_bruto():
-    """Slug guardado em config.json, sem validar se ainda existe."""
     from jarvis.nucleo import preferencias
 
     return str(
@@ -941,11 +602,6 @@ def perfil_ativo_bruto():
 
 
 def perfil_ativo():
-    """
-    Slug do perfil que vale para a PRÓXIMA chamada. Cai no padrão
-    quando não há nada escolhido, ou quando o perfil escolhido foi
-    apagado por fora.
-    """
     slug = perfil_ativo_bruto()
 
     if slug and existe(slug):
@@ -955,11 +611,6 @@ def perfil_ativo():
 
 
 def definir_perfil_ativo(slug):
-    """
-    Guarda o slug do perfil escolhido em config.json. Não afeta uma
-    chamada em andamento — quem lê isso é o início da próxima
-    (Fase 5).
-    """
     from jarvis.nucleo import preferencias
 
     if slug and not existe(slug):

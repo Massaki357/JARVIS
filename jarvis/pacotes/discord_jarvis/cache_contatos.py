@@ -1,11 +1,3 @@
-# Cache técnico de resolução nome falado -> contato do Discord
-# (user_id + nome de exibição), separado da memória conversacional
-# do jarvis — mesma técnica de escrita segura já validada em
-# jarvis/servicos/memoria/gerenciador.py e reaproveitada em
-# jarvis/servicos/memoria/gerenciador.py (arquivo temporário + replace, lock de
-# thread), copiada aqui de propósito: cada pacote isolado mantém sua
-# própria cópia, sem compartilhar arquivo nem lógica com
-# memória conversacional.
 import json
 import threading
 from jarvis.caminhos import PASTA_DADOS, garantir_pasta
@@ -45,9 +37,6 @@ def _carregar_dados():
     return dados
 
 
-# Grava usando um arquivo temporário + replace, pra nunca deixar o
-# cache pela metade se o processo for interrompido no meio da
-# escrita.
 def _salvar_dados(dados):
     PASTA_CACHE.mkdir(
         parents=True,
@@ -70,8 +59,6 @@ def _salvar_dados(dados):
     temporario.replace(ARQUIVO_CACHE)
 
 
-# Retorna {"id", "nome_exibicao"} se nome_normalizado já foi
-# resolvido e salvo antes, ou None se não estiver no cache.
 def obter(nome_normalizado):
     with _LOCK:
         dados = _carregar_dados()
@@ -79,10 +66,6 @@ def obter(nome_normalizado):
     return dados.get(nome_normalizado)
 
 
-# Salva a resolução de nome_normalizado -> contato_info
-# ({"id", "nome_exibicao"}). Só deve ser chamado depois de a DM ter
-# sido enviada com sucesso — quem chama (jarvis/pacotes/discord_jarvis/__init__.py)
-# é responsável por essa ordem, este módulo só grava o que recebe.
 def salvar(nome_normalizado, contato_info):
     with _LOCK:
         dados = _carregar_dados()

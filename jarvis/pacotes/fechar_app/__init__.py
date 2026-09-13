@@ -1,20 +1,7 @@
-# Usado só para montar a FunctionDeclaration deste pacote — mesmo
-# padrão dos demais pacotes isolados (ver docs/INTEGRATION.md).
 from google.genai import types
 
 from . import fechador, processos
 
-# ============================================================
-# Contrato padrão do projeto (ver docs/INTEGRATION.md): todo pacote de
-# tools expõe obter_function_declarations() e despachar().
-#
-# Independente de admin_terminal (comandos de manutenção com
-# privilégio elevado) e de rede_jarvis (listar_processos remoto, só
-# leitura) — este pacote fecha um app já aberto NESTA máquina, sem
-# privilégio elevado, resolvendo o nome contra processos que já estão
-# rodando de verdade (nunca um nome/comando arbitrário vindo direto
-# da fala).
-# ============================================================
 
 _FUNCTION_DECLARATIONS = [
     types.FunctionDeclaration(

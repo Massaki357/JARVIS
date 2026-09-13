@@ -1,21 +1,3 @@
-# Cliente do Pl@ntNet (my.plantnet.org) — API especializada em
-# identificação de espécies vegetais por foto. Usada só para essa
-# tarefa específica: identificação de espécie não é o forte de
-# modelos de visão generalistas como o Gemini, então esta tool
-# substitui o Gemini apenas nesse caso, não a visão geral da câmera.
-#
-# Formato de request confirmado na documentação oficial —
-# my.plantnet.org/doc/api/identify e o exemplo oficial em
-# github.com/plantnet/my.plantnet/blob/master/examples/post/run.py —
-# nunca adivinhado:
-#   POST https://my-api.plantnet.org/v2/identify/{project}?api-key=...
-#   multipart/form-data, imagem no campo 'images' (repetível pra
-#   mais de uma imagem — aqui sempre mandamos só uma).
-# O parâmetro 'organs' é opcional; a documentação confirma que
-# omiti-lo define automaticamente 'auto' (detecção automática do
-# órgão da planta) para cada imagem — comportamento certo aqui, já
-# que a câmera captura uma foto genérica sem saber se é folha, flor,
-# fruto ou casca.
 import requests
 
 from . import config
@@ -23,17 +5,6 @@ from . import config
 _ENDPOINT_BASE = "https://my-api.plantnet.org/v2/identify"
 
 
-# Envia UMA imagem (bytes JPEG já em memória — nunca gravada em
-# disco) pro Pl@ntNet e retorna as espécies candidatas mais
-# prováveis. Nunca lança exceção — sempre retorna (sucesso: bool,
-# resultado):
-#   sucesso=True  -> resultado é uma lista de até
-#                     config.QUANTIDADE_RESULTADOS dicts
-#                     {"nome_cientifico", "nomes_populares",
-#                     "confianca"}, na mesma ordem (decrescente por
-#                     confiança) que a API já devolve.
-#   sucesso=False -> resultado é uma string em português explicando
-#                     o que deu errado, pronta pro Jarvis falar.
 def identificar(imagem_bytes):
     if not config.PLANTNET_API_KEY:
         return False, "A chave de API do Pl@ntNet (PLANTNET_API_KEY) não está configurada no .env."

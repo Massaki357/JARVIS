@@ -4,11 +4,6 @@ from datetime import datetime
 from pathlib import Path
 from threading import Lock
 
-# Nenhum arquivo deste projeto conta ".parent" pra achar a raiz — o
-# caminho da pasta de dados vem sempre de jarvis/caminhos.py (ver
-# docs/INTEGRATION.md). No JARVIS COMPLETO isto era
-# Path(__file__).parent.parent / "memory" / "agenda.json"; aqui o
-# estado gerado pelo app mora todo em dados/.
 from jarvis.caminhos import PASTA_DADOS, garantir_pasta
 
 
@@ -54,13 +49,6 @@ def _interpretar_data_hora(valor):
 
 
 def _salvar_dados(dados):
-    """
-    Grava agenda.json de forma segura.
-
-    A gravação é feita primeiro em agenda.tmp.
-    Somente depois o temporário substitui o JSON principal.
-    """
-
     PASTA_MEMORIA.mkdir(
         parents=True,
         exist_ok=True,
@@ -109,16 +97,6 @@ def _salvar_dados(dados):
 
 
 def _criar_arquivo_se_necessario():
-    """
-    Cria automaticamente a pasta memory e o agenda.json.
-
-    Também corrige automaticamente:
-    - arquivo vazio;
-    - JSON inválido;
-    - estrutura que não seja um dicionário;
-    - chave eventos ausente ou inválida.
-    """
-
     PASTA_MEMORIA.mkdir(
         parents=True,
         exist_ok=True,
@@ -172,13 +150,6 @@ def _criar_arquivo_se_necessario():
 
 
 def _carregar_dados():
-    """
-    Carrega e valida os compromissos.
-
-    Caso o arquivo esteja ausente, vazio ou inválido,
-    ele é recriado automaticamente.
-    """
-
     _criar_arquivo_se_necessario()
 
     try:
@@ -269,7 +240,6 @@ def _carregar_dados():
         ],
     }
 
-    # Mantém o arquivo sempre com a estrutura correta.
     if dados != dados_tratados:
         _salvar_dados(
             dados_tratados
@@ -310,12 +280,6 @@ def criar_evento_agenda(
     data_hora,
     alarme=False,
 ):
-    """
-    Salva um compromisso na agenda local.
-
-    O argumento alarme é mantido apenas por compatibilidade.
-    """
-
     titulo = re.sub(
         r"\s+",
         " ",
@@ -514,5 +478,4 @@ def cancelar_evento_agenda(referencia):
     )
 
 
-# Inicializa o arquivo automaticamente assim que o módulo é importado.
 _criar_arquivo_se_necessario()

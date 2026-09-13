@@ -1,17 +1,7 @@
-# Usado só para montar as FunctionDeclaration deste pacote — mesmo
-# padrão dos demais pacotes isolados (ver docs/INTEGRATION.md).
 from google.genai import types
 
 from jarvis.nucleo.sinalizador import obter_sinalizador
 
-# ============================================================
-# Contrato padrão do projeto (ver docs/INTEGRATION.md): todo pacote de
-# tools expõe obter_function_declarations() e despachar(). Aqui,
-# despachar() só EMITE um sinal — nenhuma das duas janelas pode ser
-# criada na thread de fundo onde despachar() é chamado. Mesmo padrão
-# já usado por jarvis/pacotes/configuracoes/__init__.py (ver
-# jarvis/nucleo/sinalizador.py e main.py).
-# ============================================================
 
 _FUNCTION_DECLARATIONS = [
     types.FunctionDeclaration(

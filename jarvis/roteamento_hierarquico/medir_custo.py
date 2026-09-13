@@ -1,29 +1,3 @@
-# Script de medição do roteamento hierárquico (requisito 6 do
-# pedido original, mais a instrumentação de cache de prompt pedida
-# depois): compara, com chamadas REAIS à Groq (precisa de
-# GROQ_API_KEY configurada no .env), o custo em tokens e a latência
-# de três cenários:
-#
-#   (a) uma frase sem nenhuma ferramenta, chamada duas vezes em
-#       sequência — só a etapa 1, e a comparação entre a 1ª chamada
-#       (cache frio esperado) e a 2ª (cache potencialmente já
-#       "esquentado", já que o prefixo do catálogo é idêntico);
-#   (b) uma frase que precisa de ferramenta — etapa 1 + etapa 2
-#       do roteador de verdade, somadas;
-#   (c) a MESMA frase de (b), mas montando o schema completo das 45
-#       ferramentas de pacote de uma vez só — o cenário monolítico
-#       original, pra comparação direta com os 7.511 tokens já
-#       medidos manualmente antes deste módulo existir.
-#
-# Cache de prompt: a Groq devolve (quando o modelo/conta suporta)
-# usage.prompt_tokens_details.cached_tokens — a parte do prompt que
-# bateu no cache automático, cobrada com 50% de desconto. Este script
-# só LÊ e mostra esse número, nunca assume que o cache funcionou: se
-# o campo não vier na resposta, ou vier zerado mesmo na 2ª chamada,
-# isso é impresso como resultado, não escondido nem arredondado pra
-# "funcionou mesmo assim".
-#
-# Rodar com: python -m jarvis.roteamento_hierarquico.medir_custo
 import time
 
 from jarvis.nucleo.registro_pacotes import PACOTES_REGISTRADOS
@@ -33,33 +7,14 @@ from . import config
 from . import esquema_groq
 from . import roteador
 
-# Frases de exemplo. A segunda foi escolhida por apontar claramente
-# pra uma única categoria (controle_apps) — o objetivo aqui é medir
-# custo, não testar a resolução de ambiguidade (isso é melhor
-# verificado manualmente com uma frase cruzada, à parte).
 FRASE_SEM_FERRAMENTA = "Bom dia"
 FRASE_COM_FERRAMENTA = "Abre o Spotify pra mim"
 
-# Intervalo entre a 1ª e a 2ª chamada do cenário (a) — curto o
-# suficiente pra não atrasar o script, mas dando um instante real
-# pro cache da Groq (se existir pra esta conta/modelo) ter chance de
-# já estar quente na 2ª chamada.
 INTERVALO_ENTRE_CHAMADAS_SEGUNDOS = 2
 
-# Medição manual anterior a este módulo existir, documentada no
-# CLAUDE.md — mantida aqui como referência fixa de comparação, já
-# que a chamada monolítica ao vivo (cenário c) pode falhar por rate
-# limit (como já aconteceu num teste anterior) sem que isso invalide
-# a comparação.
 TOKENS_HISTORICO_SEM_ROTEAMENTO = 7511
 
 
-# Lê usage.prompt_tokens_details.cached_tokens de forma defensiva.
-# Devolve None se o campo simplesmente não veio na resposta (a
-# Groq/o modelo pode não suportar ou não reportar isso) — DIFERENTE
-# de devolver 0, que significa "veio, e não teve cache hit". Nunca
-# confundir os dois casos: requisito 3 pede pra deixar o número real
-# falar, não assumir.
 def _tokens_cacheados(usage):
     detalhes = usage.get("prompt_tokens_details")
 
@@ -81,10 +36,6 @@ def _descricao_cache(usage):
     return f"{cache} tokens do cache (cache hit)"
 
 
-# Custo efetivo estimado com o desconto de 50% já aplicado à parte
-# cacheada. Devolve (custo_efetivo, teve_cache) — teve_cache=False
-# quando o campo não veio ou veio zerado, e nesse caso custo_efetivo
-# é simplesmente o total bruto (sem desconto nenhum pra aplicar).
 def _custo_efetivo(usage):
     total = usage.get("total_tokens", 0)
     cache = _tokens_cacheados(usage)
@@ -119,9 +70,6 @@ def _imprimir_etapa(etapa, prefixo="    "):
     )
 
 
-# Cenário (a): a mesma frase sem ferramenta, duas vezes em sequência,
-# pra comparar tokens cacheados entre a 1ª chamada (cache frio
-# esperado) e a 2ª (cache potencialmente já quente, mesmo prefixo).
 def medir_sem_ferramenta():
     print(f"\n(a) Sem ferramenta, duas chamadas em sequência: {FRASE_SEM_FERRAMENTA!r}")
 
@@ -182,9 +130,6 @@ def medir_sem_ferramenta():
             "esquentamento visível entre as duas chamadas."
         )
 
-    # A 2ª chamada é a mais representativa de uso contínuo (é o que
-    # um usuário real veria na maioria dos turnos) — é ela que entra
-    # no resumo final.
     return resultado_2
 
 
@@ -215,13 +160,6 @@ def medir_cenario_monolitico():
 
     schemas = esquema_groq.obter_todos_os_schemas(PACOTES_REGISTRADOS)
 
-    # Reaproveita os helpers do próprio roteador — são o mesmo
-    # módulo/pacote, não uma dependência externa. Desde a migração
-    # para jarvis/servicos/agentes/, o que volta é uma RespostaAgente
-    # em vez do corpo JSON cru da Groq; o uso de tokens sai dela no
-    # MESMO formato de chave de antes (prompt_tokens /
-    # completion_tokens / prompt_tokens_details.cached_tokens), que é
-    # justamente o que _descricao_cache abaixo precisa.
     resposta = roteador._consultar(
         roteador._pedido_groq(
             None,

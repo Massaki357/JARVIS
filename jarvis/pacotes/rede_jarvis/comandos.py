@@ -9,11 +9,6 @@ import uuid
 import psutil
 
 
-# Captura um frame único da tela local. Não existe um "chat" para
-# alguém simplesmente olhar a imagem como acontecia no Telegram — por
-# isso a captura é entregue pelo mesmo caminho de arquivo recebido
-# (notificação + diálogo de salvar), reaproveitando
-# transferencia_arquivos do lado de quem pediu.
 def _comando_capturar_tela(origem, argumentos):
     try:
         frame_bytes = capturar_tela_bytes()
@@ -36,7 +31,6 @@ def _comando_capturar_tela(origem, argumentos):
     return "Tela capturada e enviada."
 
 
-# Lista os nomes dos processos em execução (sem path completo/PID).
 def _comando_listar_processos(origem, argumentos):
     nomes = set()
 
@@ -59,8 +53,6 @@ def _comando_listar_processos(origem, argumentos):
     )
 
 
-# Abre um aplicativo da whitelist configurada em config.WHITELIST_APPS
-# — nunca um comando/caminho arbitrário vindo da mensagem.
 def _comando_abrir_app(origem, argumentos):
     nome_app = (argumentos or {}).get("nome_app", "")
 
@@ -87,8 +79,6 @@ def _comando_abrir_app(origem, argumentos):
     return f"Aplicativo '{nome_app}' aberto."
 
 
-# Procura um arquivo pelo nome, só dentro das pastas permitidas em
-# config.PASTAS_PERMITIDAS_BUSCA — nunca o disco inteiro.
 def _comando_buscar_arquivo(origem, argumentos):
     termo = (argumentos or {}).get("termo", "")
 
@@ -127,7 +117,6 @@ def _comando_buscar_arquivo(origem, argumentos):
     return "Arquivos encontrados:\n" + "\n".join(encontrados)
 
 
-# Envia um arquivo local desta máquina de volta para quem pediu.
 def _comando_enviar_arquivo(origem, argumentos):
     argumentos_com_destino = dict(argumentos or {})
     argumentos_com_destino.setdefault(
@@ -156,8 +145,6 @@ def _comando_parar_visualizacao_remota(origem, argumentos):
     return visualizacao_remota.parar(origem)
 
 
-# Tabela de despacho — whitelist dos únicos comandos que o listener
-# aceita executar (ver jarvis/pacotes/rede_jarvis/mqtt_listener.py).
 TABELA_COMANDOS = {
     "capturar_tela": _comando_capturar_tela,
     "listar_processos": _comando_listar_processos,

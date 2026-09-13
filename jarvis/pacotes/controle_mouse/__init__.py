@@ -1,28 +1,7 @@
-"""
-Controle do mouse pela API nativa do Windows (user32.dll via ctypes).
-
-Trazido do JARVIS COMPLETO (actions/mouse_actions.py) e reembalado no
-contrato padrão de pacote isolado deste projeto — ver
-docs/INTEGRATION.md.
-
-acoes.mover_e_clicar() NÃO é exposta como tool aqui de propósito: ela
-só é usada pelo pacote clique_visual, depois de o localizador visual
-ter aprovado um alvo (com confiança mínima e lista de termos
-bloqueados). Uma tool de "clique em x,y" ditada por voz seria um
-clique cego em qualquer coordenada da tela, sem nenhuma das duas
-proteções.
-"""
-
-# Usado só para montar as FunctionDeclaration deste pacote — mesmo
-# padrão dos demais pacotes isolados (ver docs/INTEGRATION.md).
 from google.genai import types
 
 from . import acoes
 
-# ============================================================
-# Contrato padrão do projeto (ver docs/INTEGRATION.md): todo pacote de
-# tools expõe obter_function_declarations() e despachar().
-# ============================================================
 
 _FUNCTION_DECLARATIONS = [
     types.FunctionDeclaration(

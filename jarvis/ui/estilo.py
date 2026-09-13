@@ -1,59 +1,23 @@
-# Identidade visual compartilhada por TODAS as janelas do app.
-#
-# Antes, só jarvis/ui/janela_principal.py tinha um QSS de verdade (e mesmo
-# esse tinha um bug real: QSS não tem comentário de linha com "#" — só
-# bloco no estilo CSS, "/* ... */". Cada linha comentada com "#" virava
-# um SELETOR DE ID e engolia a regra seguinte inteira. Já estava medido
-# em jarvis/ui/painel_console.py: das 16 regras do antigo ESTILO_GLOBAL,
-# 13 estavam mortas por causa disso — é por isso que a janela sempre
-# renderizou no tema escuro padrão do sistema em vez do visual branco
-# que o código antigo descrevia. Corrigido aqui: todo comentário deste
-# arquivo usa /* */.
-#
-# A paleta não é nova — é a que a esfera animada (jarvis/ui/visualizador_alfred.py)
-# já usa (fundo quase preto QColor(3,3,5), gradiente em vermelho profundo/
-# carmesim) e que o botão de chamada já usa (#b00020). As outras telas
-# são elevadas até esse nível, não o contrário.
-#
-# Os hex abaixo são reexportados como constantes (não só embutidos na
-# string QSS) porque jarvis/ui/painel_console.py e jarvis/ui/painel_dispositivos.py
-# continuam se auto-estilizando (setStyleSheet no próprio widget, não
-# pelo ESTILO_GLOBAL) — decisão de encapsulamento documentada nesses dois
-# arquivos, mantida mesmo com o bug corrigido. Importar os tokens daqui
-# evita duas fontes de verdade para a mesma cor.
-
-# Fundo das janelas — igual ao QColor(3, 3, 5) do fundo da esfera.
 FUNDO_JANELA = "#050406"
 
-# Fundo de superfícies elevadas: caixas de texto, inputs, área de drop.
 FUNDO_PAINEL = "#0d0a0c"
 
-# Borda padrão (grená escuro) e borda em hover/foco (vermelho de acento).
 BORDA = "#2a1014"
 BORDA_FOCO = "#b00020"
 
-# Texto principal e texto de apoio (rótulos, subtítulos).
 TEXTO_PRIMARIO = "#ece6e7"
 TEXTO_SECUNDARIO = "#8f8388"
 
-# Vermelho de identidade do ALFRED — já usado no botão de chamada.
 ACCENT = "#b00020"
 ACCENT_HOVER = "#98001c"
 
-# Vermelho mais vivo, mesmo tom dos anéis/núcleo da esfera — usado em
-# destaques funcionais (valor do status), nunca decorativo.
 ACCENT_BRILHO = "#ff3044"
 
-# Fundo e hover dos botões secundários/terciários.
 BOTAO_FUNDO = "#150c0e"
 BOTAO_HOVER = "#22131a"
 BOTAO_PRESSED = "#1a0e10"
 
 
-# QSS aplicado por cada janela top-level (MainWindow, JanelaCamera,
-# ChatWindow, EnvioArquivoWindow) no próprio setStyleSheet — cada uma
-# delas é uma janela separada, não filha de MainWindow, então não herda
-# o estilo dela automaticamente.
 ESTILO_GLOBAL = """
 /* Fundo padrão de qualquer janela/container. */
 QMainWindow, QWidget, QDialog {

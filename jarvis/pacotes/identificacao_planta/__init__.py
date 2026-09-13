@@ -1,23 +1,7 @@
-# Usado só para montar a FunctionDeclaration deste pacote — mesmo
-# padrão dos demais pacotes isolados (ver docs/INTEGRATION.md).
 from google.genai import types
 
 from . import plantnet_client
 
-# ============================================================
-# Contrato padrão do projeto (ver docs/INTEGRATION.md): todo pacote de
-# tools expõe obter_function_declarations() e despachar().
-#
-# Diferença deste pacote em relação aos outros: identificar_planta
-# não tem parâmetros que o Gemini preenche — a imagem vem de uma
-# captura de câmera feita pelo CLIENTE (jarvis/cerebro/gemini/cliente_live.py)
-# antes de chamar despachar(), porque só o cliente sabe capturar um
-# frame (reaproveitando jarvis/servicos/visao/captura_camera.py). despachar() aqui
-# espera argumentos = {"imagem_bytes": <bytes JPEG>}, nunca vindo do
-# Gemini diretamente — ver docs/INTEGRATION.md, seção
-# "identificacao_planta", para o trecho exato de onde isso é
-# injetado no cliente.
-# ============================================================
 
 _FUNCTION_DECLARATIONS = [
     types.FunctionDeclaration(
@@ -45,11 +29,6 @@ def obter_function_declarations():
     return list(_FUNCTION_DECLARATIONS)
 
 
-# Se reconhecer nome_funcao, executa e retorna o resultado (sempre
-# uma string, pronta para o Jarvis falar). Se não reconhecer, retorna
-# None. Síncrona/bloqueante de propósito (chamada de rede ao
-# Pl@ntNet) — quem chama é responsável por rodar isso fora do event
-# loop (asyncio.to_thread), igual aos outros pacotes.
 def despachar(nome_funcao, argumentos):
     argumentos = argumentos or {}
 

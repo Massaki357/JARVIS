@@ -1,13 +1,3 @@
-# Lista explícita dos pacotes que contribuem uma seção à tela de
-# configurações, cada um expondo config_schema() no próprio
-# config.py (ver README de cada pacote / docs/INTEGRATION.md, seção "Tela
-# de configurações", para o formato esperado).
-#
-# Registro explícito de propósito — mesmo espírito de
-# PACOTES_REGISTRADOS em jarvis/nucleo/registro_pacotes.py: adicionar um
-# pacote novo com config_schema() é só importar o módulo de config
-# dele e acrescentar uma linha aqui, nada mais muda em
-# jarvis/pacotes/configuracoes/window.py.
 import jarvis.pacotes.abrir_aplicativo.config as abrir_aplicativo_config
 import jarvis.pacotes.admin_terminal.config as admin_terminal_config
 import jarvis.pacotes.agente_ferramentas.config as agente_ferramentas_config
@@ -22,29 +12,14 @@ import jarvis.pacotes.identificacao_visual.config as identificacao_visual_config
 import jarvis.pacotes.consulta_acoes.config as consulta_acoes_config
 import jarvis.pacotes.rede_jarvis.config as rede_jarvis_config
 
-# Não é um pacote de tools (jarvis/pacotes/) — é o motor de
-# roteamento hierárquico standalone (jarvis/roteamento_hierarquico/),
-# que também lê .env (GROQ_API_KEY, reaproveitada da seção
-# "Delegação de IA" — só os nomes de modelo de cada etapa aparecem
-# aqui de novo, ver config_schema() do módulo).
 import jarvis.roteamento_hierarquico.config as roteamento_hierarquico_config
 
-# Estes dois não são pacotes de tools (jarvis/pacotes/) — são módulos
-# centrais (jarvis/nucleo/) e de infraestrutura compartilhada
-# (jarvis/servicos/) que também leem variáveis do .env, e por isso
-# também ganham config_schema(). Lacuna fechada: até aqui a tela de
-# configurações cobria só pacotes de tools — GEMINI_API_KEY e as
-# variáveis de email nunca tinham aparecido nela.
 import jarvis.nucleo.config as nucleo_config
 
-# Também não é pacote de tools: é o cérebro de voz local
-# (jarvis/cerebro/voz_local/), escolhido por PROVEDOR_IA=local.
 import jarvis.cerebro.voz_local.config as voz_local_config
 import jarvis.servicos.email.remetente as email_remetente_config
 import jarvis.servicos.email.leitor as email_leitor_config
 
-# Cada item é (rótulo da seção exibido na tela, módulo de config do
-# pacote — precisa ter uma função config_schema()).
 PACOTES_COM_CONFIG = [
     ("Rede Jarvis (comandos remotos via MQTT)", rede_jarvis_config),
     ("Casa Inteligente (Tuya)", casa_inteligente_config),

@@ -1,21 +1,3 @@
-"""
-Verificação do cérebro de voz local (jarvis/cerebro/voz_local/).
-
-Rodar com o venv ativo, da raiz do projeto:
-
-    python testes/testar_voz_local.py
-
-As partes 1 a 4 e 6 são offline (não tocam em rede nem em dispositivo
-de áudio). A parte 5 conversa com o broker MQTT de verdade, mas em
-tópicos de TESTE (jarvis/teste/...), sem encostar no pipeline do
-alfred-server.
-
-O turno tem duas chamadas ao servidor com o roteamento no meio:
-
-    áudio -> jarvis/audio/entrada -> jarvis/texto/saida (JSON)
-          -> roteamento_hierarquico decide ferramenta ou conversa
-          -> se conversa: jarvis/texto/entrada -> jarvis/audio/saida (WAV)
-"""
 import asyncio
 import io
 import json
@@ -29,8 +11,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# Qt sem janela: o worker herda de QThread e precisa de um
-# QCoreApplication existindo para ser construído com segurança.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
@@ -44,9 +24,6 @@ from jarvis.cerebro.voz_local import config as config_local
 from jarvis.cerebro.voz_local.cliente_local import VozLocalWorker, TAXA_ENTRADA, BLOCO
 from jarvis.cerebro.voz_local.mqtt_voz import ClienteVozLocal
 
-# Texto de resposta usado nos testes da user property. Com acento
-# de propósito: a property é UTF-8 e um problema de codificação no
-# caminho apareceria justamente aqui.
 TEXTO_DA_RESPOSTA = "Seu nome é Massaki, e hoje está fazendo sol."
 
 import jarvis.nucleo.config as nucleo_config
@@ -72,9 +49,6 @@ def titulo(texto):
     print(f"\n=== {texto} ===")
 
 
-# ====================================================================
-# 1. PARIDADE DE API ENTRE OS TRÊS WORKERS
-# ====================================================================
 def testar_paridade():
     titulo("1. Paridade de API entre os três cérebros de voz")
 
@@ -131,9 +105,6 @@ def testar_paridade():
     )
 
 
-# ====================================================================
-# 2. SELEÇÃO DE PROVEDOR
-# ====================================================================
 def testar_provedor():
     titulo("2. Seleção do cérebro por PROVEDOR_IA")
 
@@ -176,7 +147,6 @@ def testar_provedor():
                 f'PROVEDOR_IA="{valor}" escolhe {classe.__name__}',
             )
 
-        # Um .env sem a variável nenhuma continua caindo no Gemini.
         falso_env.write_text("OUTRA=1\n", encoding="utf-8")
 
         checar(
@@ -197,15 +167,6 @@ def testar_provedor():
         pasta.rmdir()
 
 
-# ====================================================================
-# 2b. OS DOIS SELECTS DE CÉREBRO OFERECEM O MESMO
-# ====================================================================
-# Bug real: o select da tela principal (jarvis/ui/painel_provedor.py)
-# tinha a PRÓPRIA lista de opções, com dois itens. Quando o terceiro
-# cérebro entrou, ele foi acrescentado só na lista de
-# jarvis/nucleo/config.py, e o painel seguiu oferecendo dois — sem
-# erro nenhum, só a opção faltando na tela. Hoje as duas listas são a
-# mesma; este teste existe para que continuem sendo.
 def testar_selects_de_cerebro():
     titulo("2b. Os dois selects de cérebro oferecem as mesmas opções")
 
@@ -226,9 +187,6 @@ def testar_selects_de_cerebro():
         f"       (opções: {[valor for valor, _ in painel_provedor.OPCOES]})"
     )
 
-    # Toda opção oferecida precisa ser um provedor que provedor_ativo()
-    # de fato reconhece — uma opção que o app rejeita seria pior do que
-    # uma opção faltando: o usuário escolhe e nada muda.
     for valor, rotulo in painel_provedor.OPCOES:
         checar(
             valor in nucleo_config.PROVEDORES_VALIDOS,
@@ -241,8 +199,6 @@ def testar_selects_de_cerebro():
         f"({len(nucleo_config.PROVEDORES_VALIDOS)})",
     )
 
-    # O painel real, construído de verdade, mostra os três itens e
-    # seleciona o que está no .env.
     original = nucleo_config.CAMINHO_ENV
 
     pasta = Path(tempfile.mkdtemp(prefix="jarvis-teste-painel-"))
@@ -270,9 +226,6 @@ def testar_selects_de_cerebro():
             "e já vem selecionado no cérebro que está no .env",
         )
 
-        # Antes da correção, ler PROVEDOR_IA=local devolvia "gemini" e
-        # o painel exibia Gemini — pior que a opção faltar, porque
-        # mexer no select depois sobrescreveria a escolha do usuário.
         checar(
             painel_provedor._ler_provedor_atual() == "local",
             "a leitura reconhece o servidor local em vez de cair no Gemini",
@@ -288,13 +241,10 @@ def testar_selects_de_cerebro():
         pasta.rmdir()
 
 
-# ====================================================================
-# 3. CONVERSÃO PCM <-> WAV
-# ====================================================================
 def testar_wav():
     titulo("3. Conversão PCM <-> WAV")
 
-    pcm = b"\x01\x02" * 16000  # 1s a 16 kHz mono 16 bits
+    pcm = b"\x01\x02" * 16000
 
     wav = audio_wav.pcm_para_wav(pcm, 16000, 1)
 
@@ -313,15 +263,12 @@ def testar_wav():
         "duracao_segundos calcula 1,0s corretamente",
     )
 
-    # A taxa tem que vir do CABEÇALHO, não de uma constante: um WAV a
-    # 24 kHz precisa ser reconhecido como 24 kHz.
     _, taxa24, _ = audio_wav.wav_para_pcm(
         audio_wav.pcm_para_wav(pcm, 24000, 1)
     )
 
     checar(taxa24 == 24000, "taxa de 24 kHz lida do cabeçalho, não presumida")
 
-    # Estéreo do servidor precisa ser reportado como 2 canais.
     _, _, canais2 = audio_wav.wav_para_pcm(
         audio_wav.pcm_para_wav(pcm, 16000, 2)
     )
@@ -344,8 +291,6 @@ def testar_wav():
         "lixo binário vira ValueError legível",
     )
 
-    # WAV de 8 bits: formato que o playback não suporta e precisa ser
-    # recusado com mensagem clara, não estourar no meio da reprodução.
     buffer = io.BytesIO()
 
     with wave.open(buffer, "wb") as arquivo:
@@ -361,25 +306,18 @@ def testar_wav():
         f"WAV de 8 bits recusado com mensagem clara ({mensagem})",
     )
 
-    # WAV válido, porém sem nenhuma amostra.
     checar(
         erro_de(audio_wav.pcm_para_wav(b"", 16000, 1)) is not None,
         "WAV sem amostras recusado",
     )
 
 
-# ====================================================================
-# 4. DETECÇÃO DE FIM DE FALA (VAD)
-# ====================================================================
 def _bloco(nivel_bruto):
-    """Um bloco de áudio com pico controlado (int16 little-endian)."""
     amostra = int(nivel_bruto * 32767)
 
     return amostra.to_bytes(2, "little", signed=True) * BLOCO
 
 
-# Nível ACIMA e ABAIXO do limiar, calculados pela mesma função que o
-# VAD usa — nada de números mágicos escolhidos no olho.
 def _niveis():
     alto = _bloco(0.5)
     baixo = _bloco(0.0005)
@@ -428,7 +366,6 @@ def testar_vad(worker):
             timeout=10,
         )
 
-    # Caso 1: silêncio, fala, silêncio -> devolve a frase.
     sequencia = (
         [silencio] * 5
         + [fala] * blocos_fala
@@ -447,23 +384,17 @@ def testar_vad(worker):
             f"a frase capturada tem a duração da fala ({duracao:.2f}s >= 1.5s)",
         )
 
-        # Pré-fala: os blocos guardados antes do limiar entram junto,
-        # senão a primeira sílaba seria cortada.
         checar(
             duracao > 1.5 + (config_local.BLOCOS_PRE_FALA - 1) * duracao_bloco,
             "os blocos de pré-fala entraram na frase (não corta a 1ª sílaba)",
         )
 
-        # O silêncio que fechou a frase é aparado: o arquivo publicado
-        # não pode levar SILENCIO_SEGUNDOS inteiros de nada no fim.
         checar(
             duracao < 1.5 + config_local.SILENCIO_SEGUNDOS,
             f"o silêncio final foi aparado ({duracao:.2f}s < "
             f"{1.5 + config_local.SILENCIO_SEGUNDOS:.2f}s)",
         )
 
-    # Caso 2: só silêncio -> nada é enviado, e o corte por
-    # self.ativo=False encerra o laço sem travar.
     async def so_silencio():
         fila = asyncio.Queue()
 
@@ -484,7 +415,6 @@ def testar_vad(worker):
         "silêncio puro não gera nenhum envio",
     )
 
-    # Caso 3: um estalo curtíssimo é ruído, não uma frase.
     curta = (
         [silencio] * 3
         + [fala] * 2
@@ -496,8 +426,6 @@ def testar_vad(worker):
         "ruído mais curto que DURACAO_MINIMA_SEGUNDOS é descartado",
     )
 
-    # Caso 4: ruído constante acima do limiar não grava para sempre —
-    # o teto de DURACAO_MAXIMA_SEGUNDOS fecha a frase.
     limite_original = config_local.DURACAO_MAXIMA_SEGUNDOS
     config_local.DURACAO_MAXIMA_SEGUNDOS = 1.0
 
@@ -516,25 +444,7 @@ def testar_vad(worker):
         config_local.DURACAO_MAXIMA_SEGUNDOS = limite_original
 
 
-# ====================================================================
-# 4b. DETECÇÃO DE FALA POR CONTEÚDO (Silero VAD)
-# ====================================================================
-# O problema que motivou a troca: o VAD decidia por AMPLITUDE, e
-# amplitude não distingue fala de nada. Ruído de fundo contínuo e alto
-# (moto, ventilador, música) mantinha todo bloco acima do limiar, o
-# contador de silêncio nunca subia e a frase NUNCA FECHAVA.
-#
-# A fala usada aqui é gerada pelo SAPI do Windows — voz humana de
-# verdade, sintetizada localmente, sem rede e sem depender de uma
-# gravação versionada no repositório. O ruído é sintético.
 def _fala_sapi_16k():
-    """
-    Uma frase falada pelo SAPI, em float32 mono a 16 kHz.
-
-    Devolve None se o SAPI não estiver disponível — as checagens que
-    dependem dela são puladas com aviso, em vez de reprovarem por um
-    motivo que não é o código do jarvis.
-    """
     import tempfile
     import wave
 
@@ -577,7 +487,6 @@ def _fala_sapi_16k():
 
 
 def _ruido_motor(segundos, hz=90, amplitude=0.6):
-    """Zumbido harmônico — moto, motor, ventilador."""
     t = np.arange(int(TAXA_ENTRADA * segundos)) / TAXA_ENTRADA
     onda = sum(
         pow(0.6, k) * np.sin(2 * np.pi * hz * (k + 1) * t) for k in range(4)
@@ -587,7 +496,6 @@ def _ruido_motor(segundos, hz=90, amplitude=0.6):
 
 
 def _ruido_musica(segundos, amplitude=0.6):
-    """Acorde com vibrato — música tocando ao fundo."""
     t = np.arange(int(TAXA_ENTRADA * segundos)) / TAXA_ENTRADA
     onda = sum(
         np.sin(2 * np.pi * f * t + 3 * np.sin(2 * np.pi * 5 * t))
@@ -608,7 +516,6 @@ def _para_pcm(x):
 
 
 def _blocos_de(x):
-    """Fatia um sinal em blocos do tamanho que o microfone entrega."""
     pcm = _para_pcm(x)
     tamanho = BLOCO * 2
 
@@ -643,9 +550,6 @@ def testar_vad_silero(worker):
 
     checar(True, f"modelo carregado ({Path(detector.caminho_modelo).name})")
 
-    # --- caso 3 do pedido: ruído de fundo SOZINHO não é fala ---------
-    # É o caso que o VAD antigo errava, e o que trava a conversa: se
-    # ruído contar como fala, a frase nunca fecha.
     for nome, sinal in [
         ("motor/moto 90 Hz", _ruido_motor(3, 90, 0.6)),
         ("ventilador 200 Hz", _ruido_motor(3, 200, 0.6)),
@@ -662,7 +566,6 @@ def testar_vad_silero(worker):
             f"({proporcao * 100:.1f}% dos blocos)",
         )
 
-        # E a prova de que o critério antigo errava justamente aqui.
         if pico > 0.2:
             amplitude = sum(
                 VozLocalWorker.calcular_nivel_audio(b)
@@ -683,7 +586,6 @@ def testar_vad_silero(worker):
 
         return
 
-    # --- caso 1 do pedido: voz normal É fala -------------------------
     proporcao_fala = _proporcao_com_fala(detector, fala)
 
     checar(
@@ -692,7 +594,6 @@ def testar_vad_silero(worker):
         f"({proporcao_fala * 100:.1f}% dos blocos)",
     )
 
-    # --- caso 2 do pedido: voz COM ruído por cima --------------------
     n = min(len(fala), TAXA_ENTRADA * 5)
     segundos = n / TAXA_ENTRADA
 
@@ -710,7 +611,6 @@ def testar_vad_silero(worker):
             f"({proporcao * 100:.1f}% dos blocos)",
         )
 
-    # --- desempenho: tem que caber folgado no tempo real -------------
     detector.zerar()
     blocos = _blocos_de(fala)
     inicio = time.perf_counter()
@@ -722,21 +622,15 @@ def testar_vad_silero(worker):
     por_bloco_ms = total / len(blocos) * 1000
     duracao_bloco_ms = BLOCO / TAXA_ENTRADA * 1000
 
-    # Um décimo da duração do bloco é folga de sobra; medido nesta
-    # máquina dá ~0,24 ms para 64 ms de áudio (~270x mais rápido que o
-    # tempo real). Se algum dia isto reprovar, o VAD virou gargalo.
     checar(
         por_bloco_ms < duracao_bloco_ms / 10,
         f"inferência cabe no tempo real: {por_bloco_ms:.3f} ms por bloco "
         f"de {duracao_bloco_ms:.0f} ms ({duracao_bloco_ms / por_bloco_ms:.0f}x)",
     )
 
-    # --- o bloco pode ter qualquer tamanho ---------------------------
-    # O worker manda 1024 amostras (2 janelas exatas), mas depender
-    # disso quebraria no dia em que BLOCO mudasse.
     detector.zerar()
     pcm_fala = _para_pcm(fala)
-    pedaco = 700 * 2  # 700 amostras: nem múltiplo nem divisor de 512
+    pedaco = 700 * 2
 
     algum = any(
         detector.tem_fala(pcm_fala[i:i + pedaco])
@@ -751,11 +645,6 @@ def testar_vad_silero(worker):
         "bloco vazio ou menor que uma janela devolve 0.0 sem estourar",
     )
 
-    # --- O QUE MAIS IMPORTA: a frase FECHA com ruído tocando ---------
-    # Este é o comportamento relatado como quebrado. A sequência é:
-    # ruído, fala sobre o ruído, e o ruído continuando sozinho — que é
-    # exatamente "a pessoa parou de falar mas a moto ainda está
-    # passando". Tem que devolver a frase, e não ficar gravando.
     duracao_bloco = BLOCO / TAXA_ENTRADA
     blocos_para_fechar = int(config_local.SILENCIO_SEGUNDOS / duracao_bloco) + 4
 
@@ -785,12 +674,6 @@ def testar_vad_silero(worker):
         tarefa = asyncio.create_task(worker._capturar_frase(fila))
 
         try:
-            # Espera o fechamento NATURAL, sem cancelar a tarefa: a
-            # fila é pré-carregada e drena em milissegundos, então
-            # depois disso _capturar_frase só fica girando no timeout
-            # de 0,2s da fila. Se em 2,5s não fechou, é porque o
-            # critério não considera o ruído como silêncio — que é
-            # exatamente o que este caso quer detectar.
             limite = time.perf_counter() + 2.5
 
             while time.perf_counter() < limite:
@@ -802,9 +685,6 @@ def testar_vad_silero(worker):
             return "NAO_FECHOU"
 
         finally:
-            # ativo=False faz o laço sair sozinho; cancelar só se ele
-            # insistir. Nunca cancelar antes, senão o caso que FECHA
-            # seria interrompido no meio e daria CancelledError.
             worker.ativo = False
             worker.detector_fala = None
 
@@ -832,8 +712,6 @@ def testar_vad_silero(worker):
             f"e não arrastou o ruído junto ({duracao:.2f}s de áudio)",
         )
 
-    # O contraste: o critério ANTIGO, no mesmo áudio, não fecha.
-    # Serve de prova viva do bug, e falha se alguém reverter a troca.
     antigo = asyncio.run(capturar(False))
 
     checar(
@@ -842,9 +720,6 @@ def testar_vad_silero(worker):
         f"(resultado: {'não fechou' if antigo == 'NAO_FECHOU' else antigo!r})",
     )
 
-    # --- modo de emergência ------------------------------------------
-    # Sem detector, o worker continua funcionando por amplitude. É pior
-    # (é o bug acima), mas é melhor do que não conseguir falar.
     worker.detector_fala = None
     bloco_alto = _bloco(0.5)
     bloco_baixo = _bloco(0.0005)
@@ -859,7 +734,6 @@ def testar_vad_silero(worker):
         "sem detector, cai para o critério de volume (modo de emergência)",
     )
 
-    # E uma falha na inferência no meio da chamada não derruba nada.
     class DetectorQuebrado:
         def zerar(self):
             pass
@@ -880,19 +754,7 @@ def testar_vad_silero(worker):
     worker.detector_fala = None
 
 
-# ====================================================================
-# 4c. INTERRUPÇÃO DA FALA (BARGE-IN) NO MODO LOCAL
-# ====================================================================
-# No Gemini quem detecta é o SERVIDOR (server_content.interrupted). Aqui
-# o alfred-server já entregou o WAV inteiro e não sabe mais nada do
-# turno, então quem detecta é o cliente: _vigiar_interrupcao roda junto
-# da reprodução, com o mesmo Silero que fecha as frases.
-#
-# É opt-in (config.json -> "interrupcao") e EXIGE FONE — ver o último
-# caso desta seção, que mede o porquê.
 def _saida_falsa(escritos, atraso=0.004):
-    """Um RawOutputStream de mentira: conta bytes e simula o ritmo."""
-
     class SaidaFalsa:
         def __init__(self, *args, **kwargs):
             pass
@@ -911,18 +773,6 @@ def _saida_falsa(escritos, atraso=0.004):
 
 
 def _tocar(worker, pcm_resposta, blocos_microfone, atraso=0.004):
-    """
-    Roda _reproduzir_resposta com dispositivo de saída falso e o
-    microfone chegando EM TEMPO REAL. Devolve (bytes escritos, blocos
-    que sobraram na fila).
-
-    O microfone é alimentado por uma tarefa que entrega um bloco de
-    cada vez, no mesmo ritmo em que a reprodução consome os pedaços —
-    e isso não é detalhe: pré-carregando a fila, o vigia drena tudo em
-    microssegundos durante a carência e nunca sobra bloco nenhum para
-    julgar depois. O dispositivo de verdade entrega um bloco a cada
-    64 ms, então a fila NUNCA está cheia de antemão.
-    """
     import jarvis.cerebro.voz_local.cliente_local as modulo
 
     escritos = []
@@ -944,9 +794,6 @@ def _tocar(worker, pcm_resposta, blocos_microfone, atraso=0.004):
         try:
             await worker._reproduzir_resposta(wav, fila, executor)
 
-            # Lido AQUI, sem nenhum await no meio: um passo do
-            # alimentador entre o fim da reprodução e esta leitura
-            # tornaria a checagem da limpeza da fila instável.
             sobraram.append(fila.qsize())
 
         finally:
@@ -987,7 +834,6 @@ def testar_barge_in(worker):
 
         return
 
-    # Uma "resposta" longa o bastante para dar tempo de interromper.
     resposta_pcm = _para_pcm(_ruido_musica(6, 0.3))
     blocos_fala = _blocos_de(fala)
     blocos_ruido = _blocos_de(_ruido_motor(6, 90, 0.6))
@@ -995,13 +841,10 @@ def testar_barge_in(worker):
     carencia_original = modulo.CARENCIA_INTERRUPCAO_SEGUNDOS
     atraso_original = modulo.ATRASO_REABRIR_MICROFONE
 
-    # Carência encurtada: o que se testa aqui é a detecção, não a
-    # espera. O comportamento da carência tem caso próprio abaixo.
     modulo.CARENCIA_INTERRUPCAO_SEGUNDOS = 0.02
     modulo.ATRASO_REABRIR_MICROFONE = 0.05
 
     try:
-        # --- caso 1: voz de verdade INTERROMPE -----------------------
         worker.interrupcao_habilitada = True
         worker.interrupcoes_na_chamada = 0
         worker._blocos_apos_interrupcao = []
@@ -1023,7 +866,6 @@ def testar_barge_in(worker):
             "o microfone é liberado na hora (alfred_falando volta a False)",
         )
 
-        # --- a pré-fala de quem interrompeu é preservada -------------
         checar(
             len(worker._blocos_apos_interrupcao) > 0,
             f"os blocos que o vigia consumiu viram pré-fala "
@@ -1056,7 +898,6 @@ def testar_barge_in(worker):
             "os blocos guardados eram os do microfone, não uma lista vazia",
         )
 
-        # --- caso 2: RUÍDO não interrompe ----------------------------
         worker.interrupcao_habilitada = True
         worker.interrupcoes_na_chamada = 0
         worker._blocos_apos_interrupcao = []
@@ -1073,9 +914,6 @@ def testar_barge_in(worker):
             "e nenhuma interrupção é contabilizada",
         )
 
-        # --- caso 3: um estalo curto não basta -----------------------
-        # Menos blocos de fala do que BLOCOS_FALA_PARA_INTERROMPER
-        # exige, cercados de silêncio: é tosse, não intenção de falar.
         silencio = _blocos_de(np.zeros(TAXA_ENTRADA, dtype=np.float32))
         estalo = (
             silencio[:5]
@@ -1093,7 +931,6 @@ def testar_barge_in(worker):
             f"{modulo.BLOCOS_FALA_PARA_INTERROMPER} blocos consecutivos",
         )
 
-        # --- caso 4: DESLIGADO se comporta como antes ----------------
         worker.interrupcao_habilitada = False
         worker.interrupcoes_na_chamada = 0
 
@@ -1114,7 +951,6 @@ def testar_barge_in(worker):
             f"({na_fila} blocos sobraram)",
         )
 
-        # --- caso 5: a CARÊNCIA protege o fim da própria pergunta ----
         modulo.CARENCIA_INTERRUPCAO_SEGUNDOS = 30.0
         worker.interrupcao_habilitada = True
         worker.interrupcoes_na_chamada = 0
@@ -1130,12 +966,8 @@ def testar_barge_in(worker):
 
         modulo.CARENCIA_INTERRUPCAO_SEGUNDOS = 0.02
 
-        # --- caso 6: POR QUE EXIGE FONE ------------------------------
-        # A própria resposta do assistente, realimentada no microfone,
-        # interrompe. Não é bug — é o que acontece numa caixa de som, e
-        # é a medição que justifica o recurso ser opt-in.
         worker.interrupcoes_na_chamada = 0
-        eco = _blocos_de(fala * 0.25)  # -12 dB, eco de caixa
+        eco = _blocos_de(fala * 0.25)
 
         escritos, _sobra = _tocar(worker, resposta_pcm, eco)
 
@@ -1154,10 +986,6 @@ def testar_barge_in(worker):
         worker.detector_fala = None
         worker.ativo = False
 
-    # --- as guardas do microfone seguem na forma canônica ------------
-    # Mesma convenção das três do worker do Gemini: se uma voltar a ser
-    # um "if self.alfred_falando:" simples, o barge-in morre em
-    # silêncio, sem nada falhar.
     fonte = Path(
         "jarvis/cerebro/voz_local/cliente_local.py"
     ).read_text(encoding="utf-8")
@@ -1173,14 +1001,9 @@ def testar_barge_in(worker):
     )
 
 
-# ====================================================================
-# 5. TRANSPORTE MQTT (broker real, tópicos de teste)
-# ====================================================================
 def testar_mqtt_real(worker):
     titulo("5. Transporte MQTT contra o broker real (tópicos de teste)")
 
-    # Tópicos de teste: verifica o nosso código contra o mosquitto de
-    # verdade sem publicar nada no pipeline do alfred-server.
     originais = (
         config_local.TOPICO_ENTRADA,
         config_local.TOPICO_TEXTO_SAIDA,
@@ -1232,15 +1055,11 @@ def testar_mqtt_real(worker):
             f"{config_local.TOPICO_TEXTO_ENTRADA} ({msg2})",
         )
 
-        # Publica de volta nos três tópicos que o cliente assina, para
-        # confirmar que a assinatura e os callbacks funcionam.
         cliente._cliente.publish(
             config_local.TOPICO_TEXTO_SAIDA,
             json.dumps(transcricao, ensure_ascii=False).encode("utf-8"),
             qos=1,
         )
-        # Com a user property "texto", exatamente como o servidor
-        # publica — é o que fecha o histórico do lado do assistente.
         from paho.mqtt.packettypes import PacketTypes
         from paho.mqtt.properties import Properties
 
@@ -1279,10 +1098,6 @@ def testar_mqtt_real(worker):
                     "sem base64)",
                 )
 
-                # O texto viaja como METADADO, ao lado dos bytes: o
-                # payload não foi tocado (checagem acima) e mesmo
-                # assim o texto chegou. Com acento de propósito — é o
-                # que provaria um problema de codificação na property.
                 checar(
                     texto_propriedade == TEXTO_DA_RESPOSTA,
                     f"e o texto da resposta veio na user property "
@@ -1303,7 +1118,6 @@ def testar_mqtt_real(worker):
                     f"prefixo da etapa ({conteudo!r})",
                 )
 
-        # Limite de tamanho: nunca empurra algo absurdo para o broker.
         gigante = b"\x00" * (config_local.LIMITE_ENVIO_MB * 1024 * 1024 + 10)
 
         ok_grande, msg_grande = cliente.publicar_entrada(gigante)
@@ -1324,12 +1138,10 @@ def testar_mqtt_real(worker):
             config_local.TOPICO_ERRO,
         ) = originais
 
-    # Broker inexistente: precisa falhar com mensagem legível, não
-    # travar nem levantar exceção.
     host_original = config_local.VOZ_LOCAL_MQTT_HOST
     porta_original = config_local.VOZ_LOCAL_MQTT_PORT
 
-    config_local.VOZ_LOCAL_MQTT_PORT = 1  # porta certamente fechada
+    config_local.VOZ_LOCAL_MQTT_PORT = 1
 
     try:
         cliente_morto = ClienteVozLocal(
@@ -1353,9 +1165,6 @@ def testar_mqtt_real(worker):
         config_local.VOZ_LOCAL_MQTT_PORT = porta_original
 
 
-# ====================================================================
-# 6. FLUXO DE TURNO EM DUAS ETAPAS
-# ====================================================================
 def testar_fluxo_worker(worker):
     titulo("6. Fluxo de turno em duas etapas (transcricao -> resposta)")
 
@@ -1364,11 +1173,6 @@ def testar_fluxo_worker(worker):
     transcricao = {"texto": "que horas sao", "tom": "neutro", "sexo": "M"}
 
     class ClienteFalso:
-        """
-        Servidor de mentira: responde no topico certo de cada etapa.
-        None = fica mudo (caminho de timeout).
-        """
-
         def __init__(self, resposta_etapa1=None, resposta_etapa2=None,
                      atraso=0.05, publica=True):
             self.resposta_etapa1 = resposta_etapa1
@@ -1425,7 +1229,6 @@ def testar_fluxo_worker(worker):
 
         return asyncio.run(principal())
 
-    # --- ETAPA 1 -----------------------------------------------------
     cliente = ClienteFalso(resposta_etapa1=("texto", transcricao))
 
     resultado = rodar(cliente, lambda: worker._transcrever(pcm_frase))
@@ -1446,7 +1249,6 @@ def testar_fluxo_worker(worker):
         "a ETAPA 2 NAO e chamada junto (sao duas chamadas separadas)",
     )
 
-    # --- ETAPA 2 -----------------------------------------------------
     import jarvis.cerebro.voz_local.cliente_local as modulo_local
 
     resposta_falada = modulo_local.RespostaFalada(wav, TEXTO_DA_RESPOSTA)
@@ -1465,10 +1267,6 @@ def testar_fluxo_worker(worker):
         "e o texto que ele fala vem junto, no mesmo resultado",
     )
 
-    # Igualdade exata NÃO serve mais: o payload ganhou os campos
-    # opcionais de memória (historico/contexto_sistema). O que precisa
-    # continuar valendo é que TUDO da etapa 1 é republicado sem
-    # alteração, e que nada além dos dois campos novos aparece.
     publicado = cliente.textos_publicados[0]
 
     checar(
@@ -1483,7 +1281,6 @@ def testar_fluxo_worker(worker):
         f"({sorted(set(publicado) - set(transcricao))})",
     )
 
-    # --- Erro do servidor, em cada etapa ------------------------------
     for rotulo, resposta, corrotina in (
         (
             "transcricao",
@@ -1508,7 +1305,6 @@ def testar_fluxo_worker(worker):
             f"erro publicado durante a etapa de {rotulo} vira erro do turno",
         )
 
-    # --- Timeout de cada etapa, com o limite de CADA uma --------------
     t_orig = (
         config_local.TIMEOUT_TRANSCRICAO_SEGUNDOS,
         config_local.TIMEOUT_RESPOSTA_SEGUNDOS,
@@ -1560,7 +1356,6 @@ def testar_fluxo_worker(worker):
             config_local.TIMEOUT_RESPOSTA_SEGUNDOS,
         ) = t_orig
 
-    # --- Falha ao publicar --------------------------------------------
     checar(
         rodar(
             ClienteFalso(publica=False),
@@ -1569,10 +1364,6 @@ def testar_fluxo_worker(worker):
         "falha ao publicar vira erro do turno, nao excecao",
     )
 
-    # --- Resposta da ETAPA ERRADA -------------------------------------
-    # Os dois pares de topicos sao independentes: um audio atrasado do
-    # turno anterior pode chegar no meio da espera da etapa 1. Se fosse
-    # aceito, o worker trataria bytes de WAV como o JSON da transcricao.
     config_local.TIMEOUT_TRANSCRICAO_SEGUNDOS = 2
 
     try:
@@ -1595,7 +1386,6 @@ def testar_fluxo_worker(worker):
     finally:
         config_local.TIMEOUT_TRANSCRICAO_SEGUNDOS = t_orig[0]
 
-    # --- JSON quebrado na etapa 1 -------------------------------------
     coletados = []
     original = worker._entregar_resposta
     worker._entregar_resposta = coletados.append
@@ -1632,7 +1422,6 @@ def testar_fluxo_worker(worker):
     finally:
         worker._entregar_resposta = original
 
-    # --- Mensagem fora de hora ----------------------------------------
     erros = []
     worker.erro_recebido.connect(erros.append)
 
@@ -1658,9 +1447,6 @@ def testar_fluxo_worker(worker):
     worker.erro_recebido.disconnect(erros.append)
 
 
-# ====================================================================
-# 6b. ROTEAMENTO NO MEIO DO TURNO
-# ====================================================================
 def testar_roteamento(worker):
     titulo("6b. Roteamento entre as duas etapas")
 
@@ -1737,8 +1523,6 @@ def testar_roteamento(worker):
         "o texto vai ao roteamento exatamente como transcrito",
     )
 
-    # O gancho de captura precisa chegar junto, senão as ferramentas
-    # visuais do catálogo voltam a ser despachadas sem imagem.
     checar(
         falso.ganchos
         and falso.ganchos[0] == worker._preparar_argumentos_da_ferramenta,
@@ -1754,7 +1538,6 @@ def testar_roteamento(worker):
         "conversa e reconhecida como conversa",
     )
 
-    # Uma falha no roteamento nao pode custar o turno.
     erros = []
     worker.erro_recebido.connect(erros.append)
 
@@ -1777,7 +1560,6 @@ def testar_roteamento(worker):
     finally:
         worker.erro_recebido.disconnect(erros.append)
 
-    # Historico enviado ao roteamento: a conversa SEM a fala atual.
     worker.transcricao_conversa = [
         {"role": "user", "content": "oi"},
         {"role": "assistant", "content": "ola"},
@@ -1797,7 +1579,6 @@ def testar_roteamento(worker):
         "o historico vai sem a fala atual (senao ela iria duplicada)",
     )
 
-    # Resultado local (ferramenta) aparece na interface e no historico.
     worker.transcricao_conversa = []
     status = []
     worker.status_recebido.connect(status.append)
@@ -1825,7 +1606,6 @@ def testar_roteamento(worker):
     finally:
         worker.status_recebido.disconnect(status.append)
 
-    # Teto do historico.
     worker.transcricao_conversa = [
         {"role": "user", "content": str(i)}
         for i in range(modulo.MAXIMO_MENSAGENS_TRANSCRICAO + 5)
@@ -1848,22 +1628,11 @@ def testar_roteamento(worker):
     worker.transcricao_conversa = []
 
 
-# ====================================================================
-# 6c. FALHA DE ROTEAMENTO NUNCA VIRA CONVERSA
-# ====================================================================
-# Bug real relatado pelo usuário: pediu para abrir o navegador, ouviu
-# que estava abrindo, e nada abriu; repetindo a frase, funcionou.
-# Causa: a Groq devolveu 429 (teto de 8000 tokens/minuto do tier
-# gratuito, ~1450 tokens por chamada da etapa 1), processar_turno
-# devolveu usou_ferramenta=False, e o worker tratou isso como conversa
-# — mandando a fala ao servidor de voz, que não sabe que ferramentas
-# existem e respondeu algo plausível.
 def testar_falha_de_roteamento(worker):
     titulo("6c. Falha de roteamento não pode virar conversa")
 
     from jarvis.roteamento_hierarquico.roteador import ResultadoTurno
 
-    # O campo existe e o padrão é "não falhou".
     checar(
         ResultadoTurno("x").falhou is False,
         "ResultadoTurno tem .falhou, e o padrão é False",
@@ -1874,9 +1643,6 @@ def testar_falha_de_roteamento(worker):
         "e pode ser marcado como falha",
     )
 
-    # Falha de roteamento e conversa são distinguíveis: os dois têm
-    # usou_ferramenta=False, e era exatamente essa colisão que causava
-    # o bug.
     falha = ResultadoTurno("Limite de uso da Groq atingido", falhou=True)
     conversa = ResultadoTurno("", usou_ferramenta=False)
 
@@ -1887,7 +1653,6 @@ def testar_falha_de_roteamento(worker):
         "(usou_ferramenta é False nos dois)",
     )
 
-    # E o ciclo de conversa realmente separa os dois casos.
     import jarvis.cerebro.voz_local.cliente_local as modulo
 
     chamadas = {"transcrever": 0, "responder": 0}
@@ -1903,7 +1668,6 @@ def testar_falha_de_roteamento(worker):
         return ("audio", modulo.RespostaFalada(b"", None))
 
     async def capturar_falso(fila):
-        # Uma frase no primeiro turno; depois encerra o laço.
         if chamadas["transcrever"] == 0:
             return b"\x00\x01" * 16000
 
@@ -1965,7 +1729,6 @@ def testar_falha_de_roteamento(worker):
     worker.erro_recebido.connect(erros.append)
 
     try:
-        # Falha de roteamento: a etapa 2 NUNCA pode ser chamada.
         rodar(ResultadoTurno("Limite de uso da Groq atingido", falhou=True))
 
         checar(
@@ -1979,7 +1742,6 @@ def testar_falha_de_roteamento(worker):
             f"e a falha aparece na interface ({erros})",
         )
 
-        # Conversa de verdade: a etapa 2 continua sendo chamada.
         erros.clear()
         rodar(ResultadoTurno("", usou_ferramenta=False))
 
@@ -1993,7 +1755,6 @@ def testar_falha_de_roteamento(worker):
             "e sem erro nenhum na interface",
         )
 
-        # Ferramenta: etapa 2 continua não sendo chamada.
         erros.clear()
         rodar(
             ResultadoTurno(
@@ -2014,9 +1775,6 @@ def testar_falha_de_roteamento(worker):
     worker.transcricao_conversa = []
 
 
-# ====================================================================
-# 6d. RETRY DE RATE LIMIT E CORPO DO ERRO DA GROQ
-# ====================================================================
 def testar_retry_groq():
     titulo("6d. Retry no limite da Groq e preservação do motivo do erro")
 
@@ -2029,11 +1787,6 @@ def testar_retry_groq():
     from jarvis.servicos import agentes
     from jarvis.servicos.agentes import agente as motor
 
-    # Com o LangChain, a falha não chega mais como uma resposta HTTP
-    # lida dentro do roteador: chega como EXCEÇÃO do SDK do provedor,
-    # carregando a resposta original em .response. Quem a interpreta é
-    # jarvis/servicos/agentes/erros.py — e é por isso que os primeiros
-    # checks deste teste mudaram de endereço sem mudar de assunto.
     class ErroFalso(Exception):
         def __init__(self, status, mensagem, headers=None):
             super().__init__(mensagem)
@@ -2050,8 +1803,6 @@ def testar_retry_groq():
 
     erro_429 = ErroFalso(429, MENSAGEM_429)
 
-    # O motivo real é preservado — sem isto, um limite recuperável fica
-    # indistinguível de qualquer outra falha.
     detalhe = agentes.erros.descrever(erro_429)
 
     checar(
@@ -2078,7 +1829,6 @@ def testar_retry_groq():
             config_rot.ESPERA_MAXIMA_RATE_LIMIT,
         )
 
-    # retry-after do servidor é respeitado, e limitado pelo teto.
     checar(
         espera(ErroFalso(429, MENSAGEM_429, {"retry-after": "1"}), 0) == 1.0,
         "o retry-after do servidor é respeitado",
@@ -2091,8 +1841,6 @@ def testar_retry_groq():
         "(o valor vem de fora)",
     )
 
-    # Sem o cabeçalho, a espera dita DENTRO da mensagem ainda vale —
-    # continua sendo o servidor falando, não um chute nosso.
     checar(
         abs(espera(erro_429, 0) - 0.975) < 0.001,
         f'o "try again in 975ms" da mensagem é lido ({espera(erro_429, 0)})',
@@ -2108,18 +1856,11 @@ def testar_retry_groq():
         f"sem nenhum dos dois, o backoff cresce {esperas}",
     )
 
-    # --- O retry em si, agora medido dentro da camada de agentes ------
-    #
-    # O ponto de mock desceu um nível: antes era requests.post dentro do
-    # roteador, agora é o modelo do LangChain que a camada constrói.
-    # O que está sendo verificado é o mesmo de sempre.
     class ModeloFalso:
         def __init__(self, sequencia, registro):
             self.sequencia = sequencia
             self.registro = registro
 
-        # bind_tools/bind devolvem o próprio modelo: aqui não há
-        # ferramenta nem formato para amarrar.
         def bind_tools(self, *args, **kwargs):
             return self
 
@@ -2143,7 +1884,6 @@ def testar_retry_groq():
             return item
 
     def rodar(sequencia, historico=None):
-        """Uma etapa do roteador com respostas pré-programadas."""
         registro = {"chamadas": 0, "dormidas": [], "papeis": []}
 
         criar_original = motor.modelos.criar_modelo
@@ -2170,7 +1910,6 @@ def testar_retry_groq():
 
         return resposta, registro
 
-    # 429 duas vezes, sucesso na terceira.
     resposta, registro = rodar(
         [erro_429, erro_429, AIMessage(content="deu certo")]
     )
@@ -2185,7 +1924,6 @@ def testar_retry_groq():
         f"e esperou entre as tentativas ({registro['dormidas']})",
     )
 
-    # Estourando as tentativas, devolve a explicação REAL.
     resposta, registro = rodar([erro_429])
 
     checar(
@@ -2206,8 +1944,6 @@ def testar_retry_groq():
         f"{config_rot.TENTATIVAS_RATE_LIMIT} tentativas)",
     )
 
-    # Erro que NÃO é 429 não é repetido: seria gastar o tempo do
-    # usuário para receber o mesmo erro.
     resposta, registro = rodar([ErroFalso(400, "modelo invalido")])
 
     checar(
@@ -2221,9 +1957,6 @@ def testar_retry_groq():
         f"com o motivo junto ({resposta.erro})",
     )
 
-    # A instrução de sistema e o histórico chegam como mensagens do
-    # LangChain, na ordem certa — é o que substituiu a lista de dicts
-    # {"role": ...} que este teste inspecionava antes.
     _, registro = rodar(
         [AIMessage(content="ok")],
         historico=[{"role": "assistant", "content": "falei antes"}],
@@ -2272,8 +2005,6 @@ def testar_captura_para_ferramentas_visuais(worker):
                 f"e a captura usada é a d{'a tela' if origem == 'tela' else 'a câmera'}",
             )
 
-        # A distinção tela-vs-câmera é o ponto: descrever_tela não pode
-        # ligar a webcam, e descrever_camera não pode tirar print.
         checar(
             modulo.FERRAMENTAS_QUE_PRECISAM_DE_IMAGEM["descrever_tela"] == "tela"
             and modulo.FERRAMENTAS_QUE_PRECISAM_DE_IMAGEM["descrever_camera"]
@@ -2281,7 +2012,6 @@ def testar_captura_para_ferramentas_visuais(worker):
             "descrever_tela usa a tela e descrever_camera usa a câmera",
         )
 
-        # Qualquer outra ferramenta não pode acionar a câmera.
         usadas.clear()
         entrada_comum = {"nome": "navegador"}
         args = worker._preparar_argumentos_da_ferramenta(
@@ -2298,7 +2028,6 @@ def testar_captura_para_ferramentas_visuais(worker):
             "e nem sequer copia o dicionário à toa",
         )
 
-        # O dicionário original nunca é modificado.
         entrada = {"pergunta": "o que é isso"}
         worker._preparar_argumentos_da_ferramenta(
             "consultar_segunda_opiniao_visual", entrada
@@ -2312,7 +2041,6 @@ def testar_captura_para_ferramentas_visuais(worker):
     finally:
         modulo._CAPTURAS = originais
 
-    # E o gancho realmente chega a processar_turno.
     import inspect
 
     from jarvis.roteamento_hierarquico.roteador import processar_turno
@@ -2323,13 +2051,6 @@ def testar_captura_para_ferramentas_visuais(worker):
     )
 
 
-# ====================================================================
-# 6f. VISÃO PORTADA PARA O CATÁLOGO (descrever_tela / descrever_camera)
-# ====================================================================
-# analisar_tela e analisar_camera são nativas do Gemini e mandam vídeo
-# PARA DENTRO da sessão — impossível no modo local. O pacote
-# descricao_visual porta a capacidade como captura avulsa + descrição
-# por um modelo de visão, com nomes DIFERENTES das nativas.
 def testar_visao_portada():
     titulo("6f. Visão portada: descrever_tela e descrever_camera")
 
@@ -2339,7 +2060,6 @@ def testar_visao_portada():
     from jarvis.pacotes.descricao_visual import config as config_visao
     from jarvis.roteamento_hierarquico import catalogo
 
-    # --- contrato do pacote ------------------------------------------
     nomes = [d.name for d in descricao_visual.obter_function_declarations()]
 
     checar(
@@ -2357,11 +2077,6 @@ def testar_visao_portada():
         "e o pacote está em PACOTES_REGISTRADOS",
     )
 
-    # --- NÃO pode colidir com as nativas do Gemini -------------------
-    # O despacho do worker do Gemini percorre PACOTES_REGISTRADOS ANTES
-    # da cadeia de elif nativa: um pacote com o nome nativo
-    # sequestraria o comportamento do Gemini, que manda vídeo de
-    # verdade para a sessão.
     nativas_do_gemini = {"analisar_tela", "analisar_camera"}
 
     todos_de_pacote = {
@@ -2376,7 +2091,6 @@ def testar_visao_portada():
         "(senão o despacho do Gemini seria sequestrado)",
     )
 
-    # --- catálogo ----------------------------------------------------
     for nome in ("descrever_tela", "descrever_camera"):
         checar(
             nome in catalogo.CATALOGO_CURTO,
@@ -2393,7 +2107,6 @@ def testar_visao_portada():
         "catálogo e pacotes registrados seguem coerentes",
     )
 
-    # --- sensibilidade -----------------------------------------------
     from jarvis.nucleo.perfis import sensiveis
 
     checar(
@@ -2402,7 +2115,6 @@ def testar_visao_portada():
         "as duas são sensíveis (veem a tela/câmera e mandam para fora)",
     )
 
-    # --- caminho de sucesso, sem rede --------------------------------
     original = cliente_visao.descrever
     chamadas = []
 
@@ -2441,7 +2153,6 @@ def testar_visao_portada():
     finally:
         cliente_visao.descrever = original
 
-    # --- falhas: sempre texto dizível, nunca exceção -----------------
     texto = descricao_visual.despachar("descrever_tela", {})
 
     checar(
@@ -2466,7 +2177,6 @@ def testar_visao_portada():
             f"sem chave, diz qual chave falta ({texto})",
         )
 
-        # E o seletor de provedor realmente troca de caminho.
         config_visao.provedor_visao = lambda: "mistral"
         chave_mistral = config_visao.MISTRAL_API_KEY
         config_visao.MISTRAL_API_KEY = None
@@ -2488,18 +2198,9 @@ def testar_visao_portada():
         config_visao.GEMINI_API_KEY = chave_original
         config_visao.provedor_visao = provedor_original
 
-    # --- padrão deste pacote: FIXO em gemini -------------------------
-    # Diferente de identificacao_visual (parte 6g), descrever_tela/
-    # descrever_camera não prometem independência de ninguém — são a
-    # visão primária do modo local, não uma segunda opinião. Amarrá-las
-    # ao cérebro ativo só mandaria a descrição para a chave da Mistral
-    # (cota zerada) no modo Gemini, quebrando a ferramenta sem ganho.
     caminho_original = config_visao.CAMINHO_ENV
     env_falso = Path(tempfile.mkdtemp(prefix="jarvis_env_")) / ".env"
 
-    # provedor_forcado() cai no os.environ quando a variável não está
-    # no arquivo — tirar do ambiente é o que deixa o .env de teste ser
-    # a única fonte durante estas checagens.
     ambiente_original = os.environ.pop("DESCRICAO_VISUAL_PROVEDOR", None)
 
     try:
@@ -2531,9 +2232,6 @@ def testar_visao_portada():
             os.environ["DESCRICAO_VISUAL_PROVEDOR"] = ambiente_original
 
 
-# ====================================================================
-# 6g. SEGUNDA OPINIÃO VISUAL NO MESMO SELETOR DE PROVEDOR
-# ====================================================================
 def testar_segunda_opiniao_provedor():
     titulo("6g. Segunda opinião visual: seletor de provedor")
 
@@ -2543,13 +2241,6 @@ def testar_segunda_opiniao_provedor():
     from jarvis.pacotes.identificacao_visual import mistral_vision_client
     from jarvis.pacotes.descricao_visual import config as config_desc
 
-    # --- a política de provedor --------------------------------------
-    # A segunda opinião só tem um propósito: ser uma fonte INDEPENDENTE
-    # de quem já respondeu. Por isso o padrão não é fixo — é sempre o
-    # provedor OPOSTO ao cérebro de voz ativo. Com um padrão fixo em
-    # Gemini, no modo de voz Gemini a ferramenta virava o Gemini
-    # confirmando a si mesmo e furava a própria promessa EM SILÊNCIO
-    # (respondia normalmente, nada falhava).
     caminho_original_2op = config_2op.CAMINHO_ENV
     caminho_original_desc = config_desc.CAMINHO_ENV
     provedor_ativo_original = nucleo_config.provedor_ativo
@@ -2557,8 +2248,6 @@ def testar_segunda_opiniao_provedor():
     env_falso = Path(tempfile.mkdtemp(prefix="jarvis_env_")) / ".env"
     env_falso.write_text("", encoding="utf-8")
 
-    # Mesmo motivo da parte 6f: sem isto, uma variável já presente no
-    # os.environ do processo venceria o .env de teste.
     ambiente_original = os.environ.pop("DESCRICAO_VISUAL_PROVEDOR", None)
 
     try:
@@ -2578,17 +2267,12 @@ def testar_segunda_opiniao_provedor():
                 f"{esperado} (nunca o mesmo modelo que respondeu)",
             )
 
-            # E o pacote de descrição NÃO segue a regra: ele não é uma
-            # segunda opinião, é a visão primária do modo local.
             checar(
                 config_desc.provedor_visao() == "gemini",
                 f"cérebro {cerebro}: descricao_visual segue no gemini "
                 f"(assimetria proposital, ver os config.py)",
             )
 
-        # A variável manual SOBREPÕE a regra automática, e vale para os
-        # DOIS pacotes — uma escolha explícita do usuário nunca separa
-        # as duas ferramentas de visão em provedores diferentes.
         nucleo_config.provedor_ativo = lambda: "gemini"
 
         for forcado in ("gemini", "mistral"):
@@ -2603,8 +2287,6 @@ def testar_segunda_opiniao_provedor():
                 f"nos dois pacotes",
             )
 
-        # Erro de digitação não escolhe provedor sozinho: cai na regra
-        # automática, mesma disciplina de PROVEDOR_IA.
         env_falso.write_text(
             "DESCRICAO_VISUAL_PROVEDOR=provedor_que_nao_existe",
             encoding="utf-8",
@@ -2629,17 +2311,12 @@ def testar_segunda_opiniao_provedor():
         "os dois provedores estão disponíveis",
     )
 
-    # Cada cliente se identifica — dizer "Mistral" quando quem
-    # respondeu foi o Gemini faria o cérebro relatar ao usuário uma
-    # fonte que não foi consultada.
     checar(
         gemini_vision_client.NOME_PROVEDOR == "Gemini"
         and mistral_vision_client.NOME_PROVEDOR == "Mistral",
         "cada cliente expõe o próprio nome de provedor",
     )
 
-    # O provedor é resolvido A CADA CHAMADA, para trocar no .env valer
-    # já na próxima sem reiniciar o app.
     chamados = []
 
     class ClienteFalso:
@@ -2679,7 +2356,6 @@ def testar_segunda_opiniao_provedor():
                 f"e a resposta nomeia quem respondeu ({texto[:60]}...)",
             )
 
-        # Provedor desconhecido em runtime cai no Gemini, nunca estoura.
         chamados.clear()
         config_2op.provedor_visao = lambda: "provedor_inexistente"
 
@@ -2697,10 +2373,6 @@ def testar_segunda_opiniao_provedor():
         identificacao_visual._CLIENTES = originais
         config_2op.provedor_visao = provedor_original
 
-    # --- convenção de falha PRESERVADA -------------------------------
-    # Diferente de descricao_visual: aqui a falha instrui o cérebro a
-    # responder com a própria visão e avisar que não confirmou com uma
-    # segunda fonte. Isso não podia mudar com o porte.
     texto = identificacao_visual.despachar(
         "consultar_segunda_opiniao_visual", {"pergunta": "o que é isso"}
     )
@@ -2710,10 +2382,6 @@ def testar_segunda_opiniao_provedor():
         "sem imagem, mantém a instrução de responder com a própria visão",
     )
 
-    # Nomeia o provedor que DE FATO seria consultado agora — e isso
-    # depende do cérebro de voz ativo, então o teste não pode fixar um
-    # nome: dizer "Gemini" quando quem falhou foi a Mistral relataria
-    # ao usuário uma fonte que nunca foi chamada.
     nome_esperado = identificacao_visual._CLIENTES[
         config_2op.provedor_visao()
     ].NOME_PROVEDOR
@@ -2723,7 +2391,6 @@ def testar_segunda_opiniao_provedor():
         f"e nomeia o provedor que falhou ({texto[:70]}...)",
     )
 
-    # A mensagem de falha não pode mais citar a Mistral fixa.
     from jarvis.nucleo import prompts
 
     checar(
@@ -2736,9 +2403,6 @@ def testar_segunda_opiniao_provedor():
         "e não cita mais a Mistral como fonte fixa",
     )
 
-    # MISTRAL_API_KEY deixou de ser obrigatória: com o padrão gemini o
-    # pacote funciona sem ela, e cobrá-la na tela seria pedir uma
-    # credencial que não é usada.
     campos = {c["nome"]: c for c in config_2op.config_schema()}
 
     checar(
@@ -2752,19 +2416,11 @@ def testar_segunda_opiniao_provedor():
     )
 
 
-# ====================================================================
-# 6h. MEMÓRIA DO MODO LOCAL (histórico + fatos de longo prazo)
-# ====================================================================
-# Dois problemas relatados: (1) perguntar o nome, dizer o nome e
-# perguntar de novo — sem memória de curto prazo, porque cada
-# /responder é isolado; (2) o nome já estava salvo no vault e não
-# chegava ao servidor de jeito nenhum.
 def testar_memoria_local(worker):
     titulo("6h. Memória do modo local: histórico e fatos")
 
     from jarvis.cerebro.voz_local import contexto
 
-    # --- histórico ---------------------------------------------------
     checar(
         contexto.historico_para_envio([]) == [],
         "histórico vazio não vira campo nenhum",
@@ -2788,8 +2444,6 @@ def testar_memoria_local(worker):
         "e o que sobra são as mensagens mais RECENTES",
     )
 
-    # Cópia, não referência: a lista do worker segue crescendo
-    # enquanto o pedido está em voo.
     original = [{"role": "user", "content": "oi"}]
     copia = contexto.historico_para_envio(original)
     copia[0]["content"] = "alterado"
@@ -2807,7 +2461,6 @@ def testar_memoria_local(worker):
         "mensagem vazia não é enviada",
     )
 
-    # --- fatos de longo prazo ----------------------------------------
     texto = contexto.montar_contexto_sistema("qual é o meu nome?")
 
     checar(
@@ -2820,8 +2473,6 @@ def testar_memoria_local(worker):
         "e a data/hora atual (mesmo dado que os outros dois cérebros recebem)",
     )
 
-    # --- filtro de relevância ----------------------------------------
-    # Sem ele, qualquer pergunta arrastava notas de assunto nenhum.
     from jarvis.pacotes.memoria_obsidian import config as config_memoria
 
     if config_memoria.configurado():
@@ -2845,7 +2496,6 @@ def testar_memoria_local(worker):
         "sem fala, ainda assim devolve identidade e data",
     )
 
-    # Teto de tamanho: o contexto viaja em toda chamada.
     limite_original = contexto.LIMITE_CONTEXTO_CARACTERES
     contexto.LIMITE_CONTEXTO_CARACTERES = 80
 
@@ -2860,7 +2510,6 @@ def testar_memoria_local(worker):
     finally:
         contexto.LIMITE_CONTEXTO_CARACTERES = limite_original
 
-    # Falha ao ler o vault não pode custar o turno.
     import jarvis.cerebro.voz_local.contexto as modulo
 
     original_busca = modulo._memorias_relevantes
@@ -2885,7 +2534,6 @@ def testar_memoria_local(worker):
     finally:
         modulo._memorias_relevantes = original_busca
 
-    # O tratamento real está DENTRO de _memorias_relevantes.
     from jarvis.pacotes.memoria_obsidian import busca as busca_memoria
 
     original_buscar = busca_memoria.buscar_memorias
@@ -2904,7 +2552,6 @@ def testar_memoria_local(worker):
     finally:
         busca_memoria.buscar_memorias = original_buscar
 
-    # --- o payload da etapa 2 leva os dois campos --------------------
     enviados = {}
 
     class ClienteFalso:
@@ -2963,7 +2610,6 @@ def testar_memoria_local(worker):
         "e NÃO duplica a fala atual, que já vai no campo 'texto'",
     )
 
-    # A transcrição do worker não pode ter sido alterada pelo envio.
     checar(
         len(worker.transcricao_conversa) == 3,
         "montar o payload não mexe na transcrição do worker",
@@ -2972,14 +2618,6 @@ def testar_memoria_local(worker):
     worker.transcricao_conversa = []
 
 
-# ====================================================================
-# 6i. O LADO DO ASSISTENTE NO HISTÓRICO
-# ====================================================================
-# A lacuna que sobrou da 6h: o histórico tinha só as falas do USUÁRIO.
-# O servidor devolvia o WAV e nada mais, então o que o assistente
-# respondeu nunca voltava — ele lembrava do que tinha perguntado, e
-# nunca do que tinha respondido. Agora o texto vem como user property
-# "texto" ao lado do áudio.
 def testar_texto_da_resposta(worker):
     titulo("6i. O texto da resposta volta e entra no histórico")
 
@@ -2988,8 +2626,6 @@ def testar_texto_da_resposta(worker):
     import jarvis.cerebro.voz_local.cliente_local as modulo
     from jarvis.roteamento_hierarquico.roteador import ResultadoTurno
 
-    # --- extração da user property -----------------------------------
-    # Objetos mínimos com a forma que o paho entrega.
     class PropriedadesFalsas:
         def __init__(self, pares):
             self.UserProperty = pares
@@ -3029,8 +2665,6 @@ def testar_texto_da_resposta(worker):
         "texto em branco, nome errado e lista vazia dão None",
     )
 
-    # Servidor antigo / conexão v3.1.1: properties nem existe. Tem que
-    # devolver None em silêncio, nunca estourar na thread de rede.
     class SemPropriedades:
         topic = config_local.TOPICO_SAIDA
         payload = b"RIFF...."
@@ -3051,7 +2685,6 @@ def testar_texto_da_resposta(worker):
         "e uma property corrompida NÃO levanta (mataria a thread do paho)",
     )
 
-    # --- o handler repassa os dois -----------------------------------
     recebidos = []
     cliente = ClienteVozLocal(
         ao_receber_texto=lambda d: None,
@@ -3069,7 +2702,6 @@ def testar_texto_da_resposta(worker):
         f"o handler entrega áudio E texto ao worker ({recebidos})",
     )
 
-    # --- o texto entra em transcricao_conversa -----------------------
     worker.transcricao_conversa = []
     worker._registrar_fala_do_assistente("Seu nome é Massaki.")
 
@@ -3088,10 +2720,6 @@ def testar_texto_da_resposta(worker):
         "texto ausente (servidor antigo) não vira entrada em branco",
     )
 
-    # --- o caso relatado, no laço de conversa de verdade -------------
-    # Três turnos: pergunta o nome, diz o nome, pergunta de novo. O que
-    # se verifica é que no TERCEIRO turno o payload da etapa 2 leva os
-    # dois lados do diálogo — sem isso o servidor não teria como saber.
     falas = [
         "qual é o meu nome?",
         "meu nome é Massaki",
@@ -3125,10 +2753,6 @@ def testar_texto_da_resposta(worker):
     async def reproduzir_falso(*args, **kwargs):
         return None
 
-    # _pedir_resposta NÃO é substituído: é justamente ele que monta o
-    # campo "historico" a partir de transcricao_conversa, que é o que
-    # este teste observa. Quem é falso é o cliente MQTT abaixo — o
-    # servidor, não o worker.
     class ServidorFalso:
         def publicar_texto(self, dados):
             payloads.append(json.loads(json.dumps(dados)))
@@ -3145,8 +2769,6 @@ def testar_texto_da_resposta(worker):
 
             return (True, "enviado")
 
-    # O contexto de sistema é assunto da 6h e leria o vault de verdade
-    # a cada turno; aqui só atrapalharia.
     async def sem_contexto(*args, **kwargs):
         return ""
 
@@ -3168,9 +2790,6 @@ def testar_texto_da_resposta(worker):
     worker.ativo = True
 
     async def principal():
-        # ciclo_de_conversa roda dentro de executar(), que é quem
-        # normalmente publica o loop em self.loop — sem isso
-        # _publicar_e_aguardar não tem onde criar o future.
         worker.loop = asyncio.get_running_loop()
 
         await worker.ciclo_de_conversa(asyncio.Queue(), None)
@@ -3219,8 +2838,6 @@ def testar_texto_da_resposta(worker):
             "sem duplicar a fala atual, que já vai no campo 'texto'",
         )
 
-        # A ordem tem que ser a do diálogo. Um histórico embaralhado
-        # confundiria o modelo mais do que ajudaria.
         checar(
             papeis == ["user", "assistant", "user", "assistant"],
             f"na ordem real do diálogo ({papeis})",
@@ -3229,19 +2846,6 @@ def testar_texto_da_resposta(worker):
     worker.transcricao_conversa = []
 
 
-# ====================================================================
-# 6j. O 400 "Tool choice is none, but model called a tool"
-# ====================================================================
-# Caso relatado: pedir para salvar uma memória logo depois de uma
-# pergunta já respondida derrubava o turno com esse 400. A ETAPA 1 não
-# declara ferramenta nenhuma (é o que o roteamento em duas etapas
-# existe para economizar), e o gpt-oss às vezes CHAMA a ferramenta em
-# vez de escrever o nome dela — aí a Groq recusa a requisição inteira.
-#
-# Não é determinístico e depende do HISTÓRICO: medido com a frase e o
-# histórico exatos do log, 0 falhas em 8 sem turnos anteriores, e de 1
-# a 3 em cada 6 com um turno de assistente antes. Reforçar o prompt
-# não resolveu (piorou: 3 em 6 contra 1 em 6).
 def testar_tool_call_indevida():
     titulo("6j. O 400 de chamada de ferramenta indevida")
 
@@ -3254,9 +2858,6 @@ def testar_tool_call_indevida():
     from jarvis.servicos import agentes
     from jarvis.servicos.agentes import agente as motor
 
-    # O reconhecimento mudou de arquivo junto com o resto da
-    # classificação de erro, mas continua sendo exatamente a mesma
-    # regra — ver jarvis/servicos/agentes/erros.py.
     detectar = agentes.erros.e_chamada_de_ferramenta_indevida
 
     checar(
@@ -3312,7 +2913,6 @@ def testar_tool_call_indevida():
             return item
 
     def rodar(sequencia):
-        """Uma etapa do roteador com respostas pré-programadas."""
         registro = {"chamadas": 0, "dormidas": []}
 
         criar_original = motor.modelos.criar_modelo
@@ -3342,7 +2942,6 @@ def testar_tool_call_indevida():
             registro["dormidas"],
         )
 
-    # Falha uma vez e acerta na segunda — o caso comum.
     resposta, n, dormiu = rodar([ErroFalso(400, MSG_TOOL), SUCESSO])
 
     checar(resposta.sucesso and n == 2, f"repete e acerta na 2ª tentativa ({n} chamadas)")
@@ -3355,7 +2954,6 @@ def testar_tool_call_indevida():
         f"sem espera entre as tentativas — não é rate limit ({dormiu})",
     )
 
-    # Falhando sempre, desiste no orçamento (nunca laço infinito).
     resposta, n, _ = rodar([ErroFalso(400, MSG_TOOL)])
 
     checar(
@@ -3373,17 +2971,12 @@ def testar_tool_call_indevida():
         "marcando o tipo, que é o que o plano B vai consultar",
     )
 
-    # A regra de NÃO repetir os outros 4xx continua valendo.
     resposta, n, _ = rodar([ErroFalso(401, "invalid_api_key")])
     checar(not resposta.sucesso and n == 1, f"401 não repete ({n} chamada)")
 
     resposta, n, _ = rodar([ErroFalso(400, "malformed body")])
     checar(not resposta.sucesso and n == 1, f"400 comum não repete ({n} chamada)")
 
-    # Os dois orçamentos (429 e 400) são independentes: um 429 no meio
-    # não pode consumir as tentativas reservadas ao 400. Com um contador
-    # único, o 429 da 2ª chamada gastaria a última tentativa do 400 e a
-    # 3ª nunca aconteceria.
     resposta, n, _ = rodar(
         [
             ErroFalso(400, MSG_TOOL),
@@ -3396,9 +2989,6 @@ def testar_tool_call_indevida():
         f"429 no meio não consome as tentativas do 400 ({n} chamadas)",
     )
 
-    # --- PLANO B: refazer a etapa 1 SEM o histórico -------------------
-    # O gatilho medido é o histórico, então a última cartada remove o
-    # gatilho em vez de sortear de novo.
     historico = [
         {"role": "user", "content": "Qual é o assunto que eu mais gosto?"},
         {"role": "assistant", "content": "Ainda não sei, me conta."},
@@ -3409,7 +2999,6 @@ def testar_tool_call_indevida():
     def consulta_falsa(pedido):
         vistas.append(list(pedido.historico or []))
 
-        # Com histórico, falha sempre do jeito relatado. Sem, funciona.
         if pedido.historico:
             return agentes.RespostaAgente(
                 False,
@@ -3417,10 +3006,6 @@ def testar_tool_call_indevida():
                 tipo_erro=agentes.erros.FERRAMENTA_INDEVIDA,
             )
 
-        # Sem histórico funciona — e devolve uma resposta de CONVERSA
-        # (sem a linha "FERRAMENTAS:"), de propósito: assim o turno
-        # termina na etapa 1 e o que se observa aqui é só a repetição
-        # dela, sem a etapa 2 entrando na contagem.
         return agentes.RespostaAgente(
             True,
             texto="Claro, vou lembrar disso.",
@@ -3460,7 +3045,6 @@ def testar_tool_call_indevida():
         "o turno se salva em vez de morrer no 400 (era o bug relatado)",
     )
 
-    # Sem histórico nenhum não existe plano B — e não pode inventar um.
     vistas.clear()
     roteador._consultar = lambda pedido: agentes.RespostaAgente(
         False,
@@ -3524,16 +3108,6 @@ def testar_recusas(worker):
     )
 
 
-# ====================================================================
-# 9. CHAT SOBREPOSTO À ESFERA
-# ====================================================================
-# A esfera NÃO é OpenGL nem Qt Quick 3D — é um QWidget comum pintando
-# QPixmap em cache com QPainter. Por isso a sobreposição translúcida
-# funciona sem nenhum truque de composição; o que precisa de teste é
-# outra coisa: que o viewport do QTextEdit esteja mesmo transparente
-# (senão vira um retângulo sólido em cima da esfera), que o painel siga
-# o tamanho do pai, e que o texto chegue pelo sinal compartilhado —
-# que é como os TRÊS cérebros entregam a resposta.
 def testar_chat_sobreposto():
     titulo("9. Chat translúcido sobre a esfera")
 
@@ -3566,8 +3140,6 @@ def testar_chat_sobreposto():
         "o chat é FILHO da esfera (fora do layout, senão a empurraria)",
     )
 
-    # A pegadinha de QAbstractScrollArea: sem tratar o viewport, o
-    # fundo do texto é opaco e tapa a esfera.
     checar(
         not chat.texto.viewport().autoFillBackground()
         and chat.texto.viewport().testAttribute(
@@ -3587,8 +3159,6 @@ def testar_chat_sobreposto():
         "o painel não rouba clique de quem está embaixo",
     )
 
-    # A opacidade é ajustável por constante nomeada, não por número
-    # solto perdido no meio do código.
     checar(
         0.0 <= painel_chat.OPACIDADE_FUNDO <= 1.0
         and 0.0 <= painel_chat.OPACIDADE_TEXTO <= 1.0,
@@ -3608,7 +3178,6 @@ def testar_chat_sobreposto():
         "nem opaco, nem invisível",
     )
 
-    # --- começa escondido, aparece com a primeira resposta -----------
     chat.limpar()
     QApplication.instance().processEvents()
 
@@ -3617,8 +3186,6 @@ def testar_chat_sobreposto():
         "sem resposta nenhuma o painel fica escondido (não suja a esfera)",
     )
 
-    # Chega pelo SINAL COMPARTILHADO, como na vida real: é o mesmo
-    # caminho dos três cérebros de voz.
     obter_sinalizador().resposta_texto_recebida.emit("Seu nome é Massaki.")
     QApplication.instance().processEvents()
 
@@ -3636,7 +3203,6 @@ def testar_chat_sobreposto():
         "texto vazio ou só com espaço é ignorado",
     )
 
-    # --- cabe dentro da esfera e acompanha o redimensionamento -------
     def dentro():
         return (
             chat.x() >= 0
@@ -3657,7 +3223,6 @@ def testar_chat_sobreposto():
         f"({largura_antes} -> {chat.width()})",
     )
 
-    # --- teto de respostas -------------------------------------------
     for i in range(painel_chat.MAXIMO_RESPOSTAS + 10):
         chat.adicionar_resposta(f"resposta numero {i}")
 
@@ -3681,7 +3246,6 @@ def testar_chat_sobreposto():
         "e o que sobra são as MAIS RECENTES",
     )
 
-    # --- custo sobre a animação da esfera ----------------------------
     def medir(repeticoes=40):
         esfera.update()
         QApplication.instance().processEvents()
@@ -3701,9 +3265,6 @@ def testar_chat_sobreposto():
     QApplication.instance().processEvents()
     sem_painel = medir()
 
-    # A esfera anima a no máximo FPS_FALANDO (20), ou seja 50 ms por
-    # quadro. O painel tem que ser ruído perto disso — se um dia passar
-    # de um décimo do orçamento, virou problema de verdade.
     orcamento = 1.0 / VisualizadorAlfred.FPS_FALANDO
     custo = com_painel - sem_painel
 
@@ -3714,7 +3275,6 @@ def testar_chat_sobreposto():
         f"{VisualizadorAlfred.FPS_FALANDO} FPS",
     )
 
-    # --- limpar zera e some ------------------------------------------
     chat.limpar()
     QApplication.instance().processEvents()
 
@@ -3726,13 +3286,6 @@ def testar_chat_sobreposto():
     janela.close()
 
 
-# ====================================================================
-# 10. O WORKER LOCAL ALIMENTA O CHAT
-# ====================================================================
-# Lacuna real que existia: só o Gemini e a OpenAI emitiam
-# resposta_texto_recebida. O worker local só imprimia e guardava no
-# transcript — então o chat ficaria vazio justamente no modo em que o
-# texto passou a existir (user property "texto" do MQTT).
 def testar_local_alimenta_chat(worker):
     titulo("10. O cérebro local também entrega o texto ao chat")
 
@@ -3774,9 +3327,6 @@ def testar_local_alimenta_chat(worker):
         worker.transcricao_conversa = []
 
 
-# ====================================================================
-# 8. O FLUXO DO GEMINI CONTINUA INTACTO
-# ====================================================================
 def testar_gemini_intacto():
     titulo("8. O caminho do Gemini não foi tocado")
 
@@ -3793,8 +3343,6 @@ def testar_gemini_intacto():
         "o envio do microfone para o Gemini segue no lugar",
     )
 
-    # As três guardas de microfone com a exceção de interrupção
-    # continuam exatamente na forma exigida pelo projeto.
     checar(
         fonte.count("self.alfred_falando\n                and not self.interrupcao_habilitada")
         + fonte.count("self.alfred_falando\n                    and not self.interrupcao_habilitada")
@@ -3811,7 +3359,6 @@ def testar_gemini_intacto():
         "a troca de cérebro segue concentrada em _classe_do_worker",
     )
 
-    # A única alteração na janela é essa função: nenhum widget novo.
     checar(
         "VozLocal" not in janela.replace(
             "        from jarvis.cerebro.voz_local import VozLocalWorker\n\n"
@@ -3827,8 +3374,6 @@ def main():
 
     worker = VozLocalWorker()
 
-    # Nunca inicia a thread: os testes exercitam as corrotinas
-    # diretamente, sem abrir microfone nem alto-falante.
     worker.ativo = False
 
     testar_paridade()

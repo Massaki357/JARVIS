@@ -1,12 +1,3 @@
-# Lista e resolve processos em execução pelo nome falado, pra fechar
-# um aplicativo aberto por voz. Mesma técnica de normalização e
-# correspondência aproximada (accent/case fold, substring, difflib
-# cutoff 0.72) já usada em jarvis/pacotes/discord_jarvis/contatos.py
-# — copiada aqui, não importada: pacote isolado, mesmo princípio de
-# duplicação deliberada já usado no resto do projeto (cada pacote
-# mantém sua própria cópia de _normalizar). Nunca fecha nada fora dos
-# processos que o próprio psutil já enxerga rodando — sem nome ou
-# comando arbitrário vindo direto da fala.
 import difflib
 import re
 import unicodedata
@@ -39,9 +30,6 @@ def _normalizar(texto):
     return texto.strip()
 
 
-# Retorna o conjunto de nomes de processo (ex: "chrome.exe")
-# atualmente em execução. Nunca lança exceção — processos que somem
-# ou negam acesso durante a varredura são simplesmente ignorados.
 def listar_nomes_processos():
     nomes = set()
 
@@ -58,14 +46,6 @@ def listar_nomes_processos():
     return nomes
 
 
-# Resolve nome_falado para um nome de processo real em execução.
-# Retorna (nome_processo, None) se achar exatamente um nome de app;
-# (None, candidatos) se achar mais de um nome DIFERENTE parecido
-# (lista de strings, pra desambiguar); (None, []) se não achar
-# nenhum. Nunca escolhe sozinho quando há ambiguidade real entre
-# apps diferentes — a decisão de fechar TODOS os processos de um
-# mesmo nome já resolvido (ex: várias janelas do mesmo navegador)
-# fica por conta de quem chama esta função.
 def buscar_processo(nome_falado):
     nomes = listar_nomes_processos()
 
@@ -82,7 +62,6 @@ def buscar_processo(nome_falado):
             [],
         ).append(nome)
 
-    # Primeira tentativa: correspondência exata.
     if alvo in nomes_por_normalizado:
         candidatos = nomes_por_normalizado[alvo]
 
@@ -91,8 +70,6 @@ def buscar_processo(nome_falado):
 
         return None, candidatos
 
-    # Segunda tentativa: correspondência parcial (substring, em
-    # qualquer direção).
     parciais = [
         nome
         for normalizado, lista in nomes_por_normalizado.items()
@@ -106,8 +83,6 @@ def buscar_processo(nome_falado):
     if len(parciais) > 1:
         return None, parciais
 
-    # Terceira tentativa: correspondência aproximada, tolerando
-    # pequenas imprecisões do reconhecimento de voz.
     proximos = difflib.get_close_matches(
         alvo,
         nomes_por_normalizado.keys(),

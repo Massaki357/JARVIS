@@ -1,16 +1,7 @@
 from . import roteador
 
-# Usado só para montar a FunctionDeclaration deste pacote — mesmo
-# padrão de rede_jarvis e casa_inteligente (ver docs/INTEGRATION.md).
 from google.genai import types
 
-
-# ============================================================
-# Contrato padrão do projeto (ver docs/INTEGRATION.md): todo pacote de
-# tools expõe obter_function_declarations() e despachar(). Sem
-# wiring extra — cada delegação é uma chamada HTTP pontual, sem
-# callback de sessão nem estado em background.
-# ============================================================
 
 _FUNCTION_DECLARATIONS = [
     types.FunctionDeclaration(
@@ -72,8 +63,6 @@ def obter_function_declarations():
     return list(_FUNCTION_DECLARATIONS)
 
 
-# Se reconhecer nome_funcao, executa e retorna o resultado (sempre
-# uma string). Se não reconhecer, retorna None.
 def despachar(nome_funcao, argumentos):
     argumentos = argumentos or {}
 

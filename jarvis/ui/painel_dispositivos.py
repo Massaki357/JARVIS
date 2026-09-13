@@ -1,27 +1,3 @@
-# Seleção de microfone e alto-falante na tela inicial.
-#
-# O Windows expõe o MESMO aparelho várias vezes, uma por host API
-# (MME, DirectSound, WASAPI, WDM-KS). Nesta máquina, por exemplo, são
-# 46 entradas para meia dúzia de aparelhos reais — jogar essa lista
-# crua num select seria inútil. Por isso as duplicatas são agrupadas e
-# aparece um item por aparelho.
-#
-# Duas decisões que valem ser explícitas:
-#
-#   1. O nome exibido vem da variante mais completa. O MME corta os
-#      nomes em 31 caracteres ("Microfone (HyperX Cloud Flight"),
-#      enquanto o DirectSound traz o nome inteiro ("Microfone (HyperX
-#      Cloud Flight for PS)"). O agrupamento junta as duas por prefixo.
-#
-#   2. O índice usado é o da host API que o próprio PortAudio já
-#      considera padrão nesta máquina. O app sempre usou essa API sem
-#      dizer, e o áudio aqui é justamente a parte frágil do projeto —
-#      não é hora de trocar a API por baixo junto com a novidade.
-#
-# O que é guardado no config.json é o NOME do aparelho, nunca o
-# índice: índice muda quando qualquer dispositivo é conectado ou
-# removido, e o usuário acabaria com o microfone errado selecionado
-# sem ter mexido em nada.
 import sounddevice as sd
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -33,19 +9,10 @@ from PySide6.QtWidgets import (
 
 from jarvis.nucleo import preferencias
 
-# Texto da opção que devolve a escolha para o Windows.
 PADRAO_DO_SISTEMA = "Padrão do Windows"
 
-# Host APIs escondidas do select. WDM-KS é a camada bruta do kernel:
-# ela repete todos os aparelhos que as outras APIs já mostram, com
-# nomes ruins ("Input ()", "Output 1 (...)") e, num caso real desta
-# máquina, um caminho de driver com quebra de linha no meio do nome.
-# Nada que o usuário queira escolher numa lista.
 HOSTAPIS_OCULTAS = {"Windows WDM-KS"}
 
-# Pseudo-dispositivos que significam "o que o Windows estiver usando".
-# Ficam de fora porque a opção "Padrão do Windows" já faz exatamente
-# isso, e de forma mais clara.
 NOMES_OCULTOS = (
     "mapeador de som",
     "driver de captura de som",
@@ -66,11 +33,6 @@ def _deve_ocultar(nome, nome_hostapi):
 
 
 def _hostapi_preferida(entrada):
-    """
-    Host API que o PortAudio já usa por padrão nesta máquina, para a
-    direção pedida. Manter a mesma preserva exatamente o
-    comportamento de áudio que o app sempre teve.
-    """
     try:
         padrao = sd.default.device
         indice = padrao[0] if entrada else padrao[1]
@@ -85,18 +47,12 @@ def _hostapi_preferida(entrada):
 
 
 def _mesmo_aparelho(nome_a, nome_b):
-    # O MME corta o nome; se um é começo do outro, é o mesmo aparelho.
     menor, maior = sorted((nome_a, nome_b), key=len)
 
     return maior.startswith(menor)
 
 
 def listar_dispositivos(entrada):
-    """
-    Devolve [(nome_exibido, indice)] com um item por aparelho real.
-    Não inclui a opção "Padrão do Windows" — quem monta o select
-    acrescenta essa no topo.
-    """
     try:
         dispositivos = list(enumerate(sd.query_devices()))
 
@@ -120,8 +76,6 @@ def listar_dispositivos(entrada):
         if dispositivo.get(campo, 0) < 1:
             continue
 
-        # Alguns nomes vêm com quebra de linha (um caminho de driver
-        # real desta máquina tinha), o que quebraria a exibição.
         nome = " ".join(
             str(dispositivo.get("name") or "").split()
         ).strip()
@@ -144,7 +98,6 @@ def listar_dispositivos(entrada):
 
         for grupo in grupos:
             if _mesmo_aparelho(grupo["nome"], nome):
-                # Guarda o nome mais completo entre as variantes.
                 if len(nome) > len(grupo["nome"]):
                     grupo["nome"] = nome
 
@@ -159,9 +112,6 @@ def listar_dispositivos(entrada):
                 }
             )
 
-    # Rede de segurança: se o filtro tiver escondido tudo (uma máquina
-    # onde só exista WDM-KS, por exemplo), é melhor mostrar a lista
-    # crua do que um select vazio.
     if not grupos and ocultados:
         return [
             (
@@ -191,11 +141,6 @@ def listar_dispositivos(entrada):
 
 
 def _resolver_indice(nome_guardado, entrada):
-    """
-    Nome guardado -> índice atual. Devolve None quando o aparelho não
-    está mais conectado, e nesse caso quem chama volta para o padrão
-    do sistema em vez de estourar.
-    """
     if not nome_guardado:
         return None
 
@@ -207,15 +152,6 @@ def _resolver_indice(nome_guardado, entrada):
 
 
 def aplicar_preferencias():
-    """
-    Lê o config.json e aplica a escolha em sd.default.device, que é o
-    que TODOS os streams do projeto passam a usar: o microfone da
-    chamada, a reprodução, o detector de palavra-chave e o cérebro
-    reserva. Nenhum deles precisou ser alterado por causa disso.
-
-    Chamado uma vez na inicialização (main.py) e de novo a cada troca
-    no select. Nunca levanta exceção.
-    """
     entrada_salva = preferencias.dispositivo_entrada()
     saida_salva = preferencias.dispositivo_saida()
 
@@ -253,12 +189,9 @@ def aplicar_preferencias():
 
 
 class PainelDispositivos(QWidget):
-
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # True enquanto os selects estão sendo preenchidos, para o
-        # sinal de mudança não salvar nada durante a montagem.
         self._montando = True
 
         self._montar()
@@ -290,12 +223,6 @@ class PainelDispositivos(QWidget):
             Qt.CursorShape.PointingHandCursor
         )
 
-        # As cores base (fundo, texto, borda) vêm do ESTILO_GLOBAL
-        # compartilhado (jarvis/ui/estilo.py, regra QComboBox) por
-        # cascata normal do Qt — este painel é filho de MainWindow, que
-        # aplica aquele estilo. Só o AJUSTE DE TAMANHO (min-height,
-        # padding, font-size) é definido aqui, no próprio widget, por
-        # encapsulamento — mesmo princípio de jarvis/ui/painel_console.py.
         estilo_combo = (
             "QComboBox#comboDispositivo {"
             "    min-height: 0px;"
@@ -340,7 +267,6 @@ class PainelDispositivos(QWidget):
 
         combo.setCurrentIndex(alvo)
 
-    # Relê a lista de aparelhos e reaplica a seleção salva.
     def recarregar(self):
         estava_montando = self._montando
         self._montando = True
@@ -381,11 +307,6 @@ class PainelDispositivos(QWidget):
 
         aplicar_preferencias()
 
-        # O detector de palavra-chave fica com o microfone aberto
-        # entre as chamadas; sem reiniciá-lo, a troca só valeria na
-        # próxima vez que o app abrisse. pausar() bloqueia até o
-        # stream fechar de verdade, então não há dois handles no
-        # mesmo aparelho (ver jarvis/pacotes/ativacao_voz/detector.py).
         if entrada:
             try:
                 from jarvis.pacotes import ativacao_voz

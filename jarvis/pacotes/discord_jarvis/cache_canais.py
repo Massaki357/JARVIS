@@ -1,10 +1,3 @@
-# Cache técnico de resolução nome falado -> canal do Discord (ID +
-# nome), separado do cache de contatos (jarvis/pacotes/discord_jarvis/
-# cache_contatos.py) — arquivo próprio, mesma técnica de escrita
-# segura (arquivo temporário + replace, lock de thread) usada em
-# jarvis/servicos/memoria/gerenciador.py e reaproveitada em todo o resto do
-# projeto, copiada aqui de propósito (cada cache deste projeto é um
-# arquivo independente, sem compartilhar lógica entre si).
 import json
 import threading
 from jarvis.caminhos import PASTA_DADOS, garantir_pasta
@@ -66,8 +59,6 @@ def _salvar_dados(dados):
     temporario.replace(ARQUIVO_CACHE)
 
 
-# Retorna {"id", "nome"} se nome_normalizado já foi resolvido e
-# salvo antes, ou None se não estiver no cache.
 def obter(nome_normalizado):
     with _LOCK:
         dados = _carregar_dados()
@@ -75,18 +66,11 @@ def obter(nome_normalizado):
     return dados.get(nome_normalizado)
 
 
-# Retorna todos os canais já conhecidos (dict nome_normalizado ->
-# {"id", "nome"}) — usado só pra decidir se existe exatamente UM
-# canal conhecido, quando o usuário pede pra enviar mensagem sem
-# especificar qual (ver jarvis/pacotes/discord_jarvis/__init__.py).
 def listar_todos():
     with _LOCK:
         return _carregar_dados()
 
 
-# Salva a resolução de nome_normalizado -> canal_info
-# ({"id", "nome"}). Só deve ser chamado depois de a mensagem ter
-# sido enviada com sucesso.
 def salvar(nome_normalizado, canal_info):
     with _LOCK:
         dados = _carregar_dados()

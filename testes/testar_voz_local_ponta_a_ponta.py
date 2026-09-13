@@ -1,24 +1,3 @@
-"""
-Round-trip REAL contra o alfred-server, no fluxo de DUAS ETAPAS.
-
-Gera uma fala em português com a voz do próprio Windows (SAPI) e
-percorre o mesmo caminho que o worker percorre num turno:
-
-    ETAPA 1     jarvis/audio/entrada  -> jarvis/texto/saida  (JSON)
-    ROTEAMENTO  jarvis/roteamento_hierarquico decide
-    ETAPA 2     jarvis/texto/entrada  -> jarvis/audio/saida  (WAV)
-
-A etapa 2 só roda se o roteamento disser que era conversa — igual ao
-worker. Erros das duas metades chegam pelo mesmo jarvis/audio/erro,
-prefixados pela etapa que falhou.
-
-Separado de testar_voz_local.py de propósito: depende do servidor
-estar no ar e ENCOSTA no pipeline dele. Não toca o áudio da resposta —
-só confere que ela chegou e é um WAV legível.
-
-    python testes/testar_voz_local_ponta_a_ponta.py
-    python testes/testar_voz_local_ponta_a_ponta.py "outra frase aqui"
-"""
 import json
 import sys
 import tempfile
@@ -36,13 +15,12 @@ FRASE_PADRAO = "Olá, isto é um teste do servidor de voz local. Você está me 
 
 
 def gerar_fala_wav(frase):
-    """Grava a frase num WAV usando a voz do Windows (SAPI, via pywin32)."""
     import win32com.client
 
     caminho = Path(tempfile.gettempdir()) / "jarvis_teste_fala.wav"
 
     stream = win32com.client.Dispatch("SAPI.SpFileStream")
-    stream.Open(str(caminho), 3)  # 3 = SSFMCreateForWrite
+    stream.Open(str(caminho), 3)
 
     voz = win32com.client.Dispatch("SAPI.SpVoice")
     voz.AudioOutputStream = stream
@@ -54,8 +32,6 @@ def gerar_fala_wav(frase):
 
 
 class Coletor:
-    """Recebe as três respostas possíveis, marcando o instante de cada."""
-
     def __init__(self):
         self.texto = None
         self.audio = None
@@ -69,8 +45,6 @@ class Coletor:
         except ValueError as erro:
             self.erro = f"JSON ilegível em {config_local.TOPICO_TEXTO_SAIDA}: {erro}"
 
-    # Dois argumentos: o WAV e o TEXTO que ele fala, que vem como
-    # user property "texto" ao lado do áudio.
     def ao_audio(self, dados, texto=None):
         self.audio = dados
         self.texto_resposta = texto
@@ -127,7 +101,6 @@ def main():
         return 1
 
     try:
-        # ---------------- ETAPA 1: áudio -> texto --------------------
         print(f"\nETAPA 1: publicando o áudio em {config_local.TOPICO_ENTRADA}")
 
         inicio = time.time()
@@ -172,7 +145,6 @@ def main():
 
             return 1
 
-        # ---------------- ROTEAMENTO ---------------------------------
         print("\nROTEAMENTO: ferramenta ou conversa?")
 
         from jarvis import roteamento_hierarquico
@@ -202,7 +174,6 @@ def main():
 
         print("  -> CONVERSA. Seguindo para a etapa 2.")
 
-        # ---------------- ETAPA 2: texto -> áudio --------------------
         print(
             f"\nETAPA 2: republicando o JSON em "
             f"{config_local.TOPICO_TEXTO_ENTRADA}"
@@ -242,9 +213,6 @@ def main():
             f"({len(coletor.audio)} bytes)."
         )
 
-        # O texto vem como metadado ao lado do WAV. É ele que entra em
-        # transcricao_conversa e faz o turno seguinte saber o que o
-        # assistente respondeu — sem isso o histórico teria um lado só.
         if coletor.texto_resposta:
             print(f"  texto da resposta: {coletor.texto_resposta!r}")
 

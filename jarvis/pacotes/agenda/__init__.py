@@ -1,31 +1,7 @@
-"""
-Agenda local persistente de compromissos.
-
-Trazida do JARVIS COMPLETO (actions/agenda_actions.py) e reembalada no
-contrato padrão de pacote isolado deste projeto — ver
-docs/INTEGRATION.md. É a agenda inteira: o memoria_obsidian (memória
-conversacional) não tem nada a ver com isto.
-
-Único ajuste em acoes.py: o arquivo saiu de memory/agenda.json para
-dados/agenda.json, via jarvis/caminhos.py — neste projeto nenhum
-módulo grava um arquivo de estado ao lado do próprio código, e nenhum
-conta ".parent" pra achar a raiz. A gravação atômica (.tmp + fsync +
-Path.replace) e o threading.Lock são os originais.
-
-Estas funções NÃO criam alarme nenhum: guardam e listam compromissos,
-e só.
-"""
-
-# Usado só para montar as FunctionDeclaration deste pacote — mesmo
-# padrão dos demais pacotes isolados (ver docs/INTEGRATION.md).
 from google.genai import types
 
 from . import acoes
 
-# ============================================================
-# Contrato padrão do projeto (ver docs/INTEGRATION.md): todo pacote de
-# tools expõe obter_function_declarations() e despachar().
-# ============================================================
 
 _FUNCTION_DECLARATIONS = [
     types.FunctionDeclaration(

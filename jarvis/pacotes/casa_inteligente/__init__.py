@@ -1,20 +1,7 @@
 from . import dispositivos_tuya
 
-# Usado só para montar a FunctionDeclaration deste pacote — ver
-# obter_function_declarations() logo abaixo. Mesmo padrão do
-# jarvis/pacotes/rede_jarvis/__init__.py (ver docs/INTEGRATION.md na raiz do projeto).
 from google.genai import types
 
-
-# ============================================================
-# Contrato padrão do projeto (ver docs/INTEGRATION.md): todo pacote de
-# tools expõe obter_function_declarations() e despachar(). O cliente
-# Gemini Live só precisa conhecer essas duas funções.
-#
-# Diferente do rede_jarvis, este pacote não precisa de nenhum wiring
-# extra (sem callbacks de sessão, sem inicialização em background) —
-# cada ação é só uma chamada de API HTTP pontual.
-# ============================================================
 
 _FUNCTION_DECLARATIONS = [
     types.FunctionDeclaration(
@@ -63,8 +50,6 @@ def obter_function_declarations():
     return list(_FUNCTION_DECLARATIONS)
 
 
-# Se reconhecer nome_funcao, executa e retorna o resultado (sempre
-# uma string). Se não reconhecer, retorna None.
 def despachar(nome_funcao, argumentos):
     argumentos = argumentos or {}
 
@@ -77,10 +62,6 @@ def despachar(nome_funcao, argumentos):
     return None
 
 
-# Resolve o dispositivo pelo nome falado (ver
-# dispositivos_tuya.resolver_dispositivo) e executa a ação nele.
-# Nunca lança exceção — sempre retorna uma mensagem clara, mesmo em
-# caso de erro (dispositivo não encontrado, offline, falha da API).
 def executar_acao(dispositivo, acao):
     if not dispositivo:
         return "Não entendi qual dispositivo você quer controlar."

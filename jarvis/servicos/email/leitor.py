@@ -1,14 +1,6 @@
-# imaplib é a biblioteca padrão do Python para ler emails
-# usando o protocolo IMAP.
 import imaplib
-# email interpreta as mensagens brutas recebidas via IMAP,
-# separando cabeçalhos como remetente, assunto e data.
 import email
-# decode_header decodifica cabeçalhos que vêm codificados
-# (comum em assuntos e remetentes com acentos).
 from email.header import decode_header
-# re é usado para extrair o nome da pasta de spam a partir
-# da resposta do comando LIST do IMAP.
 import re
 
 import os
@@ -17,27 +9,20 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-# Carrega as variáveis de ambiente do arquivo .env.
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Servidor IMAP usado para leitura. O padrão é o do Gmail,
-# mas pode ser trocado no .env para outro provedor.
 EMAIL_IMAP_HOST = os.getenv(
     "EMAIL_IMAP_HOST",
     "imap.gmail.com",
 )
-# Porta do servidor IMAP. 993 é a porta padrão para IMAP sobre SSL.
 EMAIL_IMAP_PORT = int(
     os.getenv(
         "EMAIL_IMAP_PORT",
         "993",
     )
 )
-# Reaproveita as mesmas credenciais usadas pelo envio de email
-# (remetente.py): no Gmail, a mesma senha de aplicativo
-# autentica tanto SMTP quanto IMAP.
 EMAIL_REMETENTE = os.getenv(
     "EMAIL_REMETENTE"
 )
@@ -45,14 +30,8 @@ EMAIL_SENHA_APP = os.getenv(
     "EMAIL_SENHA_APP"
 )
 
-# Quantidade máxima de emails retornados em uma única consulta,
-# mesmo que um valor maior seja solicitado.
 LIMITE_MAXIMO_EMAILS = 20
 
-# Pasta local onde os anexos baixados são salvos. Mesma ideia de
-# rede_jarvis.config.PASTA_TRANSFERENCIAS_PADRAO — se não vier
-# preenchida no .env, usa uma pasta padrão razoável dentro de
-# Downloads.
 PASTA_DOWNLOADS_EMAIL = Path(
     os.getenv(
         "PASTA_DOWNLOADS_EMAIL",
@@ -61,11 +40,6 @@ PASTA_DOWNLOADS_EMAIL = Path(
 )
 
 
-# Descreve as variáveis de .env que ESTE módulo lê via os.getenv(...)
-# acima, pra tela de configurações — mesmo contrato de
-# jarvis/servicos/email/remetente.py (ver o comentário lá pro porquê
-# EMAIL_REMETENTE/EMAIL_SENHA_APP aparecem duplicadas nas duas
-# seções: cada módulo realmente lê as duas, de forma independente).
 def config_schema():
     return [
         {
@@ -104,12 +78,6 @@ def config_schema():
     ]
 
 
-# Padroniza um texto para facilitar comparações aproximadas (mesmo
-# approach já usado em gerenciador.py e
-# jarvis/pacotes/casa_inteligente/dispositivos_tuya.py): minúsculas, sem acento,
-# sem espaço duplicado. Copiado aqui em vez de importado de outro
-# pacote de propósito — este módulo é deliberadamente standalone
-# (ver docstring de ler_emails), sem depender do resto do projeto.
 def _normalizar(texto):
     texto = str(texto).strip().lower()
 
@@ -133,8 +101,6 @@ def _normalizar(texto):
     return texto.strip()
 
 
-# Decodifica um cabeçalho de email (remetente, assunto) que pode
-# vir em partes com codificações diferentes.
 def _decodificar_cabecalho(valor):
     if not valor:
         return ""
@@ -156,16 +122,9 @@ def _decodificar_cabecalho(valor):
     return texto
 
 
-# Nome de pasta usado como retorno de segurança quando a busca
-# dinâmica pela pasta de spam falhar. É o nome padrão do Gmail,
-# mas pode não existir em contas com outro idioma.
 PASTA_SPAM_PADRAO = "[Gmail]/Spam"
 
 
-# Descobre o nome real da pasta de spam via o comando LIST do
-# IMAP, procurando a pasta marcada com a flag especial \Junk.
-# Isso evita depender de um nome fixo, que muda conforme o
-# idioma da conta (ex: "[Gmail]/Spam" ou "[Gmail]/Lixo Eletrônico").
 def _resolver_pasta_spam(servidor):
     status, pastas = servidor.list()
 
@@ -190,8 +149,6 @@ def _resolver_pasta_spam(servidor):
     return PASTA_SPAM_PADRAO
 
 
-# Traduz o valor recebido em "pasta" (INBOX ou SPAM) para o
-# nome de pasta real usado pelo comando SELECT do IMAP.
 def _resolver_nome_pasta(
     servidor,
     pasta,
@@ -204,14 +161,6 @@ def _resolver_nome_pasta(
     return "INBOX"
 
 
-# Conecta, autentica e seleciona a pasta indicada — usado por
-# ler_emails, listar_anexos_disponiveis e baixar_anexo, pra nunca
-# duplicar a lógica de conexão/autenticação em mais de um lugar.
-# Levanta RuntimeError (mensagem já em português, pronta pra virar
-# retorno de quem chamou) se a seleção da pasta falhar. Quem chama
-# continua responsável por checar EMAIL_REMETENTE/EMAIL_SENHA_APP
-# antes e por tratar imaplib.IMAP4.error/OSError ao redor do "with"
-# — esta função só cobre a parte que era duplicada entre as três.
 @contextmanager
 def _sessao_imap(pasta="INBOX"):
     with imaplib.IMAP4_SSL(
@@ -228,8 +177,6 @@ def _sessao_imap(pasta="INBOX"):
             pasta,
         )
 
-        # readonly=True garante que nenhuma mensagem seja alterada
-        # só por estarmos consultando a caixa.
         status_select, _ = servidor.select(
             nome_pasta,
             readonly=True,
@@ -243,15 +190,6 @@ def _sessao_imap(pasta="INBOX"):
         yield servidor
 
 
-# Busca os `quantidade` emails mais recentes de uma sessão IMAP já
-# aberta (mais recente primeiro), com remetente/assunto/data
-# decodificados e a lista de nomes de anexo de cada um. Sempre baixa
-# a mensagem inteira via BODY.PEEK (nunca marca como lida) porque
-# não há como descobrir nome de anexo sem inspecionar a estrutura
-# MIME completa — usado por listar_anexos_disponiveis e baixar_anexo,
-# que precisam da mesma busca (a segunda reaproveita inclusive o
-# objeto email.message.Message já parseado, pra não buscar de novo
-# na hora de salvar o anexo).
 def _buscar_emails_recentes(servidor, quantidade):
     status, dados = servidor.search(
         None,
@@ -307,9 +245,6 @@ def _buscar_emails_recentes(servidor, quantidade):
     return resultado
 
 
-# Percorre as partes MIME de uma mensagem já parseada e retorna os
-# nomes (decodificados e sanitizados — ver _nome_arquivo_seguro) de
-# tudo marcado como anexo.
 def _listar_nomes_anexos(mensagem):
     nomes = []
 
@@ -329,24 +264,11 @@ def _listar_nomes_anexos(mensagem):
     return nomes
 
 
-# O nome de um anexo vem do cabeçalho Content-Disposition da
-# mensagem — controlado inteiramente por quem enviou o email, nunca
-# confiável. Sem isso, um nome malicioso (ex: "../../.env" ou um
-# caminho absoluto) usado direto em PASTA_DOWNLOADS_EMAIL / nome
-# permitiria escrever fora da pasta de downloads (path traversal) —
-# pathlib inclusive descarta o lado esquerdo do "/" se o direito for
-# um caminho absoluto, o que agravaria o problema. Reduz o nome ao
-# basename e troca qualquer caractere fora de um conjunto seguro por
-# "_", sanitizando de uma vez só na origem (aqui), pra listagem,
-# correspondência e salvamento usarem sempre o mesmo nome já seguro.
 def _nome_arquivo_seguro(nome_bruto):
     nome = os.path.basename(
         (nome_bruto or "").strip()
     )
 
-    # Impede nomes tipo "." ou ".." sobrando depois do basename, e
-    # arquivos ocultos criados sem querer por um nome começando com
-    # ponto.
     nome = nome.lstrip(".")
 
     nome = re.sub(
@@ -358,34 +280,11 @@ def _nome_arquivo_seguro(nome_bruto):
     return nome.strip() or "anexo"
 
 
-# Lista os emails mais recentes de uma pasta da caixa postal
-# (caixa de entrada ou spam), mostrando remetente, assunto e
-# data de cada um.
-# Retorna sempre uma mensagem em português, pronta para ser
-# falada ou exibida por quem chamar.
 def ler_emails(
     quantidade=5,
     apenas_nao_lidos=False,
     pasta="INBOX",
 ):
-    """
-    Lê uma pasta da caixa postal via IMAP usando as credenciais
-    configuradas no .env (EMAIL_REMETENTE, EMAIL_SENHA_APP,
-    EMAIL_IMAP_HOST, EMAIL_IMAP_PORT).
-
-    O parâmetro "pasta" aceita "INBOX" (padrão, caixa de entrada)
-    ou "SPAM" (pasta de spam/lixo eletrônico, localizada
-    automaticamente pela flag \\Junk do servidor IMAP).
-
-    Abre a conexão em modo somente leitura e busca os cabeçalhos
-    com BODY.PEEK, para nunca marcar mensagens como lidas apenas
-    por listá-las.
-
-    Este módulo não depende do restante do projeto: usa apenas a
-    biblioteca padrão do Python e python-dotenv, podendo ser
-    copiado para outro projeto sem alterações.
-    """
-
     if not EMAIL_REMETENTE or not EMAIL_SENHA_APP:
         return (
             "Configuração de email ausente. Defina EMAIL_REMETENTE "
@@ -395,15 +294,11 @@ def ler_emails(
     if not isinstance(quantidade, int) or quantidade <= 0:
         quantidade = 5
 
-    # Limita a quantidade solicitada para evitar consultas
-    # excessivamente grandes.
     quantidade = min(
         quantidade,
         LIMITE_MAXIMO_EMAILS,
     )
 
-    # Descrição da pasta em português, usada nas mensagens de
-    # retorno faladas para o usuário.
     pasta_amigavel = (
         "pasta de spam"
         if isinstance(pasta, str) and pasta.strip().upper() == "SPAM"
@@ -435,9 +330,6 @@ def ler_emails(
                     else f"A {pasta_amigavel} está vazia."
                 )
 
-            # IMAP retorna os IDs em ordem crescente (mais antigos
-            # primeiro). Pegamos os últimos e invertemos para
-            # mostrar do mais recente para o mais antigo.
             ids_recentes = ids[-quantidade:][::-1]
 
             linhas = []
@@ -446,8 +338,6 @@ def ler_emails(
                 ids_recentes,
                 start=1,
             ):
-                # BODY.PEEK busca apenas os cabeçalhos pedidos e
-                # não marca a mensagem como lida.
                 status, dados_msg = servidor.fetch(
                     id_email,
                     "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])",
@@ -512,10 +402,6 @@ def ler_emails(
     )
 
 
-# Lista os emails recentes da caixa de entrada que têm pelo menos um
-# anexo, mostrando remetente, assunto, data e o(s) nome(s) do(s)
-# anexo(s) — sem baixar nada, só mostrando o que está disponível.
-# Retorna sempre uma mensagem em português, pronta para ser falada.
 def listar_anexos_disponiveis(quantidade=10):
     if not EMAIL_REMETENTE or not EMAIL_SENHA_APP:
         return (
@@ -570,13 +456,6 @@ def listar_anexos_disponiveis(quantidade=10):
     )
 
 
-# Encontra o email correspondente a criterio_busca (remetente,
-# assunto, ou "mais recente"/"último") entre os recentes que têm
-# anexo, e baixa o(s) anexo(s) pra PASTA_DOWNLOADS_EMAIL.
-# Retorna sempre uma mensagem em português: sucesso com o(s)
-# caminho(s) salvo(s), lista de candidatos pra desambiguar (nunca
-# escolhe sozinho), ou explicação clara de por que nada foi
-# encontrado.
 def baixar_anexo(criterio_busca, nome_arquivo=None):
     if not EMAIL_REMETENTE or not EMAIL_SENHA_APP:
         return (
@@ -627,8 +506,6 @@ def baixar_anexo(criterio_busca, nome_arquivo=None):
         return "Não encontrei nenhum email recente com anexo."
 
     if pede_mais_recente:
-        # _buscar_emails_recentes já devolve do mais recente para o
-        # mais antigo.
         candidatos = com_anexo[:1]
 
     else:
@@ -662,10 +539,6 @@ def baixar_anexo(criterio_busca, nome_arquivo=None):
     )
 
 
-# Filtra emails por remetente OU assunto batendo com criterio_busca
-# — mesmo padrão de resolução aproximada (exato primeiro, depois
-# parcial em qualquer direção, acento/caixa insensível) já usado em
-# jarvis/pacotes/casa_inteligente/dispositivos_tuya.py:resolver_dispositivo.
 def _filtrar_emails_por_criterio(emails, criterio_busca):
     alvo = _normalizar(criterio_busca)
 
@@ -689,11 +562,6 @@ def _filtrar_emails_por_criterio(emails, criterio_busca):
     return parciais
 
 
-# Salva o(s) anexo(s) do email já localizado em PASTA_DOWNLOADS_EMAIL.
-# Se nome_arquivo for informado, salva só o anexo correspondente
-# (mesma resolução aproximada); senão, salva todos os anexos do
-# email. Nunca sobrescreve um arquivo existente — adiciona um sufixo
-# de data/hora (e um contador, se ainda colidir).
 def _salvar_anexos_do_email(email_alvo, nome_arquivo):
     anexos_disponiveis = email_alvo["anexos"]
 
@@ -731,10 +599,6 @@ def _salvar_anexos_do_email(email_alvo, nome_arquivo):
 
     caminhos_salvos = []
 
-    # O conteúdo do anexo só existe nas partes de verdade da
-    # mensagem — os nomes em "anexos" vieram de uma passada anterior
-    # (_listar_nomes_anexos), então percorremos de novo aqui, na
-    # mesma mensagem já baixada, pra pegar os bytes.
     for parte in email_alvo["mensagem"].walk():
         if parte.get_content_disposition() != "attachment":
             continue
@@ -744,9 +608,6 @@ def _salvar_anexos_do_email(email_alvo, nome_arquivo):
         if not nome_bruto:
             continue
 
-        # Mesma sanitização usada na origem (_listar_nomes_anexos) —
-        # nomes_para_salvar já vem sanitizado, então a comparação
-        # dos dois lados precisa passar pelo mesmo tratamento.
         nome_seguro = _nome_arquivo_seguro(
             _decodificar_cabecalho(nome_bruto)
         )
@@ -763,10 +624,6 @@ def _salvar_anexos_do_email(email_alvo, nome_arquivo):
             PASTA_DOWNLOADS_EMAIL / nome_seguro
         )
 
-        # Defesa extra: confirma que o caminho final realmente fica
-        # dentro de PASTA_DOWNLOADS_EMAIL antes de escrever, mesmo já
-        # tendo sanitizado o nome acima — nunca confia em uma única
-        # camada de proteção contra um nome vindo de fora.
         base_resolvida = PASTA_DOWNLOADS_EMAIL.resolve()
         destino_resolvido = caminho_destino.resolve()
 
@@ -798,9 +655,6 @@ def _salvar_anexos_do_email(email_alvo, nome_arquivo):
     )
 
 
-# Evita sobrescrever um arquivo já existente no destino — adiciona
-# um sufixo de data/hora, e um contador extra se ainda assim colidir
-# (dois anexos de mesmo nome baixados no mesmo segundo, por exemplo).
 def _caminho_sem_sobrescrever(caminho):
     if not caminho.exists():
         return caminho

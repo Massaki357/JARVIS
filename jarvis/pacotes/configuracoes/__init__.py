@@ -1,18 +1,7 @@
-# Usado só para montar a FunctionDeclaration deste pacote — mesmo
-# padrão de rede_jarvis, casa_inteligente, delegacao_ia e admin_terminal
-# (ver docs/INTEGRATION.md).
 from google.genai import types
 
 from jarvis.nucleo.sinalizador import obter_sinalizador
 
-# ============================================================
-# Contrato padrão do projeto (ver docs/INTEGRATION.md): todo pacote de
-# tools expõe obter_function_declarations() e despachar(). Aqui,
-# despachar() só EMITE um sinal — a janela em si só pode ser criada
-# na thread principal do Qt, nunca na thread de fundo onde
-# despachar() é chamado (ver jarvis/nucleo/sinalizador.py e
-# main.py para o porquê e onde a janela é de fato criada).
-# ============================================================
 
 _FUNCTION_DECLARATIONS = [
     types.FunctionDeclaration(

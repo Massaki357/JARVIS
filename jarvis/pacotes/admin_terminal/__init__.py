@@ -1,33 +1,14 @@
 from . import confirmacao, config, executor, politica
 
-# Usado só para montar as FunctionDeclaration deste pacote — mesmo
-# padrão de rede_jarvis, casa_inteligente e delegacao_ia (ver
-# docs/INTEGRATION.md).
 from google.genai import types
 
-# Callback usado para o Jarvis anunciar por voz, de forma espontânea,
-# o resultado de um comando confirmado pela notificação do Windows
-# (nunca pela confirmação por voz — nesse caso o resultado já volta
-# como resposta normal da tool, ver despachar()). Registrado uma vez
-# pelo cliente Gemini Live via iniciar_admin_terminal() — ver
-# docs/INTEGRATION.md, seção "Wiring extra por pacote".
 _callback_falar = None
 
 
-# Wiring extra deste pacote (além do contrato padrão
-# obter_function_declarations()/despachar()) — ver docs/INTEGRATION.md.
-# Precisa ser chamado uma vez, do __init__ do worker/cliente, com o
-# mesmo callback_falar genérico já usado por rede_jarvis (o worker
-# reaproveita o próprio método, não é um novo mecanismo).
 def iniciar_admin_terminal(callback_falar=None):
     global _callback_falar
     _callback_falar = callback_falar
 
-
-# ============================================================
-# Contrato padrão do projeto (ver docs/INTEGRATION.md): todo pacote de
-# tools expõe obter_function_declarations() e despachar().
-# ============================================================
 
 _FUNCTION_DECLARATIONS = [
     types.FunctionDeclaration(
@@ -111,13 +92,6 @@ def obter_function_declarations():
     return list(_FUNCTION_DECLARATIONS)
 
 
-# Se reconhecer nome_funcao, executa e retorna o resultado (sempre
-# uma string, pronta para o Jarvis falar). Se não reconhecer, retorna
-# None. Síncrona/bloqueante de propósito (só no caminho automático ou
-# de confirmação por voz — nunca mais que alguns segundos além do
-# timeout do próprio comando) — quem chama é responsável por rodar
-# isso fora do event loop (asyncio.to_thread), igual aos outros
-# pacotes.
 def despachar(nome_funcao, argumentos):
     argumentos = argumentos or {}
 

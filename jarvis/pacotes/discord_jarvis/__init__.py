@@ -1,17 +1,8 @@
-# Usado só para montar a FunctionDeclaration deste pacote — mesmo
-# padrão dos demais pacotes isolados (ver docs/INTEGRATION.md).
 from google.genai import types
 
 from . import cache_canais, cache_contatos, canais, cliente, contatos
 from .contatos import _normalizar
 
-# ============================================================
-# Contrato padrão do projeto (ver docs/INTEGRATION.md): todo pacote de
-# tools expõe obter_function_declarations() e despachar(). Duas
-# tools aqui: enviar_dm_discord (mensagem direta pra uma pessoa) e
-# enviar_mensagem_discord (mensagem num canal de texto) — não
-# confundir uma com a outra, ver as descriptions de cada uma.
-# ============================================================
 
 _FUNCTION_DECLARATIONS = [
     types.FunctionDeclaration(
@@ -118,26 +109,10 @@ def despachar(nome_funcao, argumentos):
     return None
 
 
-# Sobe a conexão persistente com o bot do Discord, se ainda não
-# estiver de pé — idempotente (ver cliente.iniciar_conexao). Chamada
-# uma vez a partir de GeminiLiveWorker.__init__, mesmo padrão de
-# rede_jarvis.iniciar_rede_jarvis.
 def iniciar_discord_jarvis():
     cliente.iniciar_conexao()
 
 
-# Fluxo: cache primeiro (rápido, sem listar todos os membros de
-# novo) -> busca -> envio. Só grava no cache depois de enviar a DM
-# com sucesso — uma busca que "achou" mas nunca chegou a enviar não
-# é cacheada, pra não fixar um resultado nunca confirmado na
-# prática.
-#
-# caminho_anexo é opcional e não vem da tool de voz padrão
-# (enviar_dm_discord não expõe esse parâmetro pro Gemini) — existe
-# só pra outras tools nativas do cliente (ex: enviar_print_discord_dm
-# em jarvis/cerebro/gemini/cliente_live.py) chamarem esta MESMA função direto,
-# reaproveitando toda a resolução de contato e envio já implementados
-# aqui, em vez de duplicar essa lógica pra mandar um arquivo.
 def enviar_dm_discord(nome_amigo, texto, caminho_anexo=None):
     nome_amigo = (nome_amigo or "").strip()
     texto = (texto or "").strip()
@@ -162,9 +137,6 @@ def enviar_dm_discord(nome_amigo, texto, caminho_anexo=None):
         if sucesso:
             return mensagem
 
-        # O cache pode ter ficado desatualizado (a pessoa saiu do
-        # servidor, ID mudou por algum motivo) — não trava nisso,
-        # cai pra uma busca nova.
         print(
             f"[discord_jarvis] Falha ao enviar via cache pra "
             f"'{nome_amigo}' ({mensagem}) — buscando de novo."
@@ -207,21 +179,6 @@ def enviar_dm_discord(nome_amigo, texto, caminho_anexo=None):
     return mensagem
 
 
-# Mesmo fluxo de enviar_dm_discord (cache -> busca -> envio), com uma
-# diferença: canal_falado pode vir vazio. Nesse caso, só usa um
-# canal como padrão automaticamente se existir EXATAMENTE um canal
-# já conhecido no cache — com zero ou mais de um, pede pro usuário
-# especificar em vez de adivinhar.
-#
-# caminho_anexo é opcional e não vem da tool de voz padrão
-# (enviar_mensagem_discord não expõe esse parâmetro pro Gemini) —
-# existe só pra outra tool nativa do cliente (enviar_captura_discord_canal
-# em jarvis/cerebro/gemini/cliente_live.py) chamar esta MESMA função direto,
-# reaproveitando toda a resolução de canal já implementada aqui, em
-# vez de duplicar essa lógica pra mandar um arquivo — mesmo padrão já
-# usado por enviar_dm_discord/caminho_anexo acima. A camada mais baixa
-# (cliente.enviar_mensagem_canal) já suportava anexo desde o início;
-# só faltava esse parâmetro passar por aqui.
 def enviar_mensagem_discord(canal_falado, texto, caminho_anexo=None):
     canal_falado = (canal_falado or "").strip()
     texto = (texto or "").strip()

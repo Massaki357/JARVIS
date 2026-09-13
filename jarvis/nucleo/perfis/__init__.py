@@ -1,32 +1,3 @@
-# Sistema de perfis do jarvis — camada de dados.
-#
-# Um PERFIL é um cenário de uso: um prompt de sistema próprio mais um
-# subconjunto das ferramentas do projeto. Trocar de perfil troca o
-# comportamento da PRÓXIMA chamada; nunca o de uma chamada em
-# andamento.
-#
-# Em disco (ver armazenamento.py para o formato completo):
-#
-#     dados/perfis/
-#       indice.json              índice leve, DERIVADO das pastas
-#       completo/                perfil padrão (jarvis completo)
-#         perfil.json
-#         sistema.md
-#       <slug>/                  qualquer outro perfil, mesma forma
-#
-# A pasta de cada perfil é autocontida e é a fonte da verdade. O
-# indice.json existe só para o select da interface abrir rápido, e é
-# regravado a cada criação, edição e exclusão — nunca editado à mão.
-#
-# Este pacote NÃO é um pacote de tool: não expõe
-# obter_function_declarations()/despachar() e não entra em
-# PACOTES_REGISTRADOS. É infraestrutura de núcleo, como
-# jarvis/nucleo/prompts/ e jarvis/nucleo/preferencias.py.
-#
-# O código mora aqui (jarvis/nucleo/perfis/) e os dados moram em
-# dados/perfis/ de propósito — um slug de perfil é texto vindo do
-# usuário e do modelo, e misturar as duas coisas na mesma pasta faria
-# um perfil chamado "armazenamento" colidir com um módulo Python.
 from .armazenamento import (
     CHAVE_PERFIL_ATIVO,
     NOME_PADRAO,

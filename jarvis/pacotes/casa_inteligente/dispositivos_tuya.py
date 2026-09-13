@@ -5,8 +5,6 @@ import time
 import unicodedata
 
 
-# Padroniza um texto para facilitar comparações (mesmo approach do
-# gerenciador.py): minúsculas, sem acento, sem espaço duplicado.
 def _normalizar(texto):
     texto = str(texto).strip().lower()
 
@@ -30,21 +28,12 @@ def _normalizar(texto):
     return texto.strip()
 
 
-# ============================================================
-# Descoberta de dispositivos
-# ============================================================
-
 _cache_dispositivos = {
     "dados": None,
     "expira_em": 0.0,
 }
 
 
-# Lista os dispositivos vinculados à conta (via app Smart Life),
-# consultando a API da Tuya. Cacheia por
-# config.DURACAO_CACHE_DISPOSITIVOS_SEGUNDOS para não bater na API a
-# cada comando de voz. Se a consulta falhar, devolve o último cache
-# válido (mesmo vencido) em vez de uma lista vazia, quando disponível.
 def listar_dispositivos(forcar_atualizacao=False):
     agora = time.time()
 
@@ -95,8 +84,6 @@ def listar_dispositivos(forcar_atualizacao=False):
     return dispositivos
 
 
-# Lista os controles remotos já aprendidos sob um hub de
-# infravermelho (ver IR Control Hub Open Service).
 def listar_controles_remotos_ir(infrared_id):
     try:
         resposta = tuya_client.get(
@@ -123,10 +110,6 @@ def listar_controles_remotos_ir(infrared_id):
     ]
 
 
-# Monta a lista "achatada" de tudo que pode ser controlado por nome:
-# cada switch/tomada vira um candidato próprio, e cada hub de
-# infravermelho se expande em um candidato por controle remoto
-# aprendido embaixo dele (em vez do hub em si).
 def _listar_candidatos():
     candidatos = []
 
@@ -158,10 +141,6 @@ def _listar_candidatos():
     return candidatos
 
 
-# Encontra o dispositivo cujo nome mais se aproxima de nome_falado.
-# Retorna (candidato, None) se achar exatamente um, ou
-# (None, mensagem_de_erro) se não achar nenhum ou achar mais de um —
-# pro Jarvis avisar por voz em vez de adivinhar.
 def resolver_dispositivo(nome_falado):
     candidatos = _listar_candidatos()
 
@@ -173,7 +152,6 @@ def resolver_dispositivo(nome_falado):
 
     alvo = _normalizar(nome_falado)
 
-    # Primeira tentativa: correspondência exata.
     exatos = [
         candidato
         for candidato in candidatos
@@ -183,8 +161,6 @@ def resolver_dispositivo(nome_falado):
     if len(exatos) == 1:
         return exatos[0], None
 
-    # Segunda tentativa: correspondência parcial, em qualquer direção
-    # (nome do dispositivo contém o termo falado, ou vice-versa).
     parciais = [
         candidato
         for candidato in candidatos
@@ -214,11 +190,6 @@ def resolver_dispositivo(nome_falado):
         f"Dispositivos disponíveis: {disponiveis}."
     )
 
-
-# ============================================================
-# Interruptor / tomada — switches simples, mesmo tratamento pros
-# dois (ver DP_CODE_SWITCH_PADRAO em config.py).
-# ============================================================
 
 def ligar(device_id, dp_code=None):
     dp_code = dp_code or config.DP_CODE_SWITCH_PADRAO
@@ -252,20 +223,6 @@ def desligar(device_id, dp_code=None):
     return "Desligado." if sucesso else f"Falha ao desligar: {mensagem}"
 
 
-# ============================================================
-# Infravermelho (IR Control Hub Open Service)
-# ============================================================
-#
-# Envia uma tecla já aprendida/associada pelo app Smart Life a um
-# controle remoto. Endpoint e formato do corpo confirmados na
-# documentação oficial da Tuya (Send Key Command):
-#   POST /v2.0/infrareds/{infrared_id}/remotes/{remote_id}/raw/command
-#   body: {"category_id": int, "key": str, "key_id": int}
-#
-# category_id/remote_id vêm de listar_controles_remotos_ir(). Para
-# adicionar um comando aprendido novo (ex: "aumentar temperatura"),
-# basta chamar enviar_tecla_infravermelho() com o nome de tecla
-# correspondente — não precisa mexer no resto deste arquivo.
 def enviar_tecla_infravermelho(
     infrared_id,
     remote_id,
@@ -296,13 +253,6 @@ def enviar_tecla_infravermelho(
     return True, "Comando infravermelho enviado com sucesso."
 
 
-# AVISO: "power_on"/"power_off" são os nomes de tecla mais comuns pra
-# ligar/desligar em controles aprendidos via Smart Life, mas isso
-# ainda NÃO foi testado contra um dispositivo real (nenhum
-# infravermelho pareado até a escrita deste código). Alguns controles
-# só têm uma tecla única de "power" (liga/desliga alternado, sem
-# estado). Confirme e ajuste os dois nomes abaixo assim que houver um
-# controle remoto real pareado pra testar.
 TECLA_IR_LIGAR = "power_on"
 TECLA_IR_DESLIGAR = "power_off"
 

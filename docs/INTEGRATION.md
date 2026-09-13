@@ -855,7 +855,7 @@ exigiu nenhuma edição em `jarvis/ui/janela_principal.py`.
 
 **A direção contrária (resposta do Gemini → janela de chat)** usa o sinalizador
 compartilhado, não um Signal do worker — ver `resposta_texto_recebida` em
-`jarvis/nucleo/sinalizador.py` e o comentário lá explicando por quê (mesma razão:
+`jarvis/nucleo/sinalizador.py` (motivo:
 o worker muda de instância a cada chamada, e reconectar um Signal a cada troca seria
 mais frágil que emitir sempre pro mesmo objeto persistente). `GeminiLiveWorker`
 precisou de `output_audio_transcription=types.AudioTranscriptionConfig()` a mais no
@@ -2109,7 +2109,9 @@ tokens por minuto**, e cada chamada da etapa 1 custa **~1450 tokens** (o catálo
 inteiro de 45 ferramentas vai no prompt todo turno) — ou seja, ~5 turnos por
 minuto antes do 429, que um ritmo normal de conversa ultrapassa fácil.
 
-A cadeia: `_chamar_groq` devolve `(False, ...)` em vez de levantar exceção ->
+A cadeia (`_chamar_groq` não existe mais — desde a migração para LangChain a
+repetição mora em `jarvis/servicos/agentes/`, `erros.py` + `PoliticaRepeticao`):
+`_chamar_groq` devolvia `(False, ...)` em vez de levantar exceção ->
 `processar_turno` transformava isso num `ResultadoTurno` comum com
 `usou_ferramenta=False` -> o worker, que só capturava *exceções*, mandava a fala
 para a etapa 2 -> o servidor, que não sabe que ferramentas existem, respondia
@@ -2159,7 +2161,7 @@ fragilidade, só passou a encontrá-la.
 
 **O tratamento, em duas camadas:**
 
-1. `_chamar_groq` repete **este 400 específico** (`TENTATIVAS_TOOL_CALL_INDEVIDA`
+1. `_chamar_groq` (hoje a `PoliticaRepeticao` de `jarvis/servicos/agentes/`) repete **este 400 específico** (`TENTATIVAS_TOOL_CALL_INDEVIDA`
    = **2**), com orçamento **independente** do 429 e **sem espera** — não é
    limite de uso, é a amostragem do modelo. É a única exceção à regra de não
    repetir 4xx, e se justifica porque aqui a resposta não é função só da

@@ -1,28 +1,3 @@
-# Memória do jarvis em um vault do Obsidian.
-#
-# Substitui o sistema antigo (dados/memoria.json — frases curtas, no
-# máximo 50, todas injetadas no prompt a cada sessão) por uma pasta de
-# arquivos .md ligados entre si com [[links]]. O app do Obsidian não
-# precisa estar instalado nem aberto: o jarvis só escreve e lê
-# arquivos de texto. Abrir a pasta no Obsidian depois é opcional, e aí
-# os links já estão lá funcionando.
-#
-# A diferença de fundo em relação ao sistema antigo não é o formato, é
-# COMO a memória chega ao modelo: antes tudo era pré-carregado no
-# prompt; agora entra só um contexto inicial pequeno, e o modelo busca
-# o resto sob demanda com buscar_memorias_relacionadas. É o que
-# permite a memória crescer sem inchar o prompt.
-#
-# Módulos:
-#   config.py        pasta do vault, critérios de poda, .env
-#   notas.py         ler/escrever .md, frontmatter, segurança de caminho
-#   escritor.py      salvar/atualizar nota, links automáticos, fixar
-#   busca.py         busca por palavra-chave + notas ligadas
-#   esquecer.py      apagar uma nota (com a recusa a apagar tudo)
-#   consolidacao.py  poda, arquivamento e resumo periódico
-#   migracao.py      script manual, roda uma vez (ver o arquivo)
-#
-# Ver docs/INTEGRATION.md, seção "memoria_obsidian".
 from google.genai import types
 
 from . import busca, config, consolidacao, escritor, esquecer, notas
@@ -195,16 +170,10 @@ def despachar(nome_funcao, argumentos):
     return None
 
 
-# Contexto inicial leve da sessão: só as notas mais recentes, não
-# tudo. Chamado por jarvis/cerebro/gemini/cliente_live.py ao montar a
-# instrucao_sistema.
 def contexto_inicial():
     return busca.contexto_inicial()
 
 
-# Chamado uma vez na inicialização do app (main.py). Dispara, em
-# thread de fundo, a varredura periódica de poda/consolidação se já
-# fizer mais de INTERVALO_VARREDURA_DIAS desde a última.
 def iniciar():
     if not config.configurado():
         print(

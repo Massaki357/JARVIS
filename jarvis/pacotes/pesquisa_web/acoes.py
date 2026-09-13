@@ -1,17 +1,3 @@
-"""
-Pesquisa invisível e seletiva de informações atuais para o ALFRED.
-
-O módulo possui duas etapas:
-
-1. Filtro local extremamente rápido:
-   decide se a pergunta realmente depende de dados atuais.
-
-2. Pesquisa invisível:
-   acessa resultados atuais somente quando necessário.
-
-Não abre abas, não exibe janelas e não interfere no foco do usuário.
-"""
-
 from __future__ import annotations
 
 import re
@@ -22,27 +8,17 @@ from dataclasses import dataclass
 from typing import Any
 
 
-# ============================================================
-# CONFIGURAÇÕES
-# ============================================================
-
 MAXIMO_RESULTADOS = 5
 MAXIMO_CARACTERES = 5000
 TEMPO_CACHE_SEGUNDOS = 60
 REGIAO_PADRAO = "br-pt"
 
-# "auto" permite que a biblioteca escolha um mecanismo disponível.
 MECANISMO_PESQUISA = "auto"
 
 _LOCK_CACHE = threading.Lock()
 _CACHE: dict[str, tuple[float, str]] = {}
 
 
-# ============================================================
-# REGRAS DO FILTRO HÍBRIDO
-# ============================================================
-
-# Termos que normalmente indicam necessidade de informação atual.
 MARCADORES_ATUALIDADE = (
     "hoje",
     "agora",
@@ -70,8 +46,6 @@ MARCADORES_ATUALIDADE = (
     "ao vivo",
 )
 
-# Assuntos que mudam frequentemente e geralmente exigem consulta,
-# mesmo quando o usuário não fala explicitamente "hoje".
 ASSUNTOS_DINAMICOS = (
     "cotacao",
     "dolar",
@@ -103,7 +77,6 @@ ASSUNTOS_DINAMICOS = (
     "versao mais recente",
 )
 
-# Cargos ou posições que podem mudar.
 CARGOS_ATUAIS = (
     "presidente do brasil",
     "presidente dos estados unidos",
@@ -120,8 +93,6 @@ CARGOS_ATUAIS = (
     "treinador do",
 )
 
-# Perguntas tipicamente estáveis. Elas não devem pesquisar,
-# a menos que também tragam um marcador atual explícito.
 PADROES_ESTAVEIS = (
     "o que e ",
     "o que significa ",
@@ -153,10 +124,6 @@ class DecisaoPesquisa:
     motivo: str
 
 
-# ============================================================
-# NORMALIZAÇÃO
-# ============================================================
-
 def _normalizar_consulta(consulta: str) -> str:
     return re.sub(
         r"\s+",
@@ -186,24 +153,9 @@ def _normalizar_para_comparacao(texto: str) -> str:
     return texto
 
 
-# ============================================================
-# FILTRO LOCAL
-# ============================================================
-
 def avaliar_necessidade_pesquisa(
     consulta: str,
 ) -> DecisaoPesquisa:
-    """
-    Decide em microssegundos se uma consulta precisa da internet.
-
-    A ordem é importante:
-    1. marcadores atuais explícitos;
-    2. assuntos dinâmicos;
-    3. cargos atuais;
-    4. perguntas estáveis;
-    5. caso ambíguo: não pesquisar automaticamente.
-    """
-
     consulta_limpa = _normalizar_consulta(
         consulta
     )
@@ -266,10 +218,6 @@ def avaliar_necessidade_pesquisa(
 def precisa_pesquisar(
     consulta: str,
 ) -> bool:
-    """
-    Atalho booleano usado pelo live_client.py.
-    """
-
     return avaliar_necessidade_pesquisa(
         consulta
     ).pesquisar
@@ -278,11 +226,6 @@ def precisa_pesquisar(
 def resposta_sem_pesquisa(
     consulta: str,
 ) -> str:
-    """
-    Resposta devolvida ao Gemini quando ele chama a ferramenta
-    desnecessariamente.
-    """
-
     decisao = avaliar_necessidade_pesquisa(
         consulta
     )
@@ -294,10 +237,6 @@ def resposta_sem_pesquisa(
         "sem chamar novamente esta ferramenta para o mesmo pedido."
     )
 
-
-# ============================================================
-# CACHE
-# ============================================================
 
 def _chave_cache(consulta: str) -> str:
     return _normalizar_para_comparacao(
@@ -360,10 +299,6 @@ def _salvar_cache(
                     None,
                 )
 
-
-# ============================================================
-# CONVERSÃO DOS RESULTADOS
-# ============================================================
 
 def _limpar_campo(valor: Any) -> str:
     return re.sub(
@@ -471,18 +406,9 @@ def _formatar_resultados(
     ]
 
 
-# ============================================================
-# PESQUISA PRINCIPAL
-# ============================================================
-
 def pesquisar_informacao_atual(
     consulta: str,
 ) -> str:
-    """
-    Pesquisa apenas quando o filtro local confirmar
-    que a pergunta depende de informação atual.
-    """
-
     consulta = _normalizar_consulta(
         consulta
     )
@@ -528,8 +454,6 @@ def pesquisar_informacao_atual(
         "max_results": MAXIMO_RESULTADOS,
     }
 
-    # Algumas versões da biblioteca aceitam backend="auto";
-    # outras já usam o modo automático por padrão.
     if MECANISMO_PESQUISA != "auto":
         argumentos["backend"] = MECANISMO_PESQUISA
 

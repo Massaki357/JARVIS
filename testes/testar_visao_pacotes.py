@@ -1,30 +1,3 @@
-"""
-Verificação de que as tools de visão que dependem do cliente para
-capturar a imagem funcionam nos TRÊS cérebros de voz.
-
-Rodar com o venv ativo, da raiz do projeto:
-
-    python testes/testar_visao_pacotes.py
-
-100% OFFLINE: nenhuma parte chama Gemini, OpenAI, Mistral ou o
-alfred-server. As capturas de tela/câmera reais só são exercidas na
-parte 1 (rápidas e sem efeito colateral: nada é gravado em disco).
-
-BUG REAL que este teste tranca:
-
-    descrever_tela / descrever_camera (jarvis/pacotes/descricao_visual/)
-    nasceram para o cérebro local, e só o cliente local aprendeu a
-    injetar imagem_bytes antes do despacho. Mas o pacote está em
-    PACOTES_REGISTRADOS, que é GLOBAL — os três cérebros declaravam as
-    duas tools, e nos workers do Gemini e da OpenAI elas falhavam
-    SEMPRE com "nenhuma imagem foi capturada".
-
-    Sintoma relatado pelo usuário: pedir para o jarvis (cérebro Gemini)
-    olhar a tela, e ele responder que deu erro ao acessar a câmera e
-    ver a tela — o modelo escolhia descrever_tela (quebrada) em vez da
-    nativa analisar_tela (que funciona), sem ter como saber a
-    diferença.
-"""
 import os
 import sys
 
@@ -52,11 +25,6 @@ def checar(condicao, descricao):
     else:
         falhas.append(descricao)
         print(f"  FALHA {descricao}")
-
-
-# ====================================================================
-# PARTE 1 — as capturas reais funcionam
-# ====================================================================
 
 
 def parte1_capturas():
@@ -90,11 +58,6 @@ def parte1_capturas():
     )
 
 
-# ====================================================================
-# PARTE 2 — a lista cobre toda tool que precisa de imagem
-# ====================================================================
-
-
 def parte2_lista_completa():
     print("\n[2] TOOLS_QUE_PRECISAM_DE_IMAGEM cobre quem precisa")
 
@@ -116,8 +79,6 @@ def parte2_lista_completa():
         "toda origem e 'tela' ou 'camera' (nada mais)",
     )
 
-    # Toda tool da lista precisa existir de verdade em algum pacote —
-    # senao a lista silenciosamente aponta para nada.
     registradas = set()
     for pacote in PACOTES_REGISTRADOS:
         for decl in pacote.obter_function_declarations():
@@ -128,11 +89,6 @@ def parte2_lista_completa():
         not ausentes,
         f"toda tool da lista existe em um pacote registrado ({ausentes or 'ok'})",
     )
-
-
-# ====================================================================
-# PARTE 3 — os TRES clientes usam a MESMA lista
-# ====================================================================
 
 
 def parte3_tres_clientes():
@@ -158,8 +114,6 @@ def parte3_tres_clientes():
         "worker local usa a mesma lista (nao uma copia)",
     )
 
-    # A regressao concreta: nenhum cliente pode ter uma lista propria
-    # com MENOS entradas que a compartilhada.
     fonte = Path("jarvis/cerebro/gemini/cliente_live.py").read_text(
         encoding="utf-8"
     )
@@ -177,17 +131,11 @@ def parte3_tres_clientes():
     )
 
 
-# ====================================================================
-# PARTE 4 — descrever_* realmente responde quando recebe a imagem
-# ====================================================================
-
-
 def parte4_pacote_aceita_imagem():
     print("\n[4] O pacote descricao_visual reage a imagem_bytes")
 
     from jarvis.pacotes import descricao_visual
 
-    # SEM imagem: e exatamente a mensagem que o usuario ouviu.
     sem = descricao_visual.despachar("descrever_tela", {"pergunta": "?"})
 
     checar(
@@ -195,8 +143,6 @@ def parte4_pacote_aceita_imagem():
         "sem imagem_bytes devolve o erro que o usuario relatou",
     )
 
-    # COM imagem: nao pode mais ser esse erro. Nao chamamos a rede —
-    # basta provar que passou da checagem de imagem ausente.
     from jarvis.servicos.visao.captura_tela import (
         capturar_monitor_do_cursor_bytes,
     )
@@ -211,14 +157,10 @@ def parte4_pacote_aceita_imagem():
         "com imagem_bytes NAO devolve mais aquele erro",
     )
 
-    # Nome desconhecido continua devolvendo None (contrato do pacote).
     checar(
         descricao_visual.despachar("funcao_inexistente", {}) is None,
         "nome desconhecido devolve None (contrato do pacote)",
     )
-
-
-# ====================================================================
 
 
 if __name__ == "__main__":

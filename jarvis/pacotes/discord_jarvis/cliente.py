@@ -1,10 +1,3 @@
-# Conexão persistente com o bot do Discord. discord.py precisa de um
-# loop asyncio vivo o tempo todo (não é compatível com rodar só
-# durante um despachar() pontual, como as chamadas HTTP de outros
-# pacotes) — por isso roda numa thread própria, com seu próprio
-# loop, mesmo padrão já usado em jarvis/pacotes/rede_jarvis/mqtt_listener.py
-# (thread de fundo) e visualizacao_remota.py (loop dedicado +
-# run_coroutine_threadsafe como ponte pra chamadas síncronas).
 import asyncio
 import threading
 
@@ -22,13 +15,8 @@ _lock_inicio = threading.Lock()
 def _montar_intents():
     intents = discord.Intents.default()
 
-    # Necessário pra listar/buscar membros do servidor por nome
-    # (Guild.fetch_members) — ver aviso completo em config.py.
     intents.members = True
 
-    # Parte do setup padrão do bot documentado em config.py — não
-    # usado ainda por nenhuma tool específica, mas precisa estar
-    # ativo pro bot funcionar como esperado no Developer Portal.
     intents.message_content = True
 
     return intents
@@ -59,11 +47,6 @@ def _rodar_loop_do_bot():
         _pronto.clear()
 
 
-# Sobe a conexão com o bot em background, se ainda não estiver de
-# pé — idempotente, mesmo padrão de rede_jarvis.iniciar_rede_jarvis:
-# GeminiLiveWorker é recriado a cada chamada de voz, mas a conexão
-# com o Discord deve persistir independente disso, então só a
-# primeira chamada de fato inicia a thread.
 def iniciar_conexao():
     global _thread_iniciada
 
@@ -86,11 +69,6 @@ def iniciar_conexao():
         _thread_iniciada = True
 
 
-# Roda uma corrotina no loop do bot a partir de qualquer thread
-# (despachar() roda numa thread de fundo, via asyncio.to_thread) e
-# espera o resultado — mesma técnica de run_coroutine_threadsafe já
-# usada em jarvis/pacotes/rede_jarvis/visualizacao_remota.py. Espera a conexão
-# ficar pronta antes de agendar, se ainda não estiver.
 def _rodar_no_loop_do_bot(corrotina, timeout):
     if not _pronto.wait(timeout=config.TIMEOUT_CONEXAO_SEGUNDOS):
         raise RuntimeError(
@@ -106,10 +84,6 @@ def _rodar_no_loop_do_bot(corrotina, timeout):
     return future.result(timeout=timeout)
 
 
-# Retorna uma lista de dicts {"id", "nome_exibicao", "username",
-# "apelido"} de todos os membros de todos os servidores em que o bot
-# está, sem duplicar quem estiver em mais de um servidor em comum.
-# Nunca lança exceção — retorna lista vazia se algo falhar.
 def listar_membros():
     async def _coletar():
         vistos = set()
@@ -144,8 +118,6 @@ def listar_membros():
         return []
 
 
-# Envia uma DM pro usuário de ID user_id. Nunca lança exceção —
-# sempre retorna (sucesso: bool, mensagem: str).
 def enviar_dm(user_id, texto, caminho_anexo=None):
     async def _enviar():
         usuario = _cliente.get_user(
@@ -187,9 +159,6 @@ def enviar_dm(user_id, texto, caminho_anexo=None):
     return True, f"Mensagem enviada para {usuario} no Discord."
 
 
-# Retorna uma lista de dicts {"id", "nome", "servidor"} de todos os
-# canais de TEXTO de todos os servidores em que o bot está. Nunca
-# lança exceção — retorna lista vazia se algo falhar.
 def listar_canais():
     async def _coletar():
         resultado = []
@@ -217,8 +186,6 @@ def listar_canais():
         return []
 
 
-# Envia uma mensagem no canal de ID channel_id. Nunca lança exceção
-# — sempre retorna (sucesso: bool, mensagem: str).
 def enviar_mensagem_canal(channel_id, texto, caminho_anexo=None):
     async def _enviar():
         canal = _cliente.get_channel(

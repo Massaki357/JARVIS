@@ -1,38 +1,6 @@
-# Escrita de memória no vault.
-#
-# Duas coisas acontecem toda vez que uma nota é salva, e as duas
-# existem para o vault virar uma teia em vez de uma pilha de arquivos
-# soltos:
-#
-#   1. Antes de criar, procura uma nota de título parecido. Se achar,
-#      ATUALIZA em vez de criar uma duplicada — sem isso, "email do
-#      Gabriel" e "Email do gabriel" virariam duas notas.
-#   2. Depois, procura no conteúdo menções a títulos de notas que já
-#      existem e cria o link [[assim]] automaticamente, além dos
-#      relacionados informados de propósito.
 from . import config, notas
 
 
-# Trechos de um título que servem para reconhecê-lo dentro de outro
-# texto.
-#
-# Procurar o título INTEIRO dentro do conteúdo quase nunca funciona:
-# medido com as notas reais migradas do sistema antigo, onde os
-# títulos são frases completas ("Email do Gabriel
-# gabrielrapolinario0@gmail.com"), nenhuma menção natural do dia a dia
-# ("mandei o email do Gabriel") disparava um link sequer. Por isso a
-# comparação usa PEDAÇOS contíguos do título:
-#
-#   - qualquer sequência de 2+ palavras vizinhas com 10+ caracteres
-#     ("email do gabriel", "nome do app")
-#   - ou uma palavra sozinha com 6+ caracteres que não seja conectivo
-#     ("gabriel", "discord", "massaki")
-#
-# O limite de 6 caracteres na palavra solta é o que separa um nome
-# próprio de um "para"/"esse". Vale notar a escolha: aqui é melhor
-# ligar demais do que de menos. Um link errado fica visível na nota e
-# você apaga; um link que faltou faz o jarvis não lembrar de um
-# contexto que ele tinha guardado — e isso ninguém percebe.
 def _trechos_reconheciveis(titulo):
     palavras = notas.normalizar(titulo).split()
 
@@ -52,8 +20,6 @@ def _trechos_reconheciveis(titulo):
             if len(trecho) < 10:
                 continue
 
-            # Um trecho só de conectivos ("de um dos") não identifica
-            # nada; exige pelo menos uma palavra com peso.
             if any(
                 len(p) >= 4 and p not in notas.IRRELEVANTES
                 for p in palavras[inicio:fim]
@@ -63,9 +29,6 @@ def _trechos_reconheciveis(titulo):
     return trechos
 
 
-# Procura, dentro do texto, menções às notas que já existem no vault.
-# Tudo comparado sobre o texto normalizado (sem acento, minúsculo),
-# para "email do gabriel" achar a nota "Email do Gabriel".
 def detectar_relacionados(texto, titulo_propria=""):
     alvo = notas.normalizar(texto)
 
@@ -90,14 +53,6 @@ def detectar_relacionados(texto, titulo_propria=""):
     return encontrados
 
 
-# Cria ou atualiza uma nota.
-#
-# relacionados: títulos informados explicitamente (opcional).
-# fixar: quando True, marca pinned no frontmatter — memória fixada
-#        NUNCA entra na poda (ver consolidacao.py).
-#
-# Devolve texto em português, pronto para o jarvis falar — mesma
-# convenção de retorno de todo o projeto, nunca levanta exceção.
 def salvar_memoria(
     titulo,
     conteudo,
@@ -122,9 +77,6 @@ def salvar_memoria(
     try:
         notas.garantir_pastas()
 
-        # Passo 1: já existe uma nota parecida? Inclui a pasta
-        # arquivo/ na busca, senão uma nota arquivada seria duplicada
-        # aqui em vez de reativada.
         existentes = notas.localizar_por_titulo(
             titulo,
             incluir_arquivo=True,
@@ -132,9 +84,6 @@ def salvar_memoria(
 
         nota_existente = existentes[0] if len(existentes) == 1 else None
 
-        # Mais de uma candidata parecida: não escolhe sozinho. Cria
-        # uma nota nova com o título exato pedido, que é o
-        # comportamento previsível, e avisa.
         aviso_ambiguidade = ""
 
         if len(existentes) > 1:
@@ -152,8 +101,6 @@ def salvar_memoria(
             titulo_final = nota_existente["titulo"]
             acao = "Atualizei"
 
-            # Uma nota arquivada que volta a ser escrita reativou:
-            # volta pra pasta ativa e sai do caminho de poda.
             if nota_existente["arquivada"]:
                 caminho = config.PASTA_VAULT / caminho.name
                 frontmatter["access_count"] = 0
@@ -187,7 +134,6 @@ def salvar_memoria(
         if fixar:
             frontmatter["pinned"] = True
 
-        # Passo 2: relacionados explícitos + os detectados no texto.
         titulos_relacionados = list(relacionados or [])
 
         titulos_relacionados += detectar_relacionados(
@@ -195,7 +141,6 @@ def salvar_memoria(
             titulo_propria=titulo_final,
         )
 
-        # Preserva links que já estavam na nota, se for atualização.
         if nota_existente is not None:
             titulos_relacionados += notas.extrair_links(
                 nota_existente["corpo"]
@@ -239,8 +184,6 @@ def salvar_memoria(
     )
 
 
-# Marca uma nota já existente como permanente (pinned). Memória
-# fixada nunca é podada, por mais tempo que fique sem uso.
 def fixar_memoria(titulo):
     if not config.configurado():
         return (

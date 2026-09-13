@@ -1,22 +1,3 @@
-# Busca de memórias por palavra-chave.
-#
-# Nesta primeira versão a relevância é contagem de termos em comum
-# entre a consulta e o título+corpo da nota — sem embedding, sem busca
-# semântica. É o suficiente para um vault pessoal de dezenas ou
-# poucas centenas de notas, e não adiciona dependência nem latência.
-# Se ficar claro no uso que palavra-chave não basta, trocar o cálculo
-# de pontuar_nota() é a única mudança necessária: nada mais neste
-# arquivo depende de COMO a pontuação é feita.
-#
-# Duas coisas acontecem além do ranqueamento simples:
-#
-#   - Os resultados trazem junto os títulos das notas LINKADAS a
-#     partir deles (um nível). É o que faz o vault valer mais que uma
-#     lista: perguntar sobre "Gabriel" traz também o que está ligado a
-#     ele, mesmo que a nota ligada não tenha nenhuma palavra da
-#     consulta.
-#   - Toda nota devolvida como relevante conta como usada
-#     (last_used e access_count), o que a tira do caminho de poda.
 import re
 
 from . import config, notas
@@ -34,9 +15,6 @@ def _termos(texto):
     }
 
 
-# Pontuação de uma nota para uma consulta. O título pesa mais que o
-# corpo: uma nota chamada "Email do Gabriel" deve ganhar de outra que
-# só menciona Gabriel de passagem.
 def pontuar_nota(nota, termos_consulta):
     if not termos_consulta:
         return 0
@@ -50,12 +28,6 @@ def pontuar_nota(nota, termos_consulta):
     return pontos
 
 
-# Busca as notas mais relevantes. Devolve uma lista de dicts:
-#   {titulo, corpo, pontuacao, relacionadas: [títulos]}
-#
-# registrar: quando True (padrão), marca as notas devolvidas como
-# usadas. As chamadas internas que só querem inspecionar passam False,
-# para não inflar access_count sem o usuário ter visto nada.
 def buscar_memorias(
     consulta,
     limite=None,
@@ -78,8 +50,6 @@ def buscar_memorias(
         if pontos > 0:
             pontuadas.append((pontos, nota))
 
-    # Empate resolvido pela mais recentemente usada — entre duas notas
-    # igualmente relevantes, a mais viva é a mais provável de servir.
     pontuadas.sort(
         key=lambda par: (
             par[0],
@@ -106,10 +76,6 @@ def buscar_memorias(
     return resultados
 
 
-# Monta o texto que volta pro modelo como resultado da tool. Inclui o
-# conteúdo das notas encontradas e, ao final, os títulos ligados a
-# elas — um nível de profundidade, como contexto adicional que o
-# modelo pode pedir depois se precisar.
 def formatar_resultado(consulta, resultados):
     if not resultados:
         return (
@@ -127,8 +93,6 @@ def formatar_resultado(consulta, resultados):
     for indice, resultado in enumerate(resultados, start=1):
         corpo = resultado["corpo"]
 
-        # Corta a seção de links do corpo mostrado: os títulos ligados
-        # já são listados à parte, logo abaixo.
         posicao = corpo.find("## Relacionados")
 
         if posicao != -1:
@@ -151,7 +115,6 @@ def formatar_resultado(consulta, resultados):
     return "\n".join(partes)
 
 
-# Tool de voz: buscar_memorias_relacionadas(consulta).
 def buscar_e_formatar(consulta, limite=None):
     if not config.configurado():
         return (
@@ -166,9 +129,6 @@ def buscar_e_formatar(consulta, limite=None):
 
     resultados = buscar_memorias(consulta, limite=limite)
 
-    # Nada na pasta ativa: talvez esteja arquivada. Uma nota do
-    # arquivo/ citada agora "reativou" — volta pra pasta principal em
-    # vez de ficar a caminho da consolidação.
     if not resultados:
         from . import consolidacao
 
@@ -180,11 +140,6 @@ def buscar_e_formatar(consulta, limite=None):
     return formatar_resultado(consulta, resultados)
 
 
-# Lista as N notas atualizadas mais recentemente, para o contexto
-# inicial leve da sessão. NÃO registra uso: carregar uma nota
-# automaticamente no começo da conversa não é o usuário tê-la
-# acessado, e contar isso como acesso deixaria o critério de poda sem
-# sentido (nada nunca envelheceria).
 def contexto_inicial(quantidade=None):
     if not config.configurado():
         return ""

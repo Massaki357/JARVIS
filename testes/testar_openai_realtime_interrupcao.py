@@ -1,21 +1,3 @@
-"""
-Verificação da interrupção de fala e das barras de escuta no worker da
-OpenAI Realtime (jarvis/cerebro/openai_realtime/cliente_realtime.py).
-
-Rodar com o venv ativo, da raiz do projeto:
-
-    python testes/testar_openai_realtime_interrupcao.py
-
-100% OFFLINE: nenhuma parte abre conexão com a OpenAI, microfone ou
-alto-falante. Os eventos do servidor são objetos falsos com os mesmos
-campos dos tipos do SDK instalado (InputAudioBufferSpeechStartedEvent,
-ResponseAudioDeltaEvent), e a conexão é falsa e registra o que recebe.
-
-O que NÃO dá para verificar aqui, e precisa de uma chamada real: que o
-servidor de fato cancela a resposta com interrupt_response, e que o
-server_vad detecta a voz a tempo. Isso depende da OpenAI, não do
-código deste projeto.
-"""
 import asyncio
 import base64
 import os
@@ -26,8 +8,6 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# Qt sem janela: o worker herda de QThread e precisa de um
-# QCoreApplication existindo para ser construído com segurança.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
@@ -57,16 +37,7 @@ def titulo(texto):
     print(f"\n=== {texto} ===")
 
 
-# ====================================================================
-# CONEXÃO E EVENTOS FALSOS
-# ====================================================================
-
-
 class ConexaoFalsa:
-    """Registra todo truncate e todo append, e entrega uma lista fixa
-    de eventos quando iterada — o mesmo formato do `async for evento
-    in conexao` do worker."""
-
     def __init__(self, eventos=None):
         self.truncates = []
         self._eventos = list(eventos or [])
@@ -108,9 +79,6 @@ def novo_worker(interrupcao):
     trabalhador.lock_envio = asyncio.Lock()
     trabalhador.ativo = True
 
-    # A preferência é lida do config.json no __init__; aqui ela é
-    # forçada nos dois valores, para testar os dois modos nesta
-    # máquina independentemente do que o config.json diz.
     trabalhador.interrupcao_habilitada = interrupcao
 
     niveis = []
@@ -121,11 +89,6 @@ def novo_worker(interrupcao):
 
 def bytes_de_ms(ms):
     return int(ms * TAXA_SAIDA * 2 * CANAIS / 1000)
-
-
-# ====================================================================
-# PARTE 1 — configuração da sessão
-# ====================================================================
 
 
 def parte1_configuracao():
@@ -144,11 +107,6 @@ def parte1_configuracao():
         desligado._configuracao_vad() == {"type": "server_vad"},
         "sem interrupção, o dicionário é idêntico ao de antes da mudança",
     )
-
-
-# ====================================================================
-# PARTE 2 — as barreiras do microfone
-# ====================================================================
 
 
 def parte2_microfone():
@@ -181,11 +139,6 @@ def parte2_microfone():
         )
 
 
-# ====================================================================
-# PARTE 3 — o corte em si
-# ====================================================================
-
-
 async def parte3_corte():
     titulo("3. _interromper_fala")
 
@@ -193,8 +146,6 @@ async def parte3_corte():
     conexao = ConexaoFalsa()
     fila_saida = asyncio.Queue()
 
-    # 1,5 s do item A já saiu pelo alto-falante; ainda há três blocos
-    # dele na fila e um de um item B que nem começou.
     w.item_audio_tocando = "item_A"
     w.bytes_tocados_item = bytes_de_ms(1500)
     w.alfred_falando = True
@@ -220,7 +171,6 @@ async def parte3_corte():
         f"o servidor ouve até onde a fala foi escutada ({conexao.truncates})",
     )
 
-    # Nada tocado ainda: truncar pediria um erro do servidor.
     w2, _ = novo_worker(True)
     conexao2 = ConexaoFalsa()
     w2.item_audio_tocando = "item_C"
@@ -234,19 +184,12 @@ async def parte3_corte():
         "com 0 ms ouvidos, não manda truncate (evita erro do servidor)",
     )
 
-    # audio_end_ms nunca pode passar do real: um bloco incompleto
-    # arredonda para BAIXO.
     w3, _ = novo_worker(True)
     w3.bytes_tocados_item = bytes_de_ms(1000) + 47
     checar(
         w3._milissegundos_tocados() == 1000,
         "ms arredondados para baixo — nunca acima da duração real",
     )
-
-
-# ====================================================================
-# PARTE 4 — o fluxo de eventos inteiro
-# ====================================================================
 
 
 async def parte4_eventos():
@@ -256,7 +199,6 @@ async def parte4_eventos():
     fila_saida = asyncio.Queue()
     fila_microfone = asyncio.Queue()
 
-    # O usuário tinha falado algo que ainda está na fila do microfone.
     fila_microfone.put_nowait(b"voz do usuario")
 
     w.item_audio_tocando = "item_A"
@@ -264,10 +206,10 @@ async def parte4_eventos():
 
     conexao = ConexaoFalsa(
         [
-            delta("item_A"),           # ALFRED começa a falar
-            fala_do_usuario(),         # usuário interrompe
-            delta("item_A"),           # resto atrasado da fala cortada
-            delta("item_B"),           # resposta nova, pós-interrupção
+            delta("item_A"),
+            fala_do_usuario(),
+            delta("item_A"),
+            delta("item_B"),
         ]
     )
 
@@ -289,7 +231,6 @@ async def parte4_eventos():
 
     checar(len(conexao.truncates) == 1, "exatamente um truncate")
 
-    # --- sem interrupção: nada disso acontece ------------------------
     w2, _ = novo_worker(False)
     fila_saida2 = asyncio.Queue()
     fila_microfone2 = asyncio.Queue()
@@ -310,7 +251,6 @@ async def parte4_eventos():
     )
     checar(w2.interrupcoes_na_chamada == 0, "sem interrupção, contador em 0")
 
-    # Interrupção ligada, mas o ALFRED está calado: falar é só falar.
     w3, _ = novo_worker(True)
     w3.alfred_falando = False
     conexao3 = ConexaoFalsa([fala_do_usuario()])
@@ -321,9 +261,6 @@ async def parte4_eventos():
         w3.interrupcoes_na_chamada == 0,
         "com o ALFRED calado, a fala do usuário não conta como interrupção",
     )
-
-
-# ====================================================================
 
 
 async def principal():

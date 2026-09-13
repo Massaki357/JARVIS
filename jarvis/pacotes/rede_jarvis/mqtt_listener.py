@@ -5,9 +5,6 @@ import threading
 import time
 import uuid
 
-# Correlaciona pedidos enviados por esta máquina (comando ou consulta
-# de service account) com a resposta recebida, por id_pedido.
-# Cada valor é (threading.Event, dict com "sucesso"/"resultado").
 _RESPOSTAS_PENDENTES = {}
 _LOCK_RESPOSTAS = threading.Lock()
 
@@ -17,18 +14,10 @@ _callback_frame_remoto = None
 _rodando = False
 _lock_rodando = threading.Lock()
 
-# Máquinas conhecidas como online agora, a partir das mensagens
-# retidas de presença (ver mqtt_client.publicar_presenca). Nome da
-# máquina -> momento (time.time()) em que o "online" foi visto.
 _MAQUINAS_ONLINE = {}
 _LOCK_MAQUINAS = threading.Lock()
 
 
-# Registra os callbacks usados para o Jarvis "falar" por voz e para
-# injetar frames de visualização remota na sessão Live local. É
-# chamada sempre que rede_jarvis.iniciar_rede_jarvis() roda (a cada
-# nova chamada de voz), para nunca ficar com callbacks apontando para
-# um GeminiLiveWorker de uma chamada já encerrada.
 def configurar_callbacks(callback_falar, callback_frame_remoto):
     global _callback_falar, _callback_frame_remoto
 
@@ -36,10 +25,6 @@ def configurar_callbacks(callback_falar, callback_frame_remoto):
     _callback_frame_remoto = callback_frame_remoto
 
 
-# Conecta ao broker e inicia o loop de rede do paho-mqtt (que já roda
-# em sua própria thread interna — loop_start() retorna na hora).
-# Idempotente: chamadas repetidas (uma por chamada de voz iniciada)
-# não conectam duas vezes.
 def iniciar_em_thread():
     global _rodando
 
@@ -86,10 +71,6 @@ def _ao_conectar(client, userdata, flags, reason_code, properties):
     client.subscribe(mqtt_client.TOPICO_FRAMES, qos=0)
     client.subscribe(mqtt_client.TOPICO_ARQUIVOS, qos=1)
 
-    # "+" é o coringa de um nível no MQTT: cobre o tópico de presença
-    # de qualquer máquina (jarvis/presenca/<nome>). As mensagens
-    # retidas de todo mundo chegam automaticamente logo após a
-    # inscrição, sem precisar perguntar nada a ninguém.
     client.subscribe(
         mqtt_client.TOPICO_PRESENCA_PREFIXO + "+",
         qos=1,
@@ -130,10 +111,6 @@ def _ao_receber_mensagem(client, userdata, mensagem):
         )
 
 
-# Valida o token compartilhado e o destino de um envelope JSON.
-# Mensagens sem o token correto, malformadas, ou destinadas a outra
-# máquina são descartadas silenciosamente — não confirmamos a um
-# atacante que o canal existe.
 def _carregar_envelope(texto):
     try:
         envelope = json.loads(texto)
@@ -174,10 +151,7 @@ def _processar_texto(texto):
         _processar_arquivo_drive(envelope)
 
 
-# Mesma técnica de jarvis/pacotes/admin_terminal/executor.py
-# (_aparar_log_se_necessario, cópia independente por convenção do
-# projeto): descarta a metade mais antiga das linhas quando o log já
-# passou de config.LIMITE_TAMANHO_LOG_BYTES. Nunca lança exceção.
+# Chamada antes de todo append: limite de tamanho do log.
 def _aparar_log_se_necessario():
     try:
         if config.ARQUIVO_LOG.stat().st_size <= config.LIMITE_TAMANHO_LOG_BYTES:
@@ -252,10 +226,6 @@ def _processar_comando(envelope):
             resultado=resultado,
         )
 
-    # comandos.executar_comando pode envolver I/O bloqueante
-    # (subprocess, busca em disco, etc.) e o fluxo de permissão espera
-    # de forma síncrona — roda numa thread separada pra não travar a
-    # thread de rede do paho-mqtt.
     threading.Thread(
         target=_executar,
         daemon=True,
@@ -297,8 +267,6 @@ def _processar_resposta(envelope):
 
 
 def _responder_consulta_service_account(envelope):
-    # Import tardio para evitar import circular (transferencia_arquivos
-    # importa este módulo para pedir o client_email da máquina destino).
     from . import transferencia_arquivos
 
     email = transferencia_arquivos.obter_client_email_local()
@@ -393,10 +361,6 @@ def _processar_presenca(mensagem):
             _MAQUINAS_ONLINE.pop(maquina, None)
 
 
-# Lista as máquinas conhecidas como online agora — puramente local,
-# a partir das mensagens de presença retidas já recebidas ao se
-# inscrever no tópico (ver _ao_conectar). Não faz nenhuma chamada de
-# rede na hora de responder.
 def listar_maquinas_online():
     with _LOCK_MAQUINAS:
         maquinas = sorted(_MAQUINAS_ONLINE.keys())
@@ -407,9 +371,6 @@ def listar_maquinas_online():
     return "Máquinas online agora: " + ", ".join(maquinas)
 
 
-# Envia um envelope e aguarda a resposta correlacionada por
-# id_pedido (usado tanto para comandos remotos quanto para a consulta
-# de client_email do Google Drive).
 def _enviar_e_aguardar(envelope, timeout):
     id_pedido = envelope["id_pedido"]
     evento = threading.Event()
@@ -436,9 +397,6 @@ def _enviar_e_aguardar(envelope, timeout):
     return container if recebido_a_tempo else None
 
 
-# Envia um comando remoto para maquina_destino e aguarda a resposta
-# (usado pela tool enviar_comando_remoto, via
-# rede_jarvis.enviar_comando_remoto).
 def enviar_comando(maquina_destino, comando, argumentos, timeout=None):
     envelope = {
         "token": config.TOKEN_REDE_JARVIS,
@@ -466,8 +424,6 @@ def enviar_comando(maquina_destino, comando, argumentos, timeout=None):
     )
 
 
-# Pergunta a outra máquina qual é o client_email da Service Account
-# dela, usado antes de compartilhar um arquivo grande via Drive.
 def consultar_client_email(maquina_destino, timeout=None):
     envelope = {
         "token": config.TOKEN_REDE_JARVIS,

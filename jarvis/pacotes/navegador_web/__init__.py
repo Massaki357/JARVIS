@@ -1,36 +1,7 @@
-"""
-Pesquisa no navegador padrão e reprodução de vídeo/música no YouTube.
-
-Trazido do JARVIS COMPLETO (actions/browser_actions.py) e reembalado
-no contrato padrão de pacote isolado deste projeto — ver
-docs/INTEGRATION.md. SUBSTITUI o antigo pacote navegador_jarvis, que
-dirigia um Chromium do Playwright em sessão persistente
-(abrir_site/tocar_musica_youtube/pausar_musica/retomar_musica).
-
-Diferença que importa saber: aqui nada é automatizado dentro da
-página. O YouTube é consultado por HTTP puro (urllib), o primeiro
-videoId é extraído do HTML e a URL final é aberta no navegador padrão
-do usuário via webbrowser.open. Isso significa: nenhum processo de
-navegador extra, nenhum download de Chromium — e também nenhum
-pausar/retomar, porque não existe mais uma página sob nosso controle
-(essas duas tools saíram junto com o navegador_jarvis).
-
-Nunca executa JavaScript nem navega para uma URL montada com texto
-não validado: pesquisar_no_navegador só monta uma busca do Google com
-quote_plus, e tocar_no_youtube só abre /watch?v= com um ID de 11
-caracteres validado por regex.
-"""
-
-# Usado só para montar as FunctionDeclaration deste pacote — mesmo
-# padrão dos demais pacotes isolados (ver docs/INTEGRATION.md).
 from google.genai import types
 
 from . import acoes
 
-# ============================================================
-# Contrato padrão do projeto (ver docs/INTEGRATION.md): todo pacote de
-# tools expõe obter_function_declarations() e despachar().
-# ============================================================
 
 _FUNCTION_DECLARATIONS = [
     types.FunctionDeclaration(

@@ -343,7 +343,7 @@ Bug real, relatado como "pedi para abrir o navegador, ele disse que estava abrin
 abriu; na segunda vez funcionou". Causa medida ao vivo: o tier gratuito da Groq limita o
 `openai/gpt-oss-20b` a **8000 tokens por minuto**, cada chamada da etapa 1 custa **~1450
 tokens** (o catálogo inteiro de 45 ferramentas viaja no prompt todo turno), então qualquer
-coisa mais rápida que ~5 turnos/minuto toma 429. O `_chamar_groq` devolve `(False, ...)` em
+coisa mais rápida que ~5 turnos/minuto toma 429. O `_chamar_groq` (hoje substituído por `jarvis/servicos/agentes/`, `erros.py` + `PoliticaRepeticao`) devolvia `(False, ...)` em
 vez de levantar, o `processar_turno` transformava isso num `ResultadoTurno` comum com
 `usou_ferramenta=False`, e o worker — que só capturava *exceções* — mandava a fala para a
 etapa 2. O servidor local não faz ideia de que ferramentas existem, então respondeu algo
@@ -543,7 +543,7 @@ mas a imagem em execução era anterior a ele. Essa pendência está resolvida.)
   ser confundido com `usou_ferramenta=False`.** Eles são idênticos de outro modo, e tratar um
   roteamento que falhou como conversa é exatamente o que fez o assistente afirmar que tinha aberto
   o navegador enquanto nada rodou. `pedido_esclarecimento` deliberadamente NÃO é uma falha.
-- **`_chamar_groq` refaz exatamente duas coisas e nada mais: um 429, e o 400 específico
+- **A política de repetição do roteamento (`_POLITICA` em `roteamento_hierarquico/roteador.py`, aplicada por `jarvis/servicos/agentes/agente.executar` com a classificação de `erros.py`) refaz exatamente duas coisas e nada mais: um 429, e o 400 específico
   `Tool choice is none, but model called a tool`.** O segundo é o único retry de 4xx sancionado no
   projeto — existe porque aquela resposta varia entre requisições byte a byte idênticas, o que não
   vale para um 401 ou um corpo malformado — e mantém orçamento próprio para que um rate limit não
@@ -551,7 +551,7 @@ mas a imagem em execução era anterior a ele. Essa pendência está resolvida.)
   Mantenha o fallback da etapa 1 que refaz **sem o histórico** como último recurso: o histórico é o
   gatilho medido, então removê-lo é melhor que rolar o dado de novo. E não tente resolver nada disso
   editando `ROTEAMENTO_ETAPA1_INSTRUCAO` — o texto do prompt foi testado contra isso e piorou.
-- **`_chamar_groq` deve continuar preservando o corpo da resposta de um erro.** Descartá-lo é o que
+- **A classificação de erro (`jarvis/servicos/agentes/erros.py`) deve continuar preservando o motivo real e o `retry-after` de um erro** (`descrever`, `cabecalho`, `espera_sugerida`). Descartá-los é o que
   fez um rate limit recuperável parecer uma falha HTTP genérica, custando uma sessão inteira de
   engenharia reversa para diagnosticar. O `retry-after` que o servidor manda é autoritativo, mas
   deve continuar limitado — é um valor vindo de fora do processo.

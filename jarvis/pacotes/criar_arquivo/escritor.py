@@ -1,11 +1,3 @@
-# Cria um arquivo de texto simples por pedido de voz — só dentro de
-# uma das pastas em config.pastas_permitidas(), nunca em qualquer
-# outro lugar do disco. Nome e extensão são sempre saneados (nunca um
-# caminho vindo direto da fala/do modelo é usado cru), e um arquivo
-# já existente NUNCA é sobrescrito silenciosamente — ganha sufixo de
-# data/hora, mesmo padrão já usado por
-# jarvis/servicos/email/leitor.py e
-# jarvis/servicos/visao/captura_tela.py.
 import os
 import re
 import unicodedata
@@ -13,11 +5,6 @@ from datetime import datetime
 
 from . import config
 
-# Limite de caracteres do conteúdo — isto é pra criar um arquivo de
-# texto simples ditado por voz, não gerar um documento extenso.
-# Conteúdo maior é truncado (nunca rejeitado silenciosamente), com um
-# aviso anexado na mensagem de retorno — mesma convenção de
-# _LIMITE_CARACTERES_TEXTO em jarvis/pacotes/chat_jarvis.
 LIMITE_CARACTERES_CONTEUDO = 5000
 
 _EXTENSAO_PADRAO = "txt"
@@ -33,13 +20,6 @@ def _remover_acentos(texto):
     )
 
 
-# Nome de arquivo seguro: primeiro tira acento (senão "relatório"
-# viraria "relat_rio" no passo seguinte), depois restringe aos mesmos
-# caracteres seguros já usados em
-# jarvis/servicos/email/leitor.py (_nome_arquivo_seguro) — nunca um
-# caminho (barra, "..", letra de unidade) sobrevive a isso, porque o
-# nome nunca é tratado como caminho, só como um único componente de
-# arquivo.
 def _nome_arquivo_seguro(nome):
     nome = os.path.basename(
         (nome or "").strip()
@@ -68,9 +48,6 @@ def _extensao_segura(extensao):
     return extensao or _EXTENSAO_PADRAO
 
 
-# Mesmo padrão de jarvis/servicos/email/leitor.py: sufixo de
-# data/hora, com contador extra só no raro caso de colisão mesmo
-# assim (duas criações no mesmo segundo).
 def _caminho_sem_sobrescrever(caminho):
     if not caminho.exists():
         return caminho
@@ -89,11 +66,6 @@ def _caminho_sem_sobrescrever(caminho):
     return candidato
 
 
-# Resolve o nome de pasta falado (ex: "Downloads", "Área de
-# Trabalho") contra config.pastas_permitidas() — nunca aceita um
-# caminho arbitrário vindo da fala, só o nome de uma pasta já
-# cadastrada na lista permitida. Retorna o Path resolvido, ou None se
-# não encontrar correspondência.
 def _resolver_pasta_falada(pasta_falada, permitidas):
     alvo = _remover_acentos(pasta_falada).strip().lower()
 
@@ -110,9 +82,6 @@ def _resolver_pasta_falada(pasta_falada, permitidas):
     return None
 
 
-# Cria o arquivo. Retorna (sucesso: bool, mensagem: str) — nunca
-# lança exceção, nunca sobrescreve um arquivo existente, e nunca
-# escreve fora de config.pastas_permitidas().
 def criar_arquivo(nome, conteudo, pasta_falada=None, extensao="txt"):
     nome_seguro = _nome_arquivo_seguro(nome)
 
@@ -140,10 +109,6 @@ def criar_arquivo(nome, conteudo, pasta_falada=None, extensao="txt"):
 
     pasta_destino_resolvida = pasta_destino.resolve()
 
-    # Checagem final e definitiva: o destino PRECISA estar dentro de
-    # uma pasta permitida, sem exceção — mesmo princípio de
-    # jarvis/servicos/email/leitor.py (caminho resolvido precisa
-    # bater com a pasta base, checado bem antes de qualquer escrita).
     permitido = any(
         pasta_destino_resolvida == pasta.resolve()
         for pasta in permitidas
@@ -168,11 +133,6 @@ def criar_arquivo(nome, conteudo, pasta_falada=None, extensao="txt"):
         pasta_destino_resolvida / f"{nome_seguro}.{extensao_segura}"
     )
 
-    # Defesa extra: confirma que o caminho final realmente fica
-    # dentro da pasta de destino antes de escrever, mesmo já tendo
-    # saneado o nome acima — nunca confia numa única camada de
-    # proteção contra um nome vindo de fora (mesmo padrão de
-    # jarvis/servicos/email/leitor.py:baixar_anexo).
     if pasta_destino_resolvida not in caminho_arquivo.resolve().parents:
         return False, "Caminho de destino inválido."
 

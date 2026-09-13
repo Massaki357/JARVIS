@@ -1,16 +1,3 @@
-# Executa comandos com privilégio de administrador via a Tarefa
-# Agendada criada por 'python -m jarvis.pacotes.admin_terminal.setup' (ver
-# setup.py e runner_elevado.py), e registra o log local de tudo que
-# roda com privilégio elevado.
-#
-# Mecanismo: este processo (privilégio normal) escreve o comando num
-# arquivo de "pedido" na pasta _fila, dispara a tarefa via
-# 'schtasks /run' (que já está configurada com RunLevel HIGHEST — não
-# pede UAC de novo, só na criação da tarefa), e espera o processo
-# elevado (runner_elevado.py, iniciado pela própria tarefa) escrever
-# o "resultado" de volta. Um único comando por vez (protegido por
-# _lock_execucao) — não há necessidade de suportar execuções
-# administrativas concorrentes neste projeto.
 import json
 import subprocess
 import threading
@@ -27,9 +14,6 @@ _ARQUIVO_RESULTADO = config.PASTA_FILA / "resultado_pendente.json"
 config.PASTA_FILA.mkdir(parents=True, exist_ok=True)
 
 
-# Ponto único usado por confirmacao.py para os dois caminhos (voz e
-# notificação) depois que o usuário confirmou ou negou. Sempre
-# registra no log, mesmo quando negado.
 def executar_comando_confirmado(comando, confirmado, execucao_longa, origem):
     if not confirmado:
         registrar_log(
@@ -65,10 +49,6 @@ def executar_comando_confirmado(comando, confirmado, execucao_longa, origem):
     return f"Comando '{comando}' confirmado, mas falhou ao executar: {resultado}"
 
 
-# Dispara o comando na tarefa elevada e espera o resultado. Retorna
-# (sucesso: bool, mensagem: str) — nunca lança exceção, mesma
-# convenção usada em jarvis/pacotes/casa_inteligente/tuya_client.py e
-# jarvis/servicos/email/remetente.py.
 def executar_via_tarefa_agendada(comando, timeout_segundos):
     with _lock_execucao:
         _limpar_arquivos_fila()
@@ -160,13 +140,7 @@ def _limpar_arquivos_fila():
             pass
 
 
-# Mantém o log sob um teto simples de tamanho: se já passou de
-# config.LIMITE_TAMANHO_LOG_BYTES, descarta a metade mais antiga das
-# linhas e regrava só a metade mais recente. Chamado antes de cada
-# escrita (registrar_log, abaixo) — o stat() é barato o bastante pra
-# rodar em toda escrita sem custo perceptível. Nunca lança exceção: um
-# log que não pôde ser aparado continua sendo usado do jeito que está,
-# só cresce um pouco mais até a próxima tentativa.
+# Chamada antes de todo append: limite de tamanho do log.
 def _aparar_log_se_necessario():
     try:
         if config.ARQUIVO_LOG.stat().st_size <= config.LIMITE_TAMANHO_LOG_BYTES:
@@ -184,10 +158,6 @@ def _aparar_log_se_necessario():
         print(f"[admin_terminal] Falha ao aparar o log: {erro}")
 
 
-# Log local, texto simples, append-only. Nunca girado em vários
-# arquivos nem apagado por completo — só aparado (ver
-# _aparar_log_se_necessario) quando passa de
-# config.LIMITE_TAMANHO_LOG_BYTES, pra nunca crescer sem limite.
 def registrar_log(comando, automatico, sucesso, resumo):
     linha = (
         f"{datetime.now().isoformat(timespec='seconds')} | "

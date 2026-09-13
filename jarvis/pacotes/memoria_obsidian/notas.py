@@ -1,24 +1,3 @@
-# Camada de baixo nível do vault: ler, escrever e localizar notas .md.
-# Tudo que escritor/busca/esquecer/consolidacao fazem passa por aqui,
-# para as regras de segurança existirem em UM lugar só.
-#
-# Formato de uma nota:
-#
-#     ---
-#     created: 2026-09-01T10:00:00
-#     last_used: 2026-09-01T10:00:00
-#     access_count: 0
-#     pinned: false
-#     ---
-#
-#     <conteúdo>
-#
-#     ## Relacionados
-#     - [[Outra Nota]]
-#
-# O frontmatter é lido e escrito à mão, sem biblioteca de YAML: são só
-# quatro campos escalares, e adicionar uma dependência nova ao projeto
-# por causa disso não se justifica.
 import difflib
 import json
 import os
@@ -30,21 +9,14 @@ from pathlib import Path
 
 from . import config
 
-# Protege leitura e escrita concorrente das notas — o mesmo cuidado
-# que jarvis/servicos/memoria/gerenciador.py já tinha, mantido aqui.
 _LOCK = threading.RLock()
 
 _DELIMITADOR = "---"
 _TITULO_SECAO_RELACIONADOS = "## Relacionados"
 
-# Caracteres proibidos em nome de arquivo no Windows, mais os que
-# atrapalham o Obsidian dentro de um link [[...]].
 _CARACTERES_PROIBIDOS = r'[<>:"/\\|?*\[\]#^]'
 
 
-# Palavras que não distinguem uma nota da outra. Usadas tanto pela
-# busca quanto pela detecção automática de links, para nenhuma das
-# duas achar que "de", "para" ou "o que" significam alguma coisa.
 IRRELEVANTES = {
     "a", "as", "o", "os", "um", "uma", "uns", "umas",
     "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas",
@@ -56,12 +28,6 @@ IRRELEVANTES = {
 }
 
 
-# Normalização usada em toda comparação de título: sem acento, em
-# minúsculas, sem espaço duplicado. Mesma técnica já validada em
-# jarvis/servicos/memoria/gerenciador.py, fechar_app/processos.py e
-# discord_jarvis/contatos.py — cópia própria de propósito, seguindo a
-# convenção do projeto de cada pacote não depender do interno de
-# outro (aquelas funções são privadas dos pacotes delas).
 def normalizar(texto):
     texto = str(texto or "").strip().lower()
 
@@ -76,14 +42,6 @@ def normalizar(texto):
     return re.sub(r"\s+", " ", texto).strip()
 
 
-# Transforma um título em nome de arquivo válido.
-#
-# O título vem do usuário ou do modelo, ou seja, é entrada não
-# confiável: sem isto, um título como "../../.env" escreveria fora do
-# vault. Mesmo cuidado já aplicado aos nomes de anexo de email em
-# jarvis/servicos/email/leitor.py. A checagem final de contenção fica
-# em caminho_seguro(), que é a garantia de verdade — esta função é a
-# primeira camada.
 def nome_arquivo_do_titulo(titulo):
     base = os.path.basename(str(titulo or "").strip())
 
@@ -96,10 +54,7 @@ def nome_arquivo_do_titulo(titulo):
     return base[:120] + ".md"
 
 
-# Garante que um caminho está DENTRO da pasta permitida. É a regra
-# central do pacote: o jarvis nunca escreve fora de
-# PASTA_VAULT_JARVIS. Levanta ValueError se escapar — nunca devolve um
-# caminho de fora "só avisando".
+# Toda escrita e remoção passa por aqui: nunca fora do vault.
 def caminho_seguro(caminho, pasta_base=None):
     if pasta_base is None:
         pasta_base = config.PASTA_VAULT
@@ -134,8 +89,6 @@ def agora():
     return datetime.now().isoformat(timespec="seconds")
 
 
-# --- Frontmatter -----------------------------------------------------
-
 def _converter_valor(bruto):
     bruto = bruto.strip()
 
@@ -155,9 +108,6 @@ def _formatar_valor(valor):
     return str(valor)
 
 
-# Devolve (frontmatter_dict, corpo_texto). Uma nota sem frontmatter
-# (por exemplo criada à mão no Obsidian) não é erro: recebe valores
-# padrão, para o jarvis conseguir usá-la mesmo assim.
 def separar_nota(texto):
     linhas = texto.split("\n")
 
@@ -202,8 +152,6 @@ def _frontmatter_padrao():
 def montar_nota(frontmatter, corpo):
     linhas = [_DELIMITADOR]
 
-    # Ordem fixa para o arquivo ficar estável entre gravações (evita
-    # diff sujo se o vault estiver num repositório).
     for chave in ("created", "last_used", "access_count", "pinned"):
         if chave in frontmatter:
             linhas.append(
@@ -222,11 +170,6 @@ def montar_nota(frontmatter, corpo):
     return "\n".join(linhas)
 
 
-# --- Leitura e escrita -----------------------------------------------
-
-# Escrita atômica: grava em .tmp e substitui. Mesma técnica de
-# jarvis/servicos/memoria/gerenciador.py — uma queda de energia no meio
-# da gravação nunca deixa uma nota pela metade.
 def escrever_nota(caminho, frontmatter, corpo):
     with _LOCK:
         destino = caminho_seguro(caminho)
@@ -264,9 +207,6 @@ def ler_nota(caminho):
     }
 
 
-# Lista as notas de uma pasta. Por padrão a pasta ATIVA do vault, sem
-# descer na subpasta arquivo/ — busca e poda só enxergam o que está
-# ativo.
 def listar_notas(pasta=None, incluir_arquivo=False):
     if config.PASTA_VAULT is None:
         return []
@@ -292,13 +232,6 @@ def listar_notas(pasta=None, incluir_arquivo=False):
     return notas
 
 
-# --- Localização por título ------------------------------------------
-
-# Encontra notas cujo título "casa" com o procurado, na mesma escada
-# já usada em fechar_app/processos.py: exato, depois substring nos
-# dois sentidos, depois difflib. Devolve SEMPRE uma lista — quem chama
-# decide o que fazer com zero, um ou vários resultados. Nunca escolhe
-# sozinho quando há ambiguidade.
 def localizar_por_titulo(titulo, incluir_arquivo=False):
     alvo = normalizar(titulo)
 
@@ -339,8 +272,6 @@ def localizar_por_titulo(titulo, incluir_arquivo=False):
     return [mapa[chave] for chave in proximos]
 
 
-# --- Links -----------------------------------------------------------
-
 def extrair_links(corpo):
     return [
         alvo.strip()
@@ -349,8 +280,6 @@ def extrair_links(corpo):
     ]
 
 
-# Reescreve a seção "## Relacionados" do corpo com os títulos dados.
-# Preserva o texto acima dela; sem títulos, a seção some.
 def aplicar_relacionados(corpo, titulos):
     corpo = (corpo or "").strip()
 
@@ -380,10 +309,6 @@ def aplicar_relacionados(corpo, titulos):
     return "\n".join(linhas).strip()
 
 
-# --- Registro de uso -------------------------------------------------
-
-# Marca a nota como usada AGORA: last_used vira a data atual e
-# access_count sobe. É o que tira uma nota do caminho de poda.
 def registrar_uso(caminho):
     with _LOCK:
         nota = ler_nota(caminho)
@@ -406,8 +331,6 @@ def registrar_uso(caminho):
 
     return True
 
-
-# --- Arquivo de controle da varredura --------------------------------
 
 def ler_controle():
     caminho = config.ARQUIVO_CONTROLE

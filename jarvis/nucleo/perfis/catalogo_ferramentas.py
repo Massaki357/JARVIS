@@ -1,49 +1,8 @@
-# Fonte única sobre QUAIS ferramentas existem no projeto, para o
-# sistema de perfis.
-#
-# Um perfil guarda uma lista de NOMES de ferramentas. Para validar
-# essa lista (nome inexistente é erro, nunca passa em silêncio) e
-# para montar a tela de marcar/desmarcar ferramentas, alguém precisa
-# saber o conjunto real de nomes. Este módulo é esse alguém — e ele
-# NÃO inventa uma segunda lista:
-#
-# - As ferramentas de pacote saem de PACOTES_REGISTRADOS
-#   (jarvis/nucleo/registro_pacotes.py), perguntando a cada pacote o
-#   próprio obter_function_declarations(). É informação derivada,
-#   então nunca desatualiza: um pacote novo aparece aqui sozinho.
-# - O resumo de uma linha de cada ferramenta de pacote vem de
-#   jarvis/roteamento_hierarquico/catalogo.py (CATALOGO_CURTO), que já
-#   existia exatamente para isso. Não foi escrita uma segunda versão
-#   desses resumos.
-#
-# O único pedaço escrito à mão aqui são os nomes das ferramentas
-# NATIVAS, que não pertencem a pacote nenhum e vivem dentro dos dois
-# clientes de voz. As do cliente OpenAI são importáveis
-# (FUNCTION_DECLARATIONS_NATIVAS, nível de módulo) e são conferidas de
-# verdade em verificar_catalogo(); as do Gemini estão declaradas
-# dentro de um método de GeminiLiveWorker, inalcançáveis sem uma
-# sessão, então continuam listadas à mão — mesma duplicação
-# deliberada que jarvis/roteamento_hierarquico/catalogo.py já
-# documenta e aceita para os nomes nativos.
-#
-# IMPORTANTE: os dois provedores NÃO têm as mesmas ferramentas
-# nativas. O Gemini tem 16 (visão, e-mail, envio de captura,
-# encerramento); o OpenAI Realtime tem 4. Um perfil pode listar uma
-# ferramenta que só existe em um dos dois — quem resolve isso é a
-# integração com o início da chamada (Fase 5), que intersecta a lista
-# do perfil com o que o provedor daquela chamada realmente oferece.
-# Aqui a lista é a UNIÃO: o catálogo descreve o projeto inteiro.
-
-# Origem de cada ferramenta, usada para agrupar na interface e para
-# a integração saber de onde ela vem.
 ORIGEM_PACOTE = "pacote"
 ORIGEM_NATIVA_GEMINI = "nativa_gemini"
 ORIGEM_NATIVA_AMBOS = "nativa_ambos"
 
 
-# Ferramentas nativas do cliente Gemini Live
-# (jarvis/cerebro/gemini/cliente_live.py, function_declarations_nativas).
-# nome -> (categoria, resumo de uma linha)
 NATIVAS_GEMINI = {
     "analisar_tela": (
         "visao_camera",
@@ -122,10 +81,6 @@ NATIVAS_GEMINI = {
 }
 
 
-# Ferramentas nativas do cliente OpenAI Realtime
-# (jarvis/cerebro/openai_realtime/cliente_realtime.py,
-# FUNCTION_DECLARATIONS_NATIVAS). Subconjunto das de cima — os
-# resumos são reaproveitados de NATIVAS_GEMINI, não reescritos.
 NOMES_NATIVAS_OPENAI = (
     "analisar_tela",
     "analisar_camera",
@@ -134,20 +89,12 @@ NOMES_NATIVAS_OPENAI = (
 )
 
 
-# Ferramentas que NENHUM perfil pode desligar. Sem elas o usuário
-# fica sem como terminar a chamada por voz, que é a única saída que
-# não depende de olhar para a tela — não é uma capacidade opcional
-# do assistente, é o botão de sair.
 FERRAMENTAS_SEMPRE_ATIVAS = (
     "encerrar_chamada",
     "pausar_chamada",
 )
 
 
-# Rótulo legível de cada categoria. As de pacote vêm de
-# roteamento_hierarquico.catalogo.CATEGORIAS; estas quatro só existem
-# para as nativas, que aquele catálogo não cobre (ele é explicitamente
-# só das ferramentas de pacote).
 CATEGORIAS_NATIVAS = (
     ("visao_camera", "Visão e câmera"),
     ("email", "E-mail"),
@@ -157,27 +104,12 @@ CATEGORIAS_NATIVAS = (
 
 
 def _catalogo_curto_pacotes():
-    """
-    Resumos de uma linha das ferramentas de pacote, reaproveitados de
-    jarvis/roteamento_hierarquico/catalogo.py. Import adiado porque
-    este módulo é importado pela camada de dados dos perfis, que roda
-    em contextos (testes, scripts) onde carregar o roteador inteiro
-    seria peso à toa.
-    """
     from jarvis.roteamento_hierarquico import catalogo
 
     return catalogo.CATALOGO_CURTO, catalogo.CATEGORIAS
 
 
 def nomes_de_pacotes():
-    """
-    Nomes das ferramentas realmente expostas pelos pacotes de
-    PACOTES_REGISTRADOS, perguntados a cada pacote na hora. Informação
-    derivada: um pacote novo entra aqui sozinho, sem editar nada.
-
-    Um pacote que levante exceção ao declarar as próprias tools é
-    ignorado com aviso, nunca derruba a listagem de perfis inteira.
-    """
     from jarvis.nucleo.registro_pacotes import PACOTES_REGISTRADOS
 
     nomes = []
@@ -209,22 +141,6 @@ def _origem_nativa(nome):
 
 
 def catalogo_completo():
-    """
-    Catálogo de TODAS as ferramentas do projeto, na ordem em que
-    devem aparecer numa lista: primeiro as nativas, depois as de
-    pacote.
-
-    Devolve uma lista de dicts:
-
-        {
-          "nome": "analisar_tela",
-          "resumo": "Olha a tela do computador e ...",
-          "categoria": "visao_camera",
-          "rotulo_categoria": "Visão e câmera",
-          "origem": "nativa_ambos",
-          "sempre_ativa": False,
-        }
-    """
     curto_pacotes, categorias_pacotes = _catalogo_curto_pacotes()
 
     rotulos = dict(CATEGORIAS_NATIVAS)
@@ -265,16 +181,10 @@ def catalogo_completo():
 
 
 def nomes_disponiveis():
-    """
-    Conjunto de todos os nomes de ferramenta válidos do projeto —
-    a união das nativas dos dois provedores com as de pacote. É o
-    conjunto contra o qual a lista de um perfil é validada.
-    """
     return set(NATIVAS_GEMINI) | set(nomes_de_pacotes())
 
 
 def resumo_de(nome):
-    """Resumo de uma linha de uma ferramenta, ou string vazia."""
     for item in catalogo_completo():
         if item["nome"] == nome:
             return item["resumo"]
@@ -283,24 +193,10 @@ def resumo_de(nome):
 
 
 def nome_do_cerebro(usar_openai):
-    """Rótulo do provedor de voz, para a interface."""
     return "OpenAI Realtime" if usar_openai else "Gemini Live"
 
 
 def nomes_do_cerebro(usar_openai):
-    """
-    Nomes de ferramenta que EXISTEM no cérebro informado.
-
-    O Gemini oferece as 61 (16 nativas + 45 de pacote); o OpenAI
-    Realtime oferece 49, porque só 4 das nativas existem lá. As de
-    pacote são idênticas nos dois — elas não dependem do provedor.
-
-    Isto é informação para a INTERFACE avisar antes, na hora de montar
-    o perfil. Em tempo de execução nada consulta esta função: lá o
-    filtro do perfil intersecta por nome sobre a lista que o próprio
-    cliente montou, e uma ferramenta ausente simplesmente não aparece
-    (ver perfis.filtrar_declaracoes).
-    """
     if not usar_openai:
         return nomes_disponiveis()
 
@@ -308,38 +204,12 @@ def nomes_do_cerebro(usar_openai):
 
 
 def cerebro_atual_usa_openai():
-    """
-    Lê o PROVEDOR_IA do .env. Fica aqui, e não na tela, para a tela
-    ler UMA vez ao montar a lista em vez de 61 vezes, uma por item.
-    """
     from jarvis.nucleo.config import usar_provedor_openai
 
     return usar_provedor_openai()
 
 
 def verificar_catalogo():
-    """
-    Confere o pedaço escrito à mão deste módulo contra a realidade,
-    até onde a realidade é importável.
-
-    Nunca levanta exceção — só imprime aviso e devolve True/False,
-    mesma postura de
-    roteamento_hierarquico.catalogo.verificar_catalogo_atualizado():
-    um catálogo levemente desatualizado não pode derrubar a tela de
-    perfis.
-
-    O que dá para conferir de verdade:
-
-    - As nativas do OpenAI, que são importáveis.
-    - Que nenhuma nativa listada aqui colide com nome de ferramenta
-      de pacote (colisão silenciosa faria o perfil habilitar a
-      ferramenta errada).
-    - Que FERRAMENTAS_SEMPRE_ATIVAS existe mesmo no catálogo.
-
-    O que NÃO dá: as 16 nativas do Gemini, declaradas dentro de um
-    método de GeminiLiveWorker. Se uma nativa for adicionada ou
-    renomeada lá, NATIVAS_GEMINI precisa ser atualizada à mão.
-    """
     tudo_certo = True
 
     try:

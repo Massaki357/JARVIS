@@ -1,20 +1,3 @@
-# Passo de migração MANUAL — roda uma vez, com:
-#
-#     python -m jarvis.pacotes.memoria_obsidian.migracao
-#
-# Lê as memórias do sistema antigo (dados/memoria.json) e cria uma
-# nota .md no vault para cada uma, preservando o texto original
-# palavra por palavra.
-#
-# NUNCA é chamado pelo fluxo normal do app — nenhum outro arquivo
-# importa este módulo. O JSON antigo não é apagado nem alterado: se
-# algo der errado, ele continua lá, intacto.
-#
-# Título de cada nota: o sistema antigo guardava só uma frase solta,
-# sem título. O título é derivado do começo da própria frase, que é o
-# melhor que dá para fazer sem inventar informação — o texto completo
-# vai inteiro no corpo, então nada se perde mesmo que o título fique
-# esquisito.
 import json
 import sys
 from datetime import datetime
@@ -25,7 +8,6 @@ from . import config, notas
 
 ARQUIVO_ANTIGO = PASTA_DADOS / "memoria.json"
 
-# Até onde cortar a frase para virar título.
 MAXIMO_TITULO = 60
 
 
@@ -35,8 +17,6 @@ def _titulo_da_frase(texto):
     if not texto:
         return "Memória sem título"
 
-    # Corta na primeira pontuação forte, se ela vier cedo — assim
-    # "O nome do usuário é Massaki." vira um título limpo.
     for marca in (". ", "; ", " - "):
         posicao = texto.find(marca)
 
@@ -48,7 +28,6 @@ def _titulo_da_frase(texto):
     if len(texto) <= MAXIMO_TITULO:
         return texto
 
-    # Corta na última palavra inteira que couber.
     corte = texto[:MAXIMO_TITULO].rsplit(" ", 1)[0]
 
     return corte.strip(" .,;") or texto[:MAXIMO_TITULO]
@@ -146,18 +125,11 @@ def migrar(confirmar=True):
 
         titulo = _titulo_da_frase(texto)
 
-        # Se já existir uma nota com esse título, não sobrescreve: a
-        # migração é para não perder nada, nunca para atropelar algo
-        # que já foi escrito no vault.
         if notas.localizar_por_titulo(titulo, incluir_arquivo=True):
             print(f"[já existe] {titulo}")
             puladas += 1
             continue
 
-        # A data original de criação é preservada. last_used começa
-        # igual, e access_count em 0 — ou seja, a nota entra no vault
-        # com a mesma idade que tinha, sem ganhar sobrevida artificial
-        # nem ser podada no dia seguinte.
         frontmatter = {
             "created": criada_em,
             "last_used": criada_em,

@@ -1,7 +1,3 @@
-# Configuração do pacote de criação de arquivo por voz — cada pacote
-# isolado faz sua própria load_dotenv() (mesmo padrão de
-# rede_jarvis/casa_inteligente), sem depender de
-# jarvis/nucleo/config.py.
 import os
 from pathlib import Path
 
@@ -9,11 +5,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Pastas onde o ALFRED tem permissão de criar arquivo por voz — NUNCA
-# o disco inteiro. Configurável via .env
-# (PASTAS_PERMITIDAS_CRIACAO, caminhos absolutos separados por
-# vírgula); se não configurado, usa um padrão seguro (Área de
-# Trabalho, Documentos e Downloads do usuário atual).
 _PASTAS_PADRAO = [
     Path.home() / "Desktop",
     Path.home() / "Documents",
@@ -21,6 +12,7 @@ _PASTAS_PADRAO = [
 ]
 
 
+# Pasta falada só resolve contra esta lista, nunca como caminho cru.
 def pastas_permitidas():
     valor = os.getenv("PASTAS_PERMITIDAS_CRIACAO", "")
 
@@ -38,8 +30,6 @@ def pastas_permitidas():
     return pastas or list(_PASTAS_PADRAO)
 
 
-# Pasta usada quando o usuário não especifica onde criar o arquivo —
-# sempre a primeira da lista permitida.
 def pasta_padrao():
     pastas = pastas_permitidas()
 

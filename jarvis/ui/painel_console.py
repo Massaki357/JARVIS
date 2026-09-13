@@ -1,25 +1,3 @@
-# Painel de console ao lado do registro de atividade.
-#
-# O registro de atividade mostra o que o jarvis está FAZENDO (status
-# de alto nível: "Capturando tela...", "Chamada iniciada"). Este
-# painel mostra o que está ACONTECENDO por baixo: interrupções de
-# fala, avisos do vigia, falhas de conexão, erros e tracebacks — tudo
-# que até agora só existia no terminal, onde ninguém está olhando na
-# hora em que o problema acontece.
-#
-# Como ele captura tudo sem precisar alterar cada print do projeto:
-# redireciona sys.stdout e sys.stderr. Toda mensagem já existente
-# ([INTERRUPÇÃO], [VIGIA], [CONEXÃO], [MICROFONE], [RESERVA]...) e
-# qualquer traceback aparecem aqui automaticamente, inclusive os
-# vindos de pacotes isolados. O terminal continua recebendo tudo
-# normalmente — a saída original nunca é substituída, só duplicada.
-#
-# Detalhe de thread que torna isso seguro: os prints vêm de várias
-# threads (worker do Gemini, listener MQTT, detector de voz, threads
-# de pacotes), e widget Qt só pode ser tocado na thread da GUI. Por
-# isso a escrita passa por um Signal (_PonteSaida), que o Qt entrega
-# na thread certa por conexão enfileirada — mesmo princípio já usado
-# em jarvis/nucleo/sinalizador.py.
 import sys
 from datetime import datetime
 
@@ -33,26 +11,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# Tokens de cor compartilhados (ver jarvis/ui/estilo.py) — este painel
-# continua se auto-estilizando (ver comentário mais abaixo, no
-# setStyleSheet de self.caixa), mas usa os mesmos hex do resto do app
-# em vez de duplicar valores soltos.
 from jarvis.ui import estilo
 
-# Máximo de linhas mantidas no painel. Passando disso, as mais antigas
-# são descartadas: sem esse limite, uma chamada longa (ou um print em
-# laço) faria o QTextEdit crescer sem parar e travar a interface —
-# seria absurdo um painel de diagnóstico virar a causa do próximo
-# travamento.
 MAXIMO_LINHAS = 600
 
 COR_ERRO = "#ff3044"
 COR_AVISO = "#c9862c"
 COR_INFO = "#8f8388"
 
-# Marcadores que o projeto já usa nos prints, classificados por
-# gravidade. A classificação é só visual — nada de comportamento
-# depende dela.
 MARCADORES_ERRO = (
     "[CONEXÃO]",
     "[MICROFONE]",
@@ -72,15 +38,10 @@ MARCADORES_AVISO = (
 )
 
 
-# Ponte de thread: qualquer thread pode emitir, o slot roda na GUI.
 class _PonteSaida(QObject):
     linha_recebida = Signal(str, str)
 
 
-# Substitui sys.stdout/sys.stderr sem perder o original: escreve nos
-# dois lugares. Acumula até a quebra de linha porque print() faz mais
-# de uma chamada a write() por linha (o texto e depois o "\n"), e
-# emitir cada pedaço geraria linhas picotadas no painel.
 class _RedirecionadorSaida:
     def __init__(self, original, ponte, nivel):
         self._original = original
@@ -89,7 +50,6 @@ class _RedirecionadorSaida:
         self._buffer = ""
 
     def write(self, texto):
-        # O terminal continua recebendo tudo, exatamente como antes.
         if self._original is not None:
             try:
                 self._original.write(texto)
@@ -115,8 +75,6 @@ class _RedirecionadorSaida:
             except Exception:
                 pass
 
-    # Alguns módulos checam isatty/fileno antes de escrever; repassar
-    # evita que um print quebre por causa do redirecionamento.
     def isatty(self):
         try:
             return self._original.isatty()
@@ -129,7 +87,6 @@ class _RedirecionadorSaida:
 
 
 class PainelConsole(QWidget):
-
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -138,8 +95,7 @@ class PainelConsole(QWidget):
 
         self._ponte = _PonteSaida()
 
-        # QueuedConnection explícito: a emissão vem de outra thread na
-        # maioria das vezes, e é isso que garante a entrega na GUI.
+        # Prints chegam de várias threads: só cruzam por Signal com QueuedConnection.
         self._ponte.linha_recebida.connect(
             self.acrescentar,
             Qt.ConnectionType.QueuedConnection,
@@ -161,7 +117,6 @@ class PainelConsole(QWidget):
         self.botao_limpar.setObjectName("botaoConsole")
         self.botao_limpar.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        # Mesmo motivo do estilo da caixa acima.
         self.botao_limpar.setStyleSheet(
             "QPushButton#botaoConsole {"
             "    min-height: 0px;"
@@ -179,16 +134,6 @@ class PainelConsole(QWidget):
         self.caixa.setObjectName("console")
         self.caixa.setReadOnly(True)
 
-        # O estilo é aplicado AQUI, no próprio widget, e não herdado do
-        # ESTILO_GLOBAL de jarvis/ui/estilo.py — por encapsulamento: o
-        # painel se veste sozinho, como o resto da lógica dele. Isso já
-        # foi também uma NECESSIDADE (o antigo ESTILO_GLOBAL usava
-        # cerquilha "#" pra comentar, o que em QSS vira seletor de id e
-        # engole a regra seguinte — 13 das 16 regras de lá estavam
-        # mortas por isso). Esse bug foi corrigido em jarvis/ui/estilo.py,
-        # mas o painel continua se auto-estilizando mesmo assim, agora
-        # só pelo motivo 1 — e usando os mesmos tokens de cor do resto
-        # do app (import estilo), não valores soltos.
         self.caixa.setStyleSheet(
             "QTextEdit#console {"
             f"    color: {estilo.TEXTO_PRIMARIO};"
@@ -199,12 +144,6 @@ class PainelConsole(QWidget):
             '    font-family: "Consolas";'
             "    font-size: 10px;"
             "}"
-            # Variante desabilitada. Precisa ser repetida aqui, por
-            # objectName: em QSS um seletor de ID vence a pseudo-classe
-            # :disabled num seletor de tipo, então a regra
-            # QTextEdit:disabled do ESTILO_GLOBAL não alcança este
-            # widget e ele ficaria idêntico habilitado e desabilitado —
-            # conferido comparando os pixels renderizados.
             "QTextEdit#console:disabled {"
             "    color: #4d4348;"
             "    background-color: #0a0709;"
@@ -216,16 +155,11 @@ class PainelConsole(QWidget):
             "Interrupções, avisos e erros aparecem aqui em tempo real."
         )
 
-        # document().setMaximumBlockCount faz o descarte das linhas
-        # antigas no próprio Qt, sem custo de manipular texto na mão.
         self.caixa.document().setMaximumBlockCount(MAXIMO_LINHAS)
 
         layout.addLayout(cabecalho)
         layout.addWidget(self.caixa, 1)
 
-    # Escreve uma linha. nivel: "erro", "aviso" ou "info".
-    # Só pode ser chamado na thread da GUI — de outra thread, use
-    # escrever_de_qualquer_thread().
     def acrescentar(self, texto, nivel="info"):
         if nivel == "auto" or not nivel:
             nivel = self.classificar(texto)
@@ -237,9 +171,6 @@ class PainelConsole(QWidget):
 
         horario = datetime.now().strftime("%H:%M:%S")
 
-        # Rolagem automática só quando o usuário já está no fim: se
-        # ele subiu para ler algo, o painel não puxa a barra de volta
-        # no meio da leitura.
         barra = self.caixa.verticalScrollBar()
         estava_no_fim = barra.value() >= barra.maximum() - 4
 
@@ -257,7 +188,6 @@ class PainelConsole(QWidget):
         if estava_no_fim:
             barra.setValue(barra.maximum())
 
-    # Segura para chamar de qualquer thread.
     def escrever_de_qualquer_thread(self, texto, nivel="auto"):
         self._ponte.linha_recebida.emit(texto, nivel)
 
@@ -276,15 +206,10 @@ class PainelConsole(QWidget):
     def limpar(self):
         self.caixa.clear()
 
-    # Começa a duplicar sys.stdout/sys.stderr para este painel.
-    # Idempotente: chamar duas vezes não empilha redirecionamentos.
     def capturar_saida_padrao(self):
         if self._stdout_original is not None:
             return
 
-        # Sob pythonw.exe (sem console) sys.stdout pode ser None —
-        # nesse caso o painel vira o ÚNICO destino, que é justamente
-        # quando ele é mais útil.
         self._stdout_original = sys.stdout
         self._stderr_original = sys.stderr
 

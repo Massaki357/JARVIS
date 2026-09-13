@@ -1,27 +1,7 @@
-"""
-Controle de arquivos e pastas da Área de Trabalho do Windows.
-
-Trazido do JARVIS COMPLETO (actions/file_actions.py) e reembalado no
-contrato padrão de pacote isolado deste projeto — ver
-docs/INTEGRATION.md. A lógica de acoes.py é a original, incluindo a
-proteção central do módulo: TUDO passa por _esta_dentro_da_area /
-_resolver_caminho_relativo, então nenhuma operação alcança um caminho
-fora da Área de Trabalho.
-
-Nenhuma função deste pacote exclui arquivo nenhum, e nenhuma
-sobrescreve um item já existente.
-"""
-
-# Usado só para montar as FunctionDeclaration deste pacote — mesmo
-# padrão dos demais pacotes isolados (ver docs/INTEGRATION.md).
 from google.genai import types
 
 from . import acoes
 
-# ============================================================
-# Contrato padrão do projeto (ver docs/INTEGRATION.md): todo pacote de
-# tools expõe obter_function_declarations() e despachar().
-# ============================================================
 
 _FUNCTION_DECLARATIONS = [
     types.FunctionDeclaration(

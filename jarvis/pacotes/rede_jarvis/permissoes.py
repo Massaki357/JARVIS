@@ -2,13 +2,6 @@ import threading
 
 from . import config, notificacoes
 
-# Guarda o "resolvedor" (callback) do pedido de permissão que está
-# aguardando confirmação por voz no momento. Como só existe uma
-# chamada de voz ativa por vez no ALFRED, só há sentido em ter um
-# pedido pendente de confirmação por voz por vez — se um segundo
-# pedido chegar antes do primeiro ser resolvido, ele passa a ser o
-# único que a tool responder_permissao_remota consegue resolver por
-# voz (o primeiro ainda pode ser resolvido pela notificação).
 _resolvedor_voz_atual = None
 _lock_voz = threading.Lock()
 
@@ -28,8 +21,6 @@ def _liberar_pedido_voz(resolver_esperado):
             _resolvedor_voz_atual = None
 
 
-# Chamado pelo dispatch da tool responder_permissao_remota quando o
-# usuário responde por voz a um pedido de permissão anunciado.
 def responder_permissao_por_voz(concedido):
     with _lock_voz:
         resolver = _resolvedor_voz_atual
@@ -45,10 +36,6 @@ def responder_permissao_por_voz(concedido):
     return "Resposta registrada."
 
 
-# Bloqueia (nesta thread de background do listener) até o comando
-# remoto ser permitido, negado, ou até estourar o timeout — usando o
-# primeiro canal que responder entre a notificação do Windows e a
-# confirmação por voz. Timeout = negado por padrão (fail-safe).
 def solicitar_permissao(origem, comando, callback_falar=None):
     if not config.PEDIR_PERMISSAO:
         return True
@@ -57,8 +44,6 @@ def solicitar_permissao(origem, comando, callback_falar=None):
     evento = threading.Event()
 
     def _resolver(concedido):
-        # Só o primeiro canal a responder conta; ignora respostas
-        # atrasadas do outro canal.
         if resultado["valor"] is None:
             resultado["valor"] = concedido
             evento.set()

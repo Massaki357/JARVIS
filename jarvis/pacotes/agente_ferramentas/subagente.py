@@ -1,22 +1,3 @@
-"""
-O sub-agente: uma consulta à Groq que lê o catálogo e diz QUAL
-ferramenta atende ao pedido do cérebro.
-
-Ele não executa nada. Quem executa continua sendo o cérebro, com a
-própria chamada de função — este pacote só devolve a recomendação e
-as instruções. Essa separação é o ponto: executar aqui significaria
-um segundo lugar do projeto despachando ferramentas (o roteamento
-hierárquico já é um), com as travas de segurança de cada tool
-dependendo de qual caminho chamou.
-
-FORMATO DA RESPOSTA: modo JSON do provedor (response_format),
-confirmado ao vivo no openai/gpt-oss-20b antes de este código ser
-escrito. Mas o modo JSON garante SINTAXE, nunca CONTEÚDO: nenhum
-provedor promete que um nome citado lá dentro existe neste projeto,
-então todo nome que volta é conferido contra o catálogo real. Um nome
-inventado é descartado em silêncio, nunca repassado ao cérebro.
-"""
-
 from jarvis.nucleo import prompts
 from jarvis.servicos import agentes
 
@@ -25,9 +6,6 @@ from . import config
 from . import instrucoes
 from . import manual
 
-# Esquema da resposta, exigido do provedor. O sub-agente só pode
-# devolver estas duas chaves — nada de texto solto em volta, nada de
-# campos extras que ninguém vai ler.
 _ESQUEMA_RESPOSTA = {
     "type": "object",
     "properties": {
@@ -48,15 +26,8 @@ _POLITICA = agentes.PoliticaRepeticao(
 )
 
 
+# Todo nome devolvido pelo modelo é conferido contra o catálogo real.
 def _nomes_validos(dados, itens):
-    """
-    Os nomes devolvidos pelo sub-agente que existem DE VERDADE no
-    catálogo, na ordem em que ele os citou, sem duplicatas e cortados
-    no limite configurado.
-
-    Mesma disciplina do roteamento hierárquico: o modelo aponta, o
-    código confere. Um nome que não existe some aqui.
-    """
     brutos = (dados or {}).get("ferramentas")
 
     if not isinstance(brutos, list):
@@ -88,14 +59,6 @@ def _nomes_validos(dados, itens):
 
 
 def buscar(pedido):
-    """
-    Recebe o pedido em linguagem natural que o CÉREBRO escreveu (ex.:
-    "o usuário pediu para verificar a tela dele") e devolve a string
-    pronta para voltar como resultado da tool.
-
-    Nunca levanta exceção: toda saída é um dos três textos de
-    instrucoes.py — recomendação, nenhuma ferramenta, ou falha.
-    """
     pedido = " ".join(str(pedido or "").split())
 
     if not pedido:
@@ -154,10 +117,6 @@ def buscar(pedido):
     )
 
     if not nomes:
-        # Duas situações caem aqui e as duas terminam igual: o
-        # sub-agente disse honestamente que nada serve, ou citou só
-        # nomes inexistentes. Nos dois casos não há ferramenta para
-        # recomendar, e adivinhar uma seria pior do que admitir.
         return instrucoes.nenhuma_ferramenta(motivo)
 
     recomendada = catalogo.procurar(itens, nomes[0])

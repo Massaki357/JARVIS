@@ -1,34 +1,3 @@
-# Catálogo curto das ferramentas de pacote (as 45 registradas em
-# jarvis/nucleo/registro_pacotes.py — NUNCA as 15 nativas de
-# jarvis/cerebro/gemini/cliente_live.py, que dependem de estado de sessão de
-# um GeminiLiveWorker vivo e não fazem sentido despachadas por uma
-# chamada de texto sem sessão).
-#
-# Por que escrito à mão, e não derivado automaticamente das
-# descrições completas de cada FunctionDeclaration: as descrições
-# completas não têm uma estrutura consistente onde a primeira frase
-# já é um resumo do que a função faz — boa parte delas começa com a
-# ressalva de uso ("Use esta função somente quando..."), não com a
-# ação em si. Uma extração posicional ("primeira frase") acertaria
-# às vezes e erraria bastante, então cada resumo aqui foi escrito a
-# partir da descrição completa real, mantendo só o que a ferramenta
-# FAZ — nunca as travas de segurança, que continuam intactas e
-# completas no schema da etapa 2 (ver esquema_groq.py).
-#
-# Isto é uma duplicação deliberada da mesma informação que os
-# schemas completos já carregam — mesmo padrão já aceito neste
-# projeto para as declarações nativas (cliente_live.py e
-# cliente_realtime.py mantêm cada um sua própria cópia dos nomes
-# nativos, sem um módulo compartilhado). Para essa duplicação não
-# desatualizar em silêncio quando um pacote ganhar/perder/renomear
-# uma ferramenta, ver verificar_catalogo_atualizado() no fim deste
-# arquivo.
-#
-# A ORDEM deste dicionário é o que vira o texto fixo da etapa 1 (via
-# montar_texto_catalogo) — não reordenar sem necessidade: é esse
-# texto que precisa ficar idêntico entre requisições pra se
-# beneficiar do cache automático de prompt da Groq.
-
 CATEGORIAS = (
     ("controle_apps", "Controle de aplicativos"),
     ("arquivos", "Arquivos e Área de Trabalho"),
@@ -45,7 +14,6 @@ CATEGORIAS = (
 )
 
 CATALOGO_CURTO = {
-    # --- controle_apps ---
     "abrir_aplicativo": (
         "controle_apps",
         "Abre programas, pastas do sistema ou locais do Windows, "
@@ -58,7 +26,6 @@ CATALOGO_CURTO = {
         "pelo nome.",
     ),
 
-    # --- arquivos ---
     "criar_arquivo": (
         "arquivos",
         "Cria um arquivo de texto simples numa pasta permitida "
@@ -102,7 +69,6 @@ CATALOGO_CURTO = {
         "colado.",
     ),
 
-    # --- navegacao_web ---
     "pesquisar_no_navegador": (
         "navegacao_web",
         "Abre uma pesquisa no Google pelo navegador padrão.",
@@ -118,14 +84,12 @@ CATALOGO_CURTO = {
         "o tempo (cotação, clima, placar, notícia).",
     ),
 
-    # --- automacao_residencial ---
     "controlar_dispositivo_casa": (
         "automacao_residencial",
         "Liga ou desliga um dispositivo da casa inteligente "
         "(interruptor, tomada, ar-condicionado, etc.).",
     ),
 
-    # --- comunicacao ---
     "enviar_comando_remoto": (
         "comunicacao",
         "Executa uma ação ou envia um arquivo para outro "
@@ -150,7 +114,6 @@ CATALOGO_CURTO = {
         "Envia uma mensagem num canal de texto do Discord.",
     ),
 
-    # --- administracao ---
     "executar_comando_admin": (
         "administracao",
         "Executa um comando de terminal do Windows com privilégio "
@@ -167,7 +130,6 @@ CATALOGO_CURTO = {
         "as variáveis do .env.",
     ),
 
-    # --- visao_camera ---
     "descrever_tela": (
         "visao_camera",
         "Olha a tela do computador e descreve em voz alta o que "
@@ -201,7 +163,6 @@ CATALOGO_CURTO = {
         "Fecha a janela de vídeo ao vivo da webcam.",
     ),
 
-    # --- memoria ---
     "salvar_memoria": (
         "memoria",
         "Guarda permanentemente uma informação que o usuário "
@@ -221,7 +182,6 @@ CATALOGO_CURTO = {
         "Lista os títulos de tudo o que está guardado na memória.",
     ),
 
-    # --- produtividade ---
     "abrir_chat": (
         "produtividade",
         "Abre uma janela de chat de texto conectada à mesma "
@@ -246,7 +206,6 @@ CATALOGO_CURTO = {
         "Cancela um compromisso da agenda.",
     ),
 
-    # --- financeiro ---
     "consultar_cotacao_acao": (
         "financeiro",
         "Consulta a cotação atual de uma ou mais ações (preço, "
@@ -258,7 +217,6 @@ CATALOGO_CURTO = {
         "específica.",
     ),
 
-    # --- automacao_pc ---
     "rolar_pagina": (
         "automacao_pc",
         "Rola a janela ou página sob o ponteiro do mouse, para "
@@ -288,7 +246,6 @@ CATALOGO_CURTO = {
         "do usuário e clica nele.",
     ),
 
-    # --- delegacao ---
     "delegar_tarefa": (
         "delegacao",
         "Delega uma tarefa de texto pontual (pergunta rápida, "
@@ -312,19 +269,7 @@ CATALOGO_CURTO = {
 }
 
 
-# Ferramentas que EXISTEM (e por isso estão no dicionário acima, para
-# a tela de perfis mostrar um resumo delas e para
-# verificar_catalogo_atualizado ficar em dia) mas que NUNCA devem ser
-# oferecidas à etapa 1 deste roteador.
-#
-# Hoje as três tools de jarvis/pacotes/agente_ferramentas/, e o motivo
-# é que elas seriam circulares AQUI: aquele pacote existe para um
-# cérebro com tool calling nativo perguntar "qual ferramenta eu uso?"
-# e depois executar o que descobriu. A etapa 1 deste roteador JÁ É
-# essa pergunta, e a etapa 2 JÁ É essa execução — apontá-las
-# significaria gastar uma chamada de LLM para descobrir que deve
-# gastar outra com a mesma pergunta, e o resultado seria um texto de
-# instruções virando a resposta falada ao usuário.
+# Circulares aqui: a etapa 1 já é a pergunta 'qual ferramenta'.
 FERRAMENTAS_FORA_DO_ROTEAMENTO = {
     "buscar_ferramenta",
     "executar_ferramenta",
@@ -332,12 +277,6 @@ FERRAMENTAS_FORA_DO_ROTEAMENTO = {
 }
 
 
-# Monta o texto fixo do catálogo curto, agrupado por categoria na
-# ordem de CATEGORIAS, listando as ferramentas na ordem em que
-# aparecem em CATALOGO_CURTO. Chamado uma vez (module-level, ver
-# TEXTO_CATALOGO abaixo) — o resultado é sempre o mesmo texto, byte a
-# byte, entre chamadas, o que é exatamente o que o cache automático
-# de prompt da Groq precisa pra dar hit.
 def montar_texto_catalogo():
     por_categoria = {chave: [] for chave, _rotulo in CATEGORIAS}
 
@@ -366,18 +305,9 @@ def montar_texto_catalogo():
     return "\n\n".join(blocos)
 
 
-# Construído uma única vez, na importação do módulo — texto estável
-# reaproveitado por roteador.py em toda chamada da etapa 1.
 TEXTO_CATALOGO = montar_texto_catalogo()
 
 
-# Confere se CATALOGO_CURTO ainda bate com as ferramentas de pacote
-# realmente registradas em PACOTES_REGISTRADOS. Nunca lança — só
-# imprime um aviso, porque um catálogo levemente desatualizado não
-# deve derrubar o roteador (uma ferramenta faltando no catálogo
-# simplesmente nunca é oferecida na etapa 1; uma sobrando é apenas
-# ignorada, já que roteador.py sempre filtra os nomes que a etapa 1
-# apontar contra o catálogo).
 def verificar_catalogo_atualizado(pacotes_registrados):
     nomes_reais = set()
 

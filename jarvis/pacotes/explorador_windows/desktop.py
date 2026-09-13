@@ -1,20 +1,3 @@
-# Obtém o item selecionado na ÁREA DE TRABALHO do Windows — diferente
-# de uma janela do Explorer aberta (ver selecao.py): a Área de
-# Trabalho não aparece na coleção Shell.Application().Windows(), é
-# uma listview (SysListView32) dentro de Progman/WorkerW, pertencente
-# ao processo do explorer.exe (não ao nosso próprio processo).
-#
-# Confirmado ao vivo, com uma seleção real feita à mão na Área de
-# Trabalho, antes de considerar esta abordagem pronta — não foi
-# adivinhada: LVM_GETNEXTITEM(-1, LVNI_SELECTED) devolve o índice do
-# item selecionado de qualquer processo via SendMessage comum (só
-# retorna um número), mas o NOME do item (LVM_GETITEMTEXTW) exige um
-# buffer que precisa existir dentro do espaço de memória do processo
-# DONO da listview — por isso o
-# VirtualAllocEx/WriteProcessMemory/ReadProcessMemory abaixo, técnica
-# clássica e documentada pra ler texto de um controle ListView de
-# outro processo (a mesma usada por ferramentas de automação como o
-# pywinauto).
 import ctypes
 from ctypes import wintypes
 from pathlib import Path
@@ -24,12 +7,6 @@ import win32gui
 import win32process
 from win32comext.shell import shell, shellcon
 
-# Mensagens/flags de ListView usados aqui — LVM_FIRST = 0x1000.
-# LVM_GETITEMTEXTW é a variante Unicode (LVM_FIRST + 115), diferente
-# de LVM_GETITEMTEXT/"A" (LVM_FIRST + 45, a que o módulo commctrl do
-# pywin32 costuma expor por padrão) — como lemos via SendMessageW
-# explicitamente, é a constante Unicode que precisa ser usada aqui,
-# por isso definida direto em vez de importada de commctrl.
 _LVM_FIRST = 0x1000
 _LVM_GETNEXTITEM = _LVM_FIRST + 12
 _LVM_GETITEMTEXTW = _LVM_FIRST + 115
@@ -44,8 +21,6 @@ _MEM_RESERVE = 0x2000
 _MEM_RELEASE = 0x8000
 _PAGE_READWRITE = 0x04
 
-# Em caracteres (WCHAR) — folgado o suficiente pra qualquer nome de
-# arquivo real do Windows (limite do próprio SO é 255).
 _TAMANHO_BUFFER_TEXTO = 512
 
 
@@ -64,11 +39,6 @@ class _LVITEMW(ctypes.Structure):
     ]
 
 
-# Percorre Progman e as janelas WorkerW procurando
-# SHELLDLL_DefView -> SysListView32 (no Windows moderno, a
-# SHELLDLL_DefView às vezes fica numa WorkerW irmã do Progman em vez
-# do próprio Progman — checa as duas). Retorna o hwnd da listview, ou
-# None se não encontrar.
 def _encontrar_hwnd_listview_area_trabalho():
     candidatos_pai = []
 
@@ -117,10 +87,6 @@ def _indices_selecionados(hwnd_listview):
     return indices
 
 
-# Lê o texto (nome exibido) do item indice na listview, que pertence
-# a outro processo (explorer.exe) — por isso todo o
-# alloc/write/send/read abaixo acontece contra um handle desse
-# processo, nunca do nosso próprio.
 def _ler_texto_item_remoto(hwnd_listview, indice):
     _, pid = win32process.GetWindowThreadProcessId(hwnd_listview)
 
@@ -169,7 +135,7 @@ def _ler_texto_item_remoto(hwnd_listview, indice):
             raise OSError(f"VirtualAllocEx falhou: {ctypes.WinError()}")
 
         item = _LVITEMW()
-        item.mask = 1  # LVIF_TEXT
+        item.mask = 1
         item.iItem = indice
         item.iSubItem = 0
         item.pszText = ctypes.cast(endereco_texto, wintypes.LPWSTR)
@@ -211,10 +177,6 @@ def _ler_texto_item_remoto(hwnd_listview, indice):
         kernel32.CloseHandle(h_processo)
 
 
-# Mesma técnica (SHGetKnownFolderPath) já usada e confirmada em
-# jarvis/servicos/visao/captura_tela.py — nunca hardcoded, porque a
-# Área de Trabalho pode estar redirecionada (ex: sincronização do
-# OneDrive).
 def _obter_pasta_area_trabalho():
     return Path(
         shell.SHGetKnownFolderPath(
@@ -225,15 +187,6 @@ def _obter_pasta_area_trabalho():
     )
 
 
-# Resolve o NOME EXIBIDO de um ícone da Área de Trabalho pro caminho
-# real do arquivo/pasta/atalho dentro da pasta real da Área de
-# Trabalho — nunca aceita ou monta um caminho arbitrário, só resolve
-# contra o que já existe de fato ali. Cobre o caso comum de extensão
-# oculta (o nome exibido não tem ".txt"/".lnk"), tentando em ordem:
-# nome exato, depois nome + qualquer extensão. Se a única
-# correspondência for um atalho (.lnk), resolve pro alvo real do
-# atalho quando possível — normalmente é isso que o usuário quer
-# dizer com "esse arquivo" ao apontar pro ícone.
 def _resolver_nome_para_caminho(nome_exibido, pasta_area_trabalho):
     candidato_exato = pasta_area_trabalho / nome_exibido
 
@@ -275,11 +228,6 @@ def _resolver_nome_para_caminho(nome_exibido, pasta_area_trabalho):
     return str(caminho_lnk)
 
 
-# Retorna (sucesso: bool, resultado), no mesmo formato de
-# selecao.obter_arquivo_selecionado(): sucesso=True -> resultado é
-# uma lista de caminhos absolutos dos itens selecionados na Área de
-# Trabalho; sucesso=False -> resultado é uma mensagem em português
-# explicando por que nada foi encontrado. Nunca adivinha.
 def obter_item_selecionado_area_trabalho():
     try:
         hwnd_listview = _encontrar_hwnd_listview_area_trabalho()

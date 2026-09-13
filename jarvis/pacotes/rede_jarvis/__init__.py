@@ -1,25 +1,8 @@
 from . import config, mqtt_listener, permissoes, transferencia_arquivos
 
-# Usado só para montar as FunctionDeclaration deste pacote — ver
-# obter_function_declarations() logo abaixo. Isolar essa dependência
-# aqui (em vez de em cada submódulo) mantém o resto do pacote livre
-# de qualquer referência ao SDK do Gemini.
 from google.genai import types
 
 
-# Ponto de entrada único do pacote. Sobe o listener do MQTT em
-# background (idempotente — chamadas repetidas não conectam uma
-# segunda vez) e (re)registra os callbacks usados para o Jarvis
-# "falar" algo por voz e para injetar frames de visualização remota
-# na sessão Live local.
-#
-# Deve ser chamada a partir da thread principal (GUI) — prepara
-# também a ponte usada pelo diálogo de "salvar arquivo recebido"
-# (ver transferencia_arquivos.preparar_ponte_gui). Isso é wiring
-# específico deste pacote (sessão Gemini/callbacks) que não faz parte
-# do contrato genérico obter_function_declarations()/despachar() — ver
-# docs/INTEGRATION.md na raiz do projeto para o passo a passo completo de
-# como religar este pacote a um novo arquivo cliente.
 def iniciar_rede_jarvis(callback_falar=None, callback_frame_remoto=None):
     transferencia_arquivos.preparar_ponte_gui()
 
@@ -30,13 +13,6 @@ def iniciar_rede_jarvis(callback_falar=None, callback_frame_remoto=None):
 
     mqtt_listener.iniciar_em_thread()
 
-
-# ============================================================
-# Contrato padrão do projeto (ver docs/INTEGRATION.md): todo pacote de
-# tools expõe obter_function_declarations() e despachar(). O cliente
-# Gemini Live só precisa conhecer essas duas funções — nunca os
-# nomes de tool individuais deste pacote.
-# ============================================================
 
 _FUNCTION_DECLARATIONS = [
     types.FunctionDeclaration(
@@ -159,19 +135,10 @@ _FUNCTION_DECLARATIONS = [
 ]
 
 
-# Retorna a lista de FunctionDeclaration deste pacote. O cliente
-# Gemini Live só faz tools.extend(rede_jarvis.obter_function_declarations())
-# — nunca precisa listar os nomes das tools individualmente.
 def obter_function_declarations():
     return list(_FUNCTION_DECLARATIONS)
 
 
-# Se reconhecer nome_funcao, executa e retorna o resultado (sempre
-# uma string, pronta para o Jarvis falar). Se não reconhecer, retorna
-# None — o chamador deve tentar outro pacote ou tratar como não
-# encontrado. Síncrona/bloqueante de propósito: quem chama (o cliente
-# Gemini Live) é responsável por rodar isso fora do event loop (ex:
-# asyncio.to_thread), igual já fazia antes desta função existir.
 def despachar(nome_funcao, argumentos):
     argumentos = argumentos or {}
 
@@ -193,10 +160,6 @@ def despachar(nome_funcao, argumentos):
     return None
 
 
-# "enviar_arquivo" é tratado localmente: é a própria máquina que
-# envia um arquivo que ela tem, não um comando para a máquina remota
-# executar. Todos os outros comandos são de fato despachados pelo
-# MQTT para maquina_destino executar e responder.
 def enviar_comando_remoto(maquina_destino, comando, argumentos=None):
     if comando == "enviar_arquivo":
         argumentos_com_destino = dict(argumentos or {})
@@ -221,7 +184,5 @@ def responder_permissao_por_voz(concedido):
     return permissoes.responder_permissao_por_voz(concedido)
 
 
-# Local e imediato — não faz nenhuma chamada de rede (ver
-# mqtt_listener.listar_maquinas_online).
 def listar_maquinas_online():
     return mqtt_listener.listar_maquinas_online()

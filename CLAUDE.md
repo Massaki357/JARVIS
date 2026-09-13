@@ -4,7 +4,7 @@ ALFRED is a Windows desktop voice assistant built with PySide6 and the Gemini Li
 
 The finished course project (`JARVIS COMPLETO/` in the repo root) has since been adapted into this one: its nine `actions/` modules, its visual click locator, its animated sphere UI, its session resumption/reconnection, and its OpenAI Realtime provider all live here now (see the sections below). `JARVIS COMPLETO/` itself is kept as the reference copy and is not imported by anything.
 
-This is a learning/course project (`[CURSO]` comments throughout explain Python/Qt/asyncio concepts for the author). Comments are intentionally verbose for teaching purposes; match the existing density if adding to files that already have it, but don't add new `[CURSO]`-style comments yourself.
+**Comments are minimal, by the user's explicit decision.** Every explanatory comment and docstring was removed from the Python code (13.528 lines, with the AST of every file verified identical before and after). What remains is a single `#` line placed exactly where the code alone would hide a trap — "never do X here", usually pointing to the `docs/*.md` that explains why. **Don't add explanatory comments or docstrings back**, and don't restate what the code already says: the *why* belongs in the area's `docs/*.md`, which is read before editing (see below). A new trap marker is fine — one line, only when a plausible cleanup edit would silently break something. `[CURSO]` teaching comments no longer exist.
 
 ## Setup and running
 
