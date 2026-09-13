@@ -122,6 +122,11 @@ LATENCIA_SAIDA = "high"
 
 TIMEOUT_ESCRITA_AUDIO_SEGUNDOS = 10
 
+# Pausa só hiberna com a despedida registrada no servidor; senão a retomada refaz o turno e pausa de novo.
+LIMITE_ESPERA_PAUSA_SEGUNDOS = 15
+
+LIMITE_DESPEDIDA_TOCANDO_SEGUNDOS = 10
+
 INTERVALO_VIGILANCIA_SEGUNDOS = 5.0
 LIMITE_FALANDO_PRESO_SEGUNDOS = 60.0
 LIMITE_FUNCAO_VISUAL_PRESA_SEGUNDOS = 120.0
@@ -164,6 +169,9 @@ class GeminiLiveWorker(QThread):
         self.ativado_por_voz = ativado_por_voz
 
         self.hibernacao_solicitada = False
+
+        self.fase_pausa = None
+        self.pausa_registrada = None
 
         self.session_handle = session_handle
 
@@ -1877,6 +1885,12 @@ class GeminiLiveWorker(QThread):
                             novo_handle
                         )
 
+                        if (
+                            self.fase_pausa == "aguardando_handle"
+                            and self.pausa_registrada is not None
+                        ):
+                            self.pausa_registrada.set()
+
                 # go_away é renovação de rotina: nunca marcar encerrou_por_falha.
                 aviso_encerramento = getattr(resposta, "go_away", None)
 
@@ -1933,6 +1947,9 @@ class GeminiLiveWorker(QThread):
 
                 if conteudo and conteudo.turn_complete:
                     self.silenciar_audio_ate_fim_turno = False
+
+                    if self.fase_pausa == "aguardando_turno":
+                        self.fase_pausa = "aguardando_handle"
 
                     if self._buffer_transcricao_atual:
                         obter_sinalizador().resposta_texto_recebida.emit(
@@ -2928,9 +2945,13 @@ class GeminiLiveWorker(QThread):
 
     async def encerrar_apos_resposta(self):
         try:
-            await asyncio.sleep(
-                2.8
-            )
+            if self.hibernacao_solicitada:
+                await self._aguardar_pausa_registrada()
+
+            else:
+                await asyncio.sleep(
+                    2.8
+                )
 
             if self.ativo:
                 if self.hibernacao_solicitada:
@@ -2943,6 +2964,34 @@ class GeminiLiveWorker(QThread):
 
         except asyncio.CancelledError:
             pass
+
+    async def _aguardar_pausa_registrada(self):
+        self.pausa_registrada = asyncio.Event()
+        self.fase_pausa = "aguardando_turno"
+
+        try:
+            await asyncio.wait_for(
+                self.pausa_registrada.wait(),
+                timeout=LIMITE_ESPERA_PAUSA_SEGUNDOS,
+            )
+
+        except asyncio.TimeoutError:
+            print(
+                "[PAUSA] O servidor não confirmou a despedida em "
+                f"{LIMITE_ESPERA_PAUSA_SEGUNDOS}s; pausando mesmo assim "
+                "(a retomada pode repetir a despedida)."
+            )
+
+        finally:
+            self.fase_pausa = None
+            self.pausa_registrada = None
+
+        limite = time.monotonic() + LIMITE_DESPEDIDA_TOCANDO_SEGUNDOS
+
+        while self.alfred_falando and time.monotonic() < limite:
+            await asyncio.sleep(
+                0.1
+            )
 
     async def verificar_inatividade(self):
         try:
