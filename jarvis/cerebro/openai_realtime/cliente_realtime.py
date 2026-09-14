@@ -36,6 +36,7 @@ from jarvis.servicos.visao.captura_tela import (
     capturar_tela_bytes,
 )
 from jarvis.servicos.visao.captura_camera import capturar_camera_bytes
+from jarvis.servicos import aviso_ferramenta
 
 from jarvis.pacotes import ativacao_voz
 
@@ -78,6 +79,8 @@ LIMITE_TAREFAS_FUNCAO_SIMULTANEAS = 4
 ATRASO_ENCERRAMENTO_SEGUNDOS = 2.8
 
 MAXIMO_MENSAGENS_TRANSCRICAO = 12
+
+TAMANHO_BLOCO_AVISO = 4800
 
 FUNCTION_DECLARATIONS_NATIVAS = [
     types.FunctionDeclaration(
@@ -162,6 +165,10 @@ class OpenAIRealtimeWorker(QThread):
 
         # Referência obrigatória: o asyncio só guarda referência fraca à task (CLAUDE.md).
         self.tarefas_funcao_ativas = []
+
+        self.tarefas_aviso = set()
+        self.fila_saida_atual = None
+        self.voltar_status_ouvindo = False
 
         self.processando_ferramenta = False
 
@@ -437,6 +444,7 @@ class OpenAIRealtimeWorker(QThread):
 
         fila_microfone = asyncio.Queue(maxsize=LIMITE_FILA_MICROFONE)
         fila_saida = asyncio.Queue()
+        self.fila_saida_atual = fila_saida
 
         memorias_atuais = await asyncio.to_thread(
             memoria_obsidian.contexto_inicial
@@ -777,6 +785,19 @@ class OpenAIRealtimeWorker(QThread):
             elif tipo == "response.done":
                 self.silenciar_audio_ate_fim_turno = False
 
+                if (
+                    self.voltar_status_ouvindo
+                    and not self.tarefas_funcao_ativas
+                    and not self.processando_ferramenta
+                    and not self.hibernacao_solicitada
+                    and self.tarefa_encerramento is None
+                ):
+                    self.voltar_status_ouvindo = False
+
+                    self.status_recebido.emit(
+                        f"{obter_nome_jarvis()} está ouvindo."
+                    )
+
                 self._fechar_turno_da_transcricao()
 
             elif tipo == "error":
@@ -898,7 +919,27 @@ class OpenAIRealtimeWorker(QThread):
     ):
         self.processando_ferramenta = True
         self.alfred_falando = True
+        self.voltar_status_ouvindo = True
         self.limpar_fila_microfone(fila_microfone)
+
+        nome_exibido = (
+            str(args.get("nome") or nome)
+            if nome == "executar_ferramenta"
+            else nome
+        )
+
+        rastrear = nome != "ler_instrucao_ferramenta"
+
+        if rastrear:
+            print(f"[FERRAMENTA] Executando '{nome_exibido}'.")
+
+            self.status_recebido.emit(
+                f"Executando a ferramenta {nome_exibido}..."
+            )
+
+        concluida = asyncio.Event()
+
+        self._agendar_aviso_de_demora(concluida, nome, args)
 
         try:
             encerrar_depois = False
@@ -927,6 +968,16 @@ class OpenAIRealtimeWorker(QThread):
 
             else:
                 resultado = await self._despachar_para_pacotes(nome, args)
+
+            concluida.set()
+
+            if rastrear:
+                resumo = " ".join(str(resultado).split())
+
+                print(
+                    f"[FERRAMENTA] '{nome_exibido}' terminou: "
+                    f"{resumo[:140]}"
+                )
 
             async with self.lock_envio:
                 await self._enviar_para_sessao(
@@ -962,9 +1013,62 @@ class OpenAIRealtimeWorker(QThread):
             )
 
         finally:
+            concluida.set()
             self.processando_ferramenta = False
             self.alfred_falando = False
             self.limpar_fila_microfone(fila_microfone)
+
+    def _agendar_aviso_de_demora(self, concluida, nome, args):
+        nome_aviso = aviso_ferramenta.ferramenta_do_aviso(
+            [(nome, args)],
+            TOOLS_SILENCIOSAS,
+        )
+
+        if not nome_aviso or self.fila_saida_atual is None:
+            return
+
+        tarefa = asyncio.create_task(
+            self._tocar_aviso_de_demora(concluida, nome_aviso)
+        )
+
+        self.tarefas_aviso.add(tarefa)
+        tarefa.add_done_callback(self.tarefas_aviso.discard)
+
+    async def _tocar_aviso_de_demora(self, concluida, nome):
+        try:
+            await asyncio.wait_for(
+                concluida.wait(),
+                timeout=aviso_ferramenta.LIMITE_SEGUNDOS,
+            )
+            return
+
+        except asyncio.TimeoutError:
+            pass
+
+        if not self.ativo:
+            return
+
+        pcm = aviso_ferramenta.pcm_do_aviso(nome)
+
+        if not pcm:
+            print(
+                f"[FERRAMENTA] '{nome}' está demorando, mas não há áudio "
+                "de aviso gerado para ela (python -m "
+                "jarvis.cerebro.gemini.gerador_avisos)."
+            )
+
+            return
+
+        print(
+            f"[FERRAMENTA] '{nome}' passou de "
+            f"{aviso_ferramenta.LIMITE_SEGUNDOS:.1f}s — tocando o aviso "
+            "de execução."
+        )
+
+        for inicio in range(0, len(pcm), TAMANHO_BLOCO_AVISO):
+            await self.fila_saida_atual.put(
+                (None, pcm[inicio:inicio + TAMANHO_BLOCO_AVISO])
+            )
 
     async def _despachar_para_pacotes(self, nome, args):
         if nome in TOOLS_QUE_PRECISAM_DE_IMAGEM:
@@ -1201,6 +1305,7 @@ class OpenAIRealtimeWorker(QThread):
 
         self.processando_ferramenta = True
         self.alfred_falando = True
+        self.voltar_status_ouvindo = True
 
         try:
             resultado = await self.processar_funcao_visual(nome)

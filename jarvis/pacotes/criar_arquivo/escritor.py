@@ -9,6 +9,20 @@ LIMITE_CARACTERES_CONTEUDO = 5000
 
 _EXTENSAO_PADRAO = "txt"
 
+# O Windows grava as pastas em inglês; o usuário e o modelo falam em português.
+_NOMES_EM_PORTUGUES = {
+    "desktop": ("area de trabalho",),
+    "documents": ("documentos", "meus documentos"),
+    "downloads": ("transferencias",),
+}
+
+_NOME_EXIBIDO = {
+    "desktop": "Área de Trabalho",
+    "documents": "Documentos",
+}
+
+_MINIMO_CARACTERES_PARCIAL = 4
+
 
 def _remover_acentos(texto):
     texto = unicodedata.normalize("NFD", texto)
@@ -66,20 +80,47 @@ def _caminho_sem_sobrescrever(caminho):
     return candidato
 
 
+def _normalizar(texto):
+    return " ".join(_remover_acentos(str(texto or "")).lower().split())
+
+
+def _nomes_da_pasta(pasta):
+    nome = _normalizar(pasta.name)
+
+    return (nome,) + _NOMES_EM_PORTUGUES.get(nome, ())
+
+
 def _resolver_pasta_falada(pasta_falada, permitidas):
-    alvo = _remover_acentos(pasta_falada).strip().lower()
+    alvo = _normalizar(pasta_falada)
+
+    if not alvo:
+        return None
 
     for pasta in permitidas:
-        if _remover_acentos(pasta.name).strip().lower() == alvo:
+        if alvo in _nomes_da_pasta(pasta):
             return pasta
 
     for pasta in permitidas:
-        nome_pasta = _remover_acentos(pasta.name).strip().lower()
-
-        if alvo in nome_pasta or nome_pasta in alvo:
-            return pasta
+        for nome_pasta in _nomes_da_pasta(pasta):
+            if nome_pasta in alvo or (
+                len(alvo) >= _MINIMO_CARACTERES_PARCIAL and alvo in nome_pasta
+            ):
+                return pasta
 
     return None
+
+
+def _descrever_permitidas(permitidas):
+    descricoes = []
+
+    for pasta in permitidas:
+        exibido = _NOME_EXIBIDO.get(_normalizar(pasta.name))
+
+        descricoes.append(
+            f"{exibido} ({pasta.name})" if exibido else pasta.name
+        )
+
+    return ", ".join(descricoes)
 
 
 def criar_arquivo(nome, conteudo, pasta_falada=None, extensao="txt"):
@@ -87,8 +128,8 @@ def criar_arquivo(nome, conteudo, pasta_falada=None, extensao="txt"):
 
     if not nome_seguro:
         return False, (
-            "Nome de arquivo inválido — não sobrou nada depois de "
-            "remover caracteres não permitidos."
+            "NÃO criei o arquivo: nome de arquivo inválido — não sobrou "
+            "nada depois de remover caracteres não permitidos."
         )
 
     permitidas = config.pastas_permitidas()
@@ -97,11 +138,10 @@ def criar_arquivo(nome, conteudo, pasta_falada=None, extensao="txt"):
         pasta_destino = _resolver_pasta_falada(pasta_falada, permitidas)
 
         if pasta_destino is None:
-            nomes_permitidos = ", ".join(p.name for p in permitidas)
-
             return False, (
-                f"'{pasta_falada}' não é uma pasta permitida pra criar "
-                f"arquivo. Pastas permitidas: {nomes_permitidos}."
+                f"NÃO criei o arquivo: '{pasta_falada}' não é uma pasta "
+                "permitida pra criar arquivo. Pastas permitidas: "
+                f"{_descrever_permitidas(permitidas)}."
             )
 
     else:
@@ -116,8 +156,8 @@ def criar_arquivo(nome, conteudo, pasta_falada=None, extensao="txt"):
 
     if not permitido:
         return False, (
-            f"'{pasta_destino}' não está entre as pastas permitidas "
-            "pra criar arquivo."
+            f"NÃO criei o arquivo: '{pasta_destino}' não está entre as "
+            "pastas permitidas pra criar arquivo."
         )
 
     extensao_segura = _extensao_segura(extensao)
@@ -134,7 +174,7 @@ def criar_arquivo(nome, conteudo, pasta_falada=None, extensao="txt"):
     )
 
     if pasta_destino_resolvida not in caminho_arquivo.resolve().parents:
-        return False, "Caminho de destino inválido."
+        return False, "NÃO criei o arquivo: caminho de destino inválido."
 
     caminho_final = _caminho_sem_sobrescrever(caminho_arquivo)
 
@@ -142,7 +182,7 @@ def criar_arquivo(nome, conteudo, pasta_falada=None, extensao="txt"):
         caminho_final.write_text(conteudo, encoding="utf-8")
 
     except OSError as erro:
-        return False, f"Falha ao criar o arquivo: {erro}"
+        return False, f"NÃO criei o arquivo: falha ao gravar ({erro})."
 
     mensagem = (
         f"Arquivo '{caminho_final.name}' criado em "

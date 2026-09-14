@@ -2410,9 +2410,12 @@ def testar_segunda_opiniao_provedor():
         "MISTRAL_API_KEY não é mais obrigatória na tela de configurações",
     )
 
+    from jarvis.nucleo import modelos
+
     checar(
-        "IDENTIFICACAO_VISUAL_MODELO_GEMINI" in campos,
-        "e o modelo do Gemini é configurável",
+        config_2op.MODELO_GEMINI
+        == modelos.modelo("subagentes.identificacao_visual.gemini"),
+        "e o modelo do Gemini vem do config.json",
     )
 
 

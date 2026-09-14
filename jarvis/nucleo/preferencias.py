@@ -70,16 +70,28 @@ def ler_preferencia(chave, padrao=None):
     return _ler_bloco().get(chave, padrao)
 
 
+# Reescreve o arquivo inteiro: as outras seções (ex.: "modelos") precisam voltar junto.
 def salvar_preferencia(chave, valor):
     bloco = _ler_bloco()
     bloco[chave] = valor
+
+    try:
+        dados = json.loads(_CAMINHO_CONFIG.read_text(encoding="utf-8"))
+
+    except (OSError, json.JSONDecodeError):
+        dados = {}
+
+    if not isinstance(dados, dict):
+        dados = {}
+
+    dados["config"] = [bloco]
 
     temporario = _CAMINHO_CONFIG.with_suffix(".json.tmp")
 
     try:
         temporario.write_text(
             json.dumps(
-                {"config": [bloco]},
+                dados,
                 ensure_ascii=False,
                 indent=2,
             ),

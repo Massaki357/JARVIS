@@ -2,6 +2,8 @@ from dotenv import load_dotenv
 
 import os
 
+from jarvis.nucleo import modelos
+
 load_dotenv()
 
 GROQ_API_KEY = os.getenv(
@@ -22,25 +24,13 @@ GEMINI_API_KEY = os.getenv(
 
 TIMEOUT_SEGUNDOS = 8
 
-MODELO_GROQ = os.getenv(
-    "DELEGACAO_MODELO_GROQ",
-    "openai/gpt-oss-20b",
-)
+MODELO_GROQ = modelos.modelo("subagentes.delegacao_ia.groq")
 
-MODELO_CEREBRAS = os.getenv(
-    "DELEGACAO_MODELO_CEREBRAS",
-    "gpt-oss-120b",
-)
+MODELO_CEREBRAS = modelos.modelo("subagentes.delegacao_ia.cerebras")
 
-MODELO_OPENAI = os.getenv(
-    "DELEGACAO_MODELO_OPENAI",
-    "gpt-4o-mini",
-)
+MODELO_OPENAI = modelos.modelo("subagentes.delegacao_ia.openai")
 
-MODELO_GEMINI = os.getenv(
-    "DELEGACAO_MODELO_GEMINI",
-    "gemini-3.6-flash",
-)
+MODELO_GEMINI = modelos.modelo("subagentes.delegacao_ia.gemini")
 
 TIMEOUT_LONGO_SEGUNDOS = 60
 
@@ -64,29 +54,5 @@ def config_schema():
             "rotulo": "Chave de API da OpenAI (segunda_opiniao)",
             "sensivel": True,
             "obrigatoria": True,
-        },
-        {
-            "nome": "DELEGACAO_MODELO_GROQ",
-            "rotulo": "Modelo usado na Groq (padrão: openai/gpt-oss-20b)",
-            "sensivel": False,
-            "obrigatoria": False,
-        },
-        {
-            "nome": "DELEGACAO_MODELO_CEREBRAS",
-            "rotulo": "Modelo usado na Cerebras (padrão: gpt-oss-120b)",
-            "sensivel": False,
-            "obrigatoria": False,
-        },
-        {
-            "nome": "DELEGACAO_MODELO_OPENAI",
-            "rotulo": "Modelo usado na OpenAI (padrão: gpt-4o-mini)",
-            "sensivel": False,
-            "obrigatoria": False,
-        },
-        {
-            "nome": "DELEGACAO_MODELO_GEMINI",
-            "rotulo": "Modelo do Gemini (delegação e criação de perfil)",
-            "sensivel": False,
-            "obrigatoria": False,
         },
     ]

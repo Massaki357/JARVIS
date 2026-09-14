@@ -2,16 +2,15 @@ from dotenv import load_dotenv
 
 import os
 
+from jarvis.nucleo import modelos
+
 load_dotenv()
 
 GROQ_API_KEY = os.getenv(
     "GROQ_API_KEY"
 )
 
-MODELO = os.getenv(
-    "AGENTE_FERRAMENTAS_MODELO",
-    "openai/gpt-oss-20b",
-)
+MODELO = modelos.modelo("subagentes.agente_ferramentas")
 
 TIMEOUT_SEGUNDOS = 12
 
@@ -38,15 +37,6 @@ def usar_catalogo_completo():
 
 def config_schema():
     return [
-        {
-            "nome": "AGENTE_FERRAMENTAS_MODELO",
-            "rotulo": (
-                "Modelo do sub-agente de ferramentas na Groq "
-                "(padrão: openai/gpt-oss-20b)"
-            ),
-            "sensivel": False,
-            "obrigatoria": False,
-        },
         {
             "nome": "AGENTE_FERRAMENTAS_CATALOGO_COMPLETO",
             "rotulo": (

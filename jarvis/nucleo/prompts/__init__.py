@@ -89,6 +89,10 @@ AGENTE_FERRAMENTAS_BUSCA = _carregar_arquivo(
     "geral/agente_ferramentas_busca.md"
 )
 
+RESULTADO_CHAMADA_INTERROMPIDA = _carregar_arquivo(
+    "geral/resultado_chamada_interrompida.md"
+)
+
 
 def _montar_texto(texto_bruto):
     linhas = str(texto_bruto or "").split("\n")

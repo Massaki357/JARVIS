@@ -4,6 +4,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from jarvis.caminhos import PASTA_DADOS, garantir_pasta
+from jarvis.nucleo import modelos
 
 load_dotenv()
 
@@ -49,10 +50,7 @@ NOTAS_CONTEXTO_INICIAL = int(
 
 CORTE_TITULO_APROXIMADO = 0.72
 
-MODELO_CONSOLIDACAO = os.getenv(
-    "MEMORIA_MODELO_CONSOLIDACAO",
-    "gemini-3.6-flash",
-)
+MODELO_CONSOLIDACAO = modelos.modelo("subagentes.consolidacao_memoria")
 
 TIMEOUT_CONSOLIDACAO_SEGUNDOS = 120
 

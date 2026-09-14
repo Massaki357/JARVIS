@@ -147,10 +147,9 @@ Os dois leem catálogos derivados das mesmas `FunctionDeclaration`; nenhum dos d
 
 ## Variáveis de .env
 
-Nenhuma obrigatória. `GROQ_API_KEY` é reaproveitada (já existe para `delegacao_ia` e o roteamento hierárquico) e **por isso não aparece no `config_schema()` deste pacote** — dois campos sensíveis mostrando a mesma chave seria confuso.
+Nenhuma obrigatória. O modelo NÃO fica no `.env`: é `config.json` → `modelos.subagentes.agente_ferramentas` (padrão `openai/gpt-oss-20b`). `GROQ_API_KEY` é reaproveitada (já existe para `delegacao_ia` e o roteamento hierárquico) e **por isso não aparece no `config_schema()` deste pacote** — dois campos sensíveis mostrando a mesma chave seria confuso.
 
 ```
-AGENTE_FERRAMENTAS_MODELO=<padrão openai/gpt-oss-20b>
 AGENTE_FERRAMENTAS_CATALOGO_COMPLETO=<true/false, padrão false>
 FERRAMENTAS_SOB_DEMANDA=<true/false, padrão true — lida por jarvis/nucleo/config.py>
 ```

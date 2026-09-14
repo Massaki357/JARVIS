@@ -163,6 +163,13 @@ def ferramentas_efetivas(perfil):
 
 
 # Não lê disco: a lista curta já foi carregada em preparar_chamada.
+# O porte do modo local compete com a visão nativa e leva o modelo ao caminho lento, calado por segundos.
+_PORTES_DA_VISAO_NATIVA = {
+    "descrever_tela": "analisar_tela",
+    "descrever_camera": "analisar_camera",
+}
+
+
 def filtrar_declaracoes(declaracoes, permitidas):
     if permitidas is None:
         filtradas = list(declaracoes)
@@ -173,6 +180,15 @@ def filtrar_declaracoes(declaracoes, permitidas):
             for declaracao in declaracoes
             if getattr(declaracao, "name", None) in permitidas
         ]
+
+    nomes = {getattr(declaracao, "name", None) for declaracao in filtradas}
+
+    filtradas = [
+        declaracao
+        for declaracao in filtradas
+        if _PORTES_DA_VISAO_NATIVA.get(getattr(declaracao, "name", None))
+        not in nomes
+    ]
 
     return ferramentas_diretas.aplicar_descricoes_curtas(filtradas)
 

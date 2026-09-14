@@ -2,6 +2,7 @@ import os
 from dotenv import dotenv_values, load_dotenv
 
 from jarvis.caminhos import CAMINHO_ENV
+from jarvis.nucleo import modelos
 
 load_dotenv()
 
@@ -124,17 +125,17 @@ def config_schema():
         },
     ]
 
-GEMINI_LIVE_MODEL = "gemini-3.1-flash-live-preview"
+GEMINI_LIVE_MODEL = modelos.modelo("cerebro.gemini.modelo")
 
-GEMINI_LIVE_MODEL_FALLBACK = "gemini-2.5-flash-native-audio-preview-12-2025"
+GEMINI_LIVE_MODEL_FALLBACK = modelos.modelo("cerebro.gemini.modelo_reserva")
 
 
-GEMINI_VOICE = "Charon"
+GEMINI_VOICE = modelos.modelo("cerebro.gemini.voz")
 
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-OPENAI_REALTIME_MODEL = "gpt-realtime"
+OPENAI_REALTIME_MODEL = modelos.modelo("cerebro.openai.modelo")
 
 
-OPENAI_VOICE = "marin"
+OPENAI_VOICE = modelos.modelo("cerebro.openai.voz")

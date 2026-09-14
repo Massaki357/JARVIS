@@ -1,8 +1,10 @@
 import asyncio
+import base64
 import contextlib
 import concurrent.futures
 import time
 import os
+import warnings
 import winsound
 import collections
 import queue
@@ -38,6 +40,7 @@ from jarvis.servicos.visao.monitor_continuo import MonitorTelaContinuo
 
 from jarvis.servicos.email.remetente import enviar_email
 from jarvis.servicos.email.leitor import ler_emails, baixar_anexo
+from jarvis.servicos import aviso_ferramenta
 
 from jarvis.pacotes import explorador_windows
 
@@ -137,6 +140,34 @@ LIMITE_MICROFONE_MUDO_SEGUNDOS = 10.0
 
 MAXIMO_MENSAGENS_TRANSCRICAO = 12
 
+TAMANHO_BLOCO_AVISO = 4800
+
+MAXIMO_RESPOSTAS_LEMBRADAS = 20
+
+
+# Imagem fora da resposta da função deixa o modelo mudo ou chutando; o base64 pronto contorna o json.dumps de bytes do SDK.
+warnings.filterwarnings(
+    "ignore",
+    message=(
+        r"Pydantic serializer warnings:\s+PydanticSerializationUnexpectedValue"
+        r"\(Expected `bytes`.*field_name='data'.*input_type=str\]\)\s*$"
+    ),
+)
+
+
+def _partes_imagem_resposta(imagem_bytes):
+    if not imagem_bytes:
+        return None
+
+    return [
+        types.FunctionResponsePart(
+            inline_data=types.FunctionResponseBlob.model_construct(
+                data=base64.b64encode(imagem_bytes).decode("ascii"),
+                mime_type="image/jpeg",
+            )
+        )
+    ]
+
 
 class GeminiLiveWorker(QThread):
     status_recebido = Signal(str)
@@ -214,6 +245,14 @@ class GeminiLiveWorker(QThread):
 
         # Referência obrigatória: o asyncio só guarda referência fraca à task (CLAUDE.md).
         self.tarefas_funcao_ativas = []
+
+        self.tarefas_aviso = set()
+        self.fila_saida_atual = None
+        self.chamadas_canceladas = set()
+        self.respostas_recentes = collections.deque(
+            maxlen=MAXIMO_RESPOSTAS_LEMBRADAS
+        )
+        self.voltar_status_ouvindo = False
 
         self.timestamp_ultima_atividade = time.monotonic()
 
@@ -1211,6 +1250,7 @@ class GeminiLiveWorker(QThread):
             maxsize=LIMITE_FILA_MICROFONE
         )
         fila_saida = asyncio.Queue()
+        self.fila_saida_atual = fila_saida
 
         self.status_recebido.emit(
             "Conectando ao Gemini Live..."
@@ -1862,6 +1902,12 @@ class GeminiLiveWorker(QThread):
                         self._ao_finalizar_tarefa_funcao
                     )
 
+                # Cancelada = o servidor descarta a resposta; sem isto o modelo inventa o resultado.
+                cancelamento = getattr(resposta, "tool_call_cancellation", None)
+
+                if cancelamento and cancelamento.ids:
+                    self._registrar_cancelamento(cancelamento.ids)
+
                 atualizacao_sessao = getattr(
                     resposta,
                     "session_resumption_update",
@@ -1947,6 +1993,18 @@ class GeminiLiveWorker(QThread):
 
                 if conteudo and conteudo.turn_complete:
                     self.silenciar_audio_ate_fim_turno = False
+
+                    if (
+                        self.voltar_status_ouvindo
+                        and not self.tarefas_funcao_ativas
+                        and not self.hibernacao_solicitada
+                        and self.tarefa_encerramento is None
+                    ):
+                        self.voltar_status_ouvindo = False
+
+                        self.status_recebido.emit(
+                            f"{obter_nome_jarvis()} está ouvindo."
+                        )
 
                     if self.fase_pausa == "aguardando_turno":
                         self.fase_pausa = "aguardando_handle"
@@ -2146,6 +2204,11 @@ class GeminiLiveWorker(QThread):
             )
         )
 
+        self._agendar_aviso_de_demora(
+            tarefa_execucao,
+            tool_call,
+        )
+
         try:
             function_responses, encerrar_depois = await asyncio.wait_for(
                 asyncio.shield(tarefa_execucao),
@@ -2165,7 +2228,9 @@ class GeminiLiveWorker(QThread):
                     "forma breve e natural, que você já começou e "
                     "vai avisar assim que terminar. NÃO espere em "
                     "silêncio — continue a conversa normalmente com "
-                    "o usuário enquanto isso roda em segundo plano."
+                    "o usuário enquanto isso roda em segundo plano. "
+                    "Não descreva nem adiante o resultado antes de "
+                    "ele chegar."
                 ),
             )
 
@@ -2203,6 +2268,9 @@ class GeminiLiveWorker(QThread):
                 timeout=tempo_restante,
             )
 
+            for resposta in function_responses:
+                self.chamadas_canceladas.discard(resposta.id)
+
             texto_resultado = " ".join(
                 str(resposta.response.get("result", ""))
                 for resposta in function_responses
@@ -2237,6 +2305,183 @@ class GeminiLiveWorker(QThread):
                 "executá-la de novo sozinho."
             )
 
+    def _agendar_aviso_de_demora(
+        self,
+        tarefa_execucao,
+        tool_call,
+    ):
+        nome = aviso_ferramenta.ferramenta_do_aviso(
+            (
+                (chamada.name, chamada.args)
+                for chamada in tool_call.function_calls
+            ),
+            TOOLS_SILENCIOSAS,
+        )
+
+        if not nome or self.fila_saida_atual is None:
+            return
+
+        tarefa = asyncio.create_task(
+            self._tocar_aviso_de_demora(
+                tarefa_execucao,
+                nome,
+            )
+        )
+
+        self.tarefas_aviso.add(tarefa)
+        tarefa.add_done_callback(self.tarefas_aviso.discard)
+
+    async def _tocar_aviso_de_demora(
+        self,
+        tarefa_execucao,
+        nome,
+    ):
+        await asyncio.wait(
+            {tarefa_execucao},
+            timeout=aviso_ferramenta.LIMITE_SEGUNDOS,
+        )
+
+        if tarefa_execucao.done() or not self.ativo:
+            return
+
+        pcm = aviso_ferramenta.pcm_do_aviso(nome)
+
+        if not pcm:
+            print(
+                f"[FERRAMENTA] '{nome}' está demorando, mas não há áudio "
+                "de aviso gerado para ela (python -m "
+                "jarvis.cerebro.gemini.gerador_avisos)."
+            )
+
+            return
+
+        print(
+            f"[FERRAMENTA] '{nome}' passou de "
+            f"{aviso_ferramenta.LIMITE_SEGUNDOS:.1f}s — tocando o aviso "
+            "de execução."
+        )
+
+        self.timestamp_ultima_atividade = time.monotonic()
+
+        for inicio in range(0, len(pcm), TAMANHO_BLOCO_AVISO):
+            await self.fila_saida_atual.put(
+                pcm[inicio:inicio + TAMANHO_BLOCO_AVISO]
+            )
+
+    def _registrar_cancelamento(
+        self,
+        ids,
+    ):
+        ids = set(ids)
+
+        ja_respondidas = [
+            resposta
+            for resposta in self.respostas_recentes
+            if resposta.id in ids
+        ]
+
+        self.chamadas_canceladas.update(
+            ids - {resposta.id for resposta in ja_respondidas}
+        )
+
+        print(
+            f"[FERRAMENTA] O servidor cancelou {len(ids)} chamada(s) "
+            "porque o usuário falou por cima — o resultado real será "
+            "entregue ao modelo assim que estiver pronto."
+        )
+
+        if ja_respondidas:
+            tarefa = asyncio.create_task(
+                self._entregar_resultados_interrompidos(ja_respondidas)
+            )
+
+            self.tarefas_funcao_ativas.append(tarefa)
+            tarefa.add_done_callback(self._ao_finalizar_tarefa_funcao)
+
+    async def _entregar_resultados_interrompidos(
+        self,
+        respostas,
+    ):
+        partes = []
+
+        for resposta in respostas:
+            print(
+                f"[FERRAMENTA] Entregando o resultado de '{resposta.name}', "
+                "que o servidor tinha cancelado."
+            )
+
+            partes.append(
+                types.Part(
+                    text=prompts.RESULTADO_CHAMADA_INTERROMPIDA.format(
+                        nome=resposta.name,
+                        resultado=(resposta.response or {}).get("result", ""),
+                    )
+                )
+            )
+
+            for parte in resposta.parts or []:
+                blob = parte.inline_data
+                dados = getattr(blob, "data", None)
+
+                if not dados:
+                    continue
+
+                partes.append(
+                    types.Part(
+                        inline_data=types.Blob(
+                            data=(
+                                base64.b64decode(dados)
+                                if isinstance(dados, str)
+                                else dados
+                            ),
+                            mime_type=blob.mime_type or "image/jpeg",
+                        )
+                    )
+                )
+
+        if not partes or not self.sessao:
+            return
+
+        await self._enviar_para_sessao(
+            self.sessao.send_client_content(
+                turns=[
+                    types.Content(
+                        role="user",
+                        parts=partes,
+                    )
+                ],
+                turn_complete=True,
+            )
+        )
+
+    async def _enviar_respostas(
+        self,
+        sessao,
+        respostas,
+    ):
+        pendentes = []
+        interrompidas = []
+
+        for resposta in respostas:
+            if resposta.id in self.chamadas_canceladas:
+                self.chamadas_canceladas.discard(resposta.id)
+                interrompidas.append(resposta)
+
+            else:
+                pendentes.append(resposta)
+
+        if pendentes:
+            await self._enviar_para_sessao(
+                sessao.send_tool_response(
+                    function_responses=pendentes
+                )
+            )
+
+            self.respostas_recentes.extend(pendentes)
+
+        if interrompidas:
+            await self._entregar_resultados_interrompidos(interrompidas)
+
     async def _enviar_resposta_funcao(
         self,
         sessao,
@@ -2244,10 +2489,9 @@ class GeminiLiveWorker(QThread):
         encerrar_depois,
     ):
         if function_responses:
-            await self._enviar_para_sessao(
-                sessao.send_tool_response(
-                    function_responses=function_responses
-                )
+            await self._enviar_respostas(
+                sessao,
+                function_responses,
             )
 
         if encerrar_depois:
@@ -2276,10 +2520,9 @@ class GeminiLiveWorker(QThread):
         ]
 
         if respostas:
-            await self._enviar_para_sessao(
-                sessao.send_tool_response(
-                    function_responses=respostas
-                )
+            await self._enviar_respostas(
+                sessao,
+                respostas,
             )
 
     async def processar_chamada_de_funcao(
@@ -2289,16 +2532,34 @@ class GeminiLiveWorker(QThread):
         function_responses = []
         encerrar_depois = False
 
+        self.voltar_status_ouvindo = True
+
         for chamada in tool_call.function_calls:
             nome = chamada.name
             args = dict(
                 chamada.args or {}
             )
 
+            nome_exibido = (
+                str(args.get("nome") or nome)
+                if nome == "executar_ferramenta"
+                else nome
+            )
+
+            rastrear = nome != "ler_instrucao_ferramenta"
+
+            if rastrear:
+                print(f"[FERRAMENTA] Executando '{nome_exibido}'.")
+
+                self.status_recebido.emit(
+                    f"Executando a ferramenta {nome_exibido}..."
+                )
+
             if DEBUG_TIMING_DISPATCH:
                 inicio_chamada = time.perf_counter()
 
             resultado_pacote = None
+            imagem_resposta = None
 
             if nome in TOOLS_QUE_PRECISAM_DE_IMAGEM:
                 origem_imagem = TOOLS_QUE_PRECISAM_DE_IMAGEM[nome]
@@ -2437,7 +2698,7 @@ class GeminiLiveWorker(QThread):
                 "analisar_tela",
                 "analisar_camera",
             ):
-                resultado = await self.processar_funcao_visual(
+                resultado, imagem_resposta = await self.processar_funcao_visual(
                     nome
                 )
 
@@ -2931,6 +3192,14 @@ class GeminiLiveWorker(QThread):
                     f"{duracao_chamada_ms:.1f}ms no total"
                 )
 
+            if rastrear:
+                resumo = " ".join(str(resultado).split())
+
+                print(
+                    f"[FERRAMENTA] '{nome_exibido}' terminou: "
+                    f"{resumo[:140]}"
+                )
+
             function_responses.append(
                 types.FunctionResponse(
                     id=chamada.id,
@@ -2938,6 +3207,7 @@ class GeminiLiveWorker(QThread):
                     response={
                         "result": resultado
                     },
+                    parts=_partes_imagem_resposta(imagem_resposta),
                 )
             )
 
@@ -3050,11 +3320,13 @@ class GeminiLiveWorker(QThread):
         nome,
         origem="voz",
     ):
+        self.voltar_status_ouvindo = True
+
         if self.executando_funcao_visual:
             return (
                 "Uma análise visual já está em andamento. "
                 "Use a última imagem recebida e responda ao usuário."
-            )
+            ), None
 
         agora = time.monotonic()
 
@@ -3070,7 +3342,7 @@ class GeminiLiveWorker(QThread):
                 "A imagem já foi capturada para este pedido. "
                 "Use a última imagem recebida e responda sem "
                 "chamar função novamente."
-            )
+            ), None
 
         self.executando_funcao_visual = True
         self.ultima_funcao_visual = nome
@@ -3084,6 +3356,13 @@ class GeminiLiveWorker(QThread):
                     else "Botão pressionado: analisar tela."
                 )
 
+                if origem == "voz":
+                    return prompts.ANALISE_IMAGEM_PONTUAL.format(
+                        origem="tela"
+                    ), await asyncio.to_thread(
+                        capturar_monitor_do_cursor_bytes
+                    )
+
                 await self.enviar_tela_para_gemini(
                     origem="voz"
                 )
@@ -3091,7 +3370,7 @@ class GeminiLiveWorker(QThread):
                 return (
                     "A tela foi capturada e enviada. "
                     "Responda usando exatamente a última imagem recebida."
-                )
+                ), None
 
             if nome == "analisar_camera":
                 self.status_recebido.emit(
@@ -3100,6 +3379,13 @@ class GeminiLiveWorker(QThread):
                     else "Botão pressionado: analisar câmera."
                 )
 
+                if origem == "voz":
+                    return prompts.ANALISE_IMAGEM_PONTUAL.format(
+                        origem="câmera"
+                    ), await asyncio.to_thread(
+                        capturar_camera_bytes
+                    )
+
                 await self.enviar_camera_para_gemini(
                     origem="voz"
                 )
@@ -3107,9 +3393,9 @@ class GeminiLiveWorker(QThread):
                 return (
                     "A câmera foi capturada e enviada. "
                     "Responda usando exatamente a última imagem recebida."
-                )
+                ), None
 
-            return "Função visual desconhecida."
+            return "Função visual desconhecida.", None
 
         finally:
             self.executando_funcao_visual = False

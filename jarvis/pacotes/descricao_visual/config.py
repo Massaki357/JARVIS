@@ -3,6 +3,7 @@ from dotenv import dotenv_values, load_dotenv
 import os
 
 from jarvis.caminhos import CAMINHO_ENV
+from jarvis.nucleo import modelos
 
 load_dotenv()
 
@@ -33,19 +34,13 @@ GEMINI_API_KEY = os.getenv(
     "GEMINI_API_KEY"
 )
 
-MODELO_GEMINI = os.getenv(
-    "DESCRICAO_VISUAL_MODELO_GEMINI",
-    "gemini-3.5-flash-lite",
-)
+MODELO_GEMINI = modelos.modelo("subagentes.descricao_visual.gemini")
 
 MISTRAL_API_KEY = os.getenv(
     "MISTRAL_API_KEY"
 )
 
-MODELO_MISTRAL = os.getenv(
-    "DESCRICAO_VISUAL_MODELO_MISTRAL",
-    "mistral-medium-latest",
-)
+MODELO_MISTRAL = modelos.modelo("subagentes.descricao_visual.mistral")
 
 TIMEOUT_SEGUNDOS = int(
     os.getenv(
@@ -72,24 +67,6 @@ def config_schema():
                 ("gemini", "Forçar Gemini"),
                 ("mistral", "Forçar Mistral"),
             ],
-        },
-        {
-            "nome": "DESCRICAO_VISUAL_MODELO_GEMINI",
-            "rotulo": (
-                "Modelo de visão do Gemini "
-                "(padrão: gemini-3.5-flash-lite)"
-            ),
-            "sensivel": False,
-            "obrigatoria": False,
-        },
-        {
-            "nome": "DESCRICAO_VISUAL_MODELO_MISTRAL",
-            "rotulo": (
-                "Modelo de visão da Mistral "
-                "(padrão: mistral-medium-latest)"
-            ),
-            "sensivel": False,
-            "obrigatoria": False,
         },
         {
             "nome": "DESCRICAO_VISUAL_TIMEOUT_SEGUNDOS",

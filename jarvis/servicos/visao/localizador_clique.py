@@ -6,12 +6,10 @@ from PIL import Image
 from jarvis.servicos import agentes
 
 from jarvis.nucleo.config import GEMINI_API_KEY
+from jarvis.nucleo import modelos
 
 
-MODELO_LOCALIZADOR = os.getenv(
-    "GEMINI_VISION_MODEL",
-    "gemini-3.1-flash-lite",
-)
+MODELO_LOCALIZADOR = modelos.modelo("subagentes.localizador_clique")
 
 TIMEOUT_SEGUNDOS = 20
 

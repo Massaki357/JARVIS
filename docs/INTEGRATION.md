@@ -191,7 +191,7 @@ from jarvis.servicos import agentes
 resposta = agentes.executar(
     agentes.PedidoAgente(
         provedor="groq",                  # gemini|openai|groq|cerebras|mistral
-        modelo=config.MODELO_GROQ,        # do config.py DO PACOTE
+        modelo=config.MODELO_GROQ,        # config.py DO PACOTE, lido do config.json
         api_key=config.GROQ_API_KEY,      # idem — a camada não lê .env
         texto=pergunta,
         timeout=config.TIMEOUT_SEGUNDOS,  # em SEGUNDOS, sempre
@@ -204,6 +204,20 @@ if not resposta.sucesso:
 
 return True, resposta.texto
 ```
+
+**O modelo nunca é escrito no código nem lido do `.env`.** O `config.py` do
+pacote pega o id em `config.json` → `"modelos"` → `"subagentes"`:
+
+```python
+from jarvis.nucleo import modelos
+
+MODELO_GROQ = modelos.modelo("subagentes.meu_pacote")
+```
+
+Um pacote novo com modelo próprio acrescenta a chave em `PADROES`
+(`jarvis/nucleo/modelos.py`, o valor usado se faltar no arquivo) e no
+`config.json`. Nada de campo de modelo no `config_schema()`: a tela de
+configurações edita só o `.env`.
 
 Os outros três casos são o MESMO pedido com um campo a mais:
 
@@ -696,9 +710,13 @@ if nome in ("identificar_planta", "consultar_segunda_opiniao_visual"):
 que só vê a imagem uma vez, sem "memória" da conversa. Pra o Gemini não apenas
 repetir esse resultado externo sem checagem, a MESMA imagem é reenviada a ele (via
 `send_client_content`, com uma instrução de comparar com a própria leitura visual)
-antes do `tool_response` da chamada original ser enviado — mesma ordem já usada por
-`analisar_tela`/`analisar_camera` via `processar_funcao_visual` (a imagem chega
-primeiro por `send_client_content`, o `tool_response` só fecha a chamada depois):
+antes do `tool_response` da chamada original ser enviado. **Essa ordem NÃO é mais a
+de `analisar_tela`/`analisar_camera`**: pedidas por voz, elas mandam a imagem
+DENTRO do `tool_response` (`parts` com `FunctionResponseBlob`), porque a
+documentação do Gemini avisa que imagem enviada fora da resposta da função gera
+comportamento inesperado — medido ao vivo: o modelo ficava mudo depois da imagem
+(2 de 6 rodadas) ou levava até 20 s para falar. As duas daqui ainda usam o turno
+separado e são candidatas à mesma troca (não medido ainda):
 
 ```python
 if resultado_pacote is not None:
@@ -1883,6 +1901,16 @@ pacote registrado com o nome nativo sequestraria o comportamento do Gemini, que
 manda vídeo de verdade para a sessão e tem o contexto da conversa. Um teste
 garante que nenhum pacote use esses dois nomes.
 
+**E elas não são declaradas para quem já tem a visão nativa.**
+`perfis.filtrar_declaracoes` tira `descrever_tela` quando `analisar_tela` está na
+mesma lista (e `descrever_camera` quando `analisar_camera` está). Com as duas
+declaradas, a mesma frase ("o que você está vendo na minha tela?") caía ora numa,
+ora na outra — e `descrever_tela` passa por outro modelo de visão, com o
+`LIMITE_RESPOSTA_IMEDIATA_SEGUNDOS` no meio: medido, até 12 s calado. A regra é
+por nome sobre a lista que o cliente montou, então o modo local (que não tem
+`analisar_*`) continua recebendo as duas. Coberto por
+`testes/testar_gemini_visao_na_resposta.py`.
+
 `iniciar_visualizacao_continua` e `parar_visualizacao_continua` seguem
 **indisponíveis por design**, e não é o mesmo problema: dependem de streaming de
 vídeo em tempo real, com frames injetados continuamente na sessão. Replicar isso
@@ -1939,7 +1967,8 @@ sem cota no modo Gemini, quebrando a ferramenta sem ganho nenhum.
 para os dois pacotes: uma escolha explícita do usuário nunca separa as duas
 ferramentas de visão em provedores diferentes — só a política automática separa, e
 por um motivo documentado. Os MODELOS continuam separados
-(`IDENTIFICACAO_VISUAL_MODELO_GEMINI` vs `DESCRICAO_VISUAL_MODELO_GEMINI`), porque
+(`modelos.subagentes.identificacao_visual` vs `modelos.subagentes.descricao_visual`
+no `config.json`), porque
 descrever uma cena inteira e identificar um objeto são tarefas diferentes.
 
 **Cuidado com a cota da Mistral.** Medido ao vivo: a `MISTRAL_API_KEY` deste projeto
@@ -2320,3 +2349,25 @@ servidor já estar rodando o build com as duas metades.
 4. Rode o app e confirme que `PACOTES_REGISTRADOS` aparece com todos
    os pacotes esperados e que uma tool de cada pacote funciona por
    voz.
+
+## Execução de ferramentas num cliente novo
+
+Um cliente de voz que substitua os workers atuais precisa manter três
+comportamentos, todos medidos ao vivo:
+
+1. **Resultado de chamada cancelada nunca se perde.** No Gemini Live, se
+   o usuário fala durante uma ferramenta, chega `tool_call_cancellation`
+   e o `tool_response` daquele id é descartado; sem o resultado, o modelo
+   inventa que deu certo. Guarde os ids cancelados e entregue o resultado
+   como turno de usuário com `prompts.RESULTADO_CHAMADA_INTERROMPIDA` —
+   ver `_registrar_cancelamento`/`_enviar_respostas` em
+   `jarvis/cerebro/gemini/cliente_live.py`.
+2. **Ferramenta demorada avisa por voz.** Passou de
+   `aviso_ferramenta.LIMITE_SEGUNDOS`, ponha
+   `aviso_ferramenta.pcm_do_aviso(nome)` na mesma fila de áudio da fala
+   do modelo (`jarvis/servicos/aviso_ferramenta/`).
+3. **Status volta para "está ouvindo"** no fim do turno que seguiu uma
+   ferramenta, e cada execução imprime linhas `[FERRAMENTA]`.
+
+Testes: `testes/testar_execucao_ferramentas.py`.
+

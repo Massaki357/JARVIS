@@ -6,5 +6,41 @@
       "alto_falante": "",
       "perfil_ativo": ""
     }
-  ]
+  ],
+  "modelos": {
+    "cerebro": {
+      "gemini": {
+        "modelo": "gemini-3.1-flash-live-preview",
+        "modelo_reserva": "gemini-2.5-flash-native-audio-preview-12-2025",
+        "voz": "Charon"
+      },
+      "openai": {
+        "modelo": "gpt-realtime",
+        "voz": "marin"
+      }
+    },
+    "subagentes": {
+      "agente_ferramentas": "openai/gpt-oss-20b",
+      "roteamento_hierarquico": {
+        "etapa1": "openai/gpt-oss-20b",
+        "etapa2": "openai/gpt-oss-20b"
+      },
+      "delegacao_ia": {
+        "groq": "openai/gpt-oss-20b",
+        "cerebras": "gpt-oss-120b",
+        "openai": "gpt-4o-mini",
+        "gemini": "gemini-3.6-flash"
+      },
+      "descricao_visual": {
+        "gemini": "gemini-3.5-flash-lite",
+        "mistral": "mistral-medium-latest"
+      },
+      "identificacao_visual": {
+        "gemini": "gemini-3.5-flash-lite",
+        "mistral": "mistral-medium-latest"
+      },
+      "consolidacao_memoria": "gemini-3.6-flash",
+      "localizador_clique": "gemini-3.1-flash-lite"
+    }
+  }
 }

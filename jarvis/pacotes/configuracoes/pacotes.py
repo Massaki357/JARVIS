@@ -12,8 +12,6 @@ import jarvis.pacotes.identificacao_visual.config as identificacao_visual_config
 import jarvis.pacotes.consulta_acoes.config as consulta_acoes_config
 import jarvis.pacotes.rede_jarvis.config as rede_jarvis_config
 
-import jarvis.roteamento_hierarquico.config as roteamento_hierarquico_config
-
 import jarvis.nucleo.config as nucleo_config
 
 import jarvis.cerebro.voz_local.config as voz_local_config
@@ -37,10 +35,6 @@ PACOTES_COM_CONFIG = [
     ("Cotação de Ações (Twelve Data)", consulta_acoes_config),
     ("Abrir Aplicativo (pastas extras)", abrir_aplicativo_config),
     ("Criar Arquivo (pastas permitidas)", criar_arquivo_config),
-    (
-        "Roteamento Hierárquico de Ferramentas (Groq)",
-        roteamento_hierarquico_config,
-    ),
     ("Gemini / Núcleo do ALFRED", nucleo_config),
     ("Servidor de Voz Local (alfred-server, MQTT)", voz_local_config),
     ("Email — Envio (SMTP)", email_remetente_config),
