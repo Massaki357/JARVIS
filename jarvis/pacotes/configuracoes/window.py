@@ -46,13 +46,17 @@ class _SecaoRecolhivel(QWidget):
         self.botao_titulo.clicked.connect(self._alternar)
 
         self.conteudo = QWidget()
+        self.conteudo.setObjectName("conteudoSecao")
         self.conteudo.setVisible(False)
+        # Sem o seletor a borda vaza para cada rótulo e campo da seção.
         self.conteudo.setStyleSheet(
-            "border: 1px solid #999999; border-top: none;"
+            "QWidget#conteudoSecao {"
+            " border: 1px solid #999999; border-top: none; }"
         )
 
         self.layout_conteudo = QFormLayout(self.conteudo)
         self.layout_conteudo.setContentsMargins(12, 10, 12, 10)
+        self.layout_conteudo.setVerticalSpacing(12)
 
         layout.addWidget(self.botao_titulo)
         layout.addWidget(self.conteudo)
@@ -215,7 +219,18 @@ class ConfiguracoesWindow(QWidget):
             if entrada.get("obrigatoria"):
                 rotulo_campo += " *"
 
-            formulario.addRow(rotulo_campo, campo.widget_linha)
+            bloco = QWidget()
+            layout_bloco = QVBoxLayout(bloco)
+            layout_bloco.setContentsMargins(0, 0, 0, 0)
+            layout_bloco.setSpacing(4)
+
+            rotulo = QLabel(rotulo_campo)
+            rotulo.setWordWrap(True)
+
+            layout_bloco.addWidget(rotulo)
+            layout_bloco.addWidget(campo.widget_linha)
+
+            formulario.addRow(bloco)
 
         return secao
 

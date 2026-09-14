@@ -2,19 +2,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from jarvis.ui.janela_principal import MainWindow
-
 from jarvis.nucleo.sinalizador import obter_sinalizador
-
-from jarvis.nucleo.preferencias import aplicar_prioridade
-
-from jarvis.ui.painel_dispositivos import (
-    aplicar_preferencias as aplicar_dispositivos,
-)
-
-from jarvis.pacotes import ativacao_voz
-
-from jarvis.pacotes import memoria_obsidian
 
 _janela_configuracoes = None
 
@@ -144,13 +132,26 @@ def _iniciar_chamada_por_voz():
 def main():
     global _janela_principal
 
+    app = QApplication(sys.argv)
+
+    # A verificação vem antes dos imports abaixo: eles guardam as chaves de API ao serem importados.
+    from jarvis.ui.janela_chaves_api import garantir_chaves_api
+
+    garantir_chaves_api()
+
+    from jarvis.nucleo.preferencias import aplicar_prioridade
+    from jarvis.pacotes import ativacao_voz
+    from jarvis.pacotes import memoria_obsidian
+    from jarvis.ui.janela_principal import MainWindow
+    from jarvis.ui.painel_dispositivos import (
+        aplicar_preferencias as aplicar_dispositivos,
+    )
+
     aplicar_prioridade()
 
     memoria_obsidian.iniciar()
 
     aplicar_dispositivos()
-
-    app = QApplication(sys.argv)
 
     window = MainWindow()
 
